@@ -289,7 +289,7 @@ re-brushing strokes, re-meshing for export/LOD, and deterministic replay.
   upgraded on save. `Document::set_thumbnail` isn't an edit (no dirty flag, no undo);
   `read_thumbnail(path)` reads just the preview for Recents and thumbnailers.
 
-### 3e. Incremental live strokes (proposed, awaiting sign-off)
+### 3e. Incremental live strokes (implemented)
 
 **Problem.** Every input update rebuilds the stroke being drawn from scratch
 (`LiveStroke::rebuild`, `airdraw-godot/src/canvas.rs`). All filters and dynamics re-run over
@@ -524,6 +524,100 @@ in a few pixels when the document is reopened.
    surfaces of the stroke's mesh, so pen-up uploads at most one chunk (see Godot side).
 3. Batch fallback for non-streaming stages.
 4. Accept the one-time tube vertex-order change.
+
+### 3f. 3D guides (proposed, awaiting sign-off)
+
+**Problem.** A pen gives only a 2D position, so every stroke needs a depth. Today
+`SketchSession::project` puts every stroke on **one infinite plane** chosen from four
+presets (front / side / top / view-aligned). A drawing made that way is flat: a "cardboard
+cutout" standing in 3D. Getting real depth means switching planes and sliding them by hand
+for every part.
+
+**How Feather does it** (research, 2026-10-27): the user draws the depth. A stroke drawn as a
+*guide* is extruded into a transparent surface, and later strokes land on that surface. One
+stroke makes the surface, the next draws on it. Ready-made primitives (box, sphere, cylinder,
+torus) work as guides too, and guides can be bent, moved and reused.
+
+#### Model: guides are surfaces strokes are projected onto
+
+New pure-Rust crate `airdraw-guide` (no Godot), so it's unit-testable like the brush engine:
+
+```rust
+trait Surface {
+    /// Nearest hit of a world-space ray in front of the origin: point + surface normal.
+    fn intersect(&self, ray: Ray) -> Option<Hit>;
+    /// Triangles for display (semi-transparent, grid-textured) and for picking.
+    fn mesh(&self) -> MeshBuffers;
+}
+
+enum GuideKind {
+    Plane { origin, normal },                          // today's guide, now one kind among many
+    Extrusion { curve: Vec<Vec3>, dir: Vec3, depth: (f32, f32) }, // a stroke swept along dir
+    Box { transform: Mat4 },                            // unit cube, scaled and rotated
+    Sphere { center, radius },
+    Cylinder { transform: Mat4 },
+}
+
+struct Guide { id, kind: GuideKind, visible: bool, locked: bool }
+```
+
+- **Extrusion** is the Feather move. The guide stroke's processed centerline (after the
+  brush's filters, so it's smooth) is swept along `dir` to make a ribbon of quads.
+  Intersection is ray–triangle against that ribbon, with a BVH once guides get large.
+- `dir` defaults to **the normal of the surface the guide stroke was drawn on**: a curve
+  drawn on the floor becomes a wall going up, and a curve drawn on a wall becomes a surface
+  coming toward you. Depth is generous both ways (e.g. ±2 m), so it behaves like a sheet you
+  can draw on anywhere along it.
+
+#### Projection rules
+
+- A stroke **starts** on the nearest guide hit under the pen (ray against all visible,
+  unlocked guides, nearest first). Its **later samples stay on that same guide**, so strokes
+  never jump between surfaces. If a sample misses (pen moved off the guide's edge), it
+  extends the surface's tangent plane at the last hit, so the stroke continues smoothly
+  instead of breaking.
+- Every sample carries the hit **normal** (`InputPoint.normal` already exists), so ribbon
+  brushes lie flat on curved guides with no brush changes.
+- If nothing is hit, the stroke falls back to the default plane (today's behavior).
+
+#### Interaction
+
+- **Tool rail:** a new **Guide** pen mode (the Plane button becomes "Guides"). While it's on,
+  the next stroke creates an extrusion guide instead of ink, then the mode returns to Brush.
+  Sphere / Cylinder / Box (rail buttons, enabled) drop a primitive in front of the camera.
+- **Guides panel** (replacing the Guide card): a list with show/hide, lock, delete, and
+  "Floor / Front / Side" presets as one-tap planes.
+- **Editing:** tap a guide (in Guide mode) to select it. A simple gizmo moves, rotates and
+  scales it, sharing code with the future Select tool's transform ("joystick").
+- **Display:** the active guide is tinted; other guides are faint; strokes draw over guides
+  (guides render with depth test but no depth write).
+
+#### Storage and undo
+
+- Guides belong to the document: `airdraw-doc` gains `AddGuide`, `RemoveGuide` and
+  `SetGuide` (transform, visibility) ops, undoable like strokes.
+- `.airdraw` **format 3**: a `[[guides]]` table in the TOML metadata (extrusion curves as
+  point lists). Format 1–2 files open with no guides (the default plane only).
+- Exports ignore guides by default; an option can include them as meshes later.
+
+#### Rollout
+
+| Step | Deliverable |
+|---|---|
+| 1 | `airdraw-guide`: `Surface`, plane + extrusion, ray tests (hits, normals, edges, nearest of many) |
+| 2 | Session projection through guides (start-on-nearest, stick to it, tangent fallback); today's presets become plane guides; no UI change yet |
+| 3 | Guide mode: draw a stroke → extrusion guide; display; Guides panel (list, hide, delete) |
+| 4 | Document ops + `.airdraw` format 3 (with a format-2 fixture test) |
+| 5 | Primitives: sphere, cylinder, box; gizmo for move/rotate/scale |
+| 6 | Later: bendable guides, hold-to-snap line/circle, mirror |
+
+#### Decisions needed
+
+1. Extrusion direction: the drawing surface's normal (proposed), or always world-up, or a toggle.
+2. Strokes stick to the guide they started on (proposed), or may hop to whichever guide is
+   under the pen.
+3. Guide mode is one-shot (back to Brush after one guide stroke, proposed) or stays on.
+4. Guides saved in the document (proposed) or kept only for the session.
 
 ## 4. Export system (`airdraw-export`)
 
