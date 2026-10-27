@@ -1,0 +1,17 @@
+# Matte clay study: form over colour, soft light, shadows, occlusion.
+schema = 1
+id = "com.airdraw.clay"
+name = "Clay"
+shader = "clay"
+
+[params]
+tint = 0.25
+occlusion = 0.45
+
+[environment]
+background = "#D6D4CF"
+ambient = "#C9CCD6"
+ambient_energy = 0.55
+sun_energy = 1.4
+shadows = true
+ssao = true

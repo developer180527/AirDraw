@@ -54,6 +54,7 @@ dependencies = [
  "airdraw-guide",
  "airdraw-input",
  "airdraw-ios",
+ "airdraw-look",
  "airdraw-platform",
  "glam",
  "godot",
@@ -86,6 +87,14 @@ dependencies = [
  "objc2-foundation",
  "objc2-ui-kit",
  "objc2-uniform-type-identifiers",
+]
+
+[[package]]
+name = "airdraw-look"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "toml",
 ]
 
 [[package]]

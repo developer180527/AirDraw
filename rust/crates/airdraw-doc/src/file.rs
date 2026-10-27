@@ -73,6 +73,9 @@ struct Meta {
     layers: Vec<Layer>,
     #[serde(default)]
     brushes: Vec<BrushDef>,
+    /// Look id. Optional, so older apps (which ignore unknown keys) still open these files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    look: Option<String>,
 }
 
 impl Document {
@@ -87,7 +90,7 @@ impl Document {
                 brushes.push(self.brushes[s.brush.0 as usize].clone());
             }
         }
-        let meta = Meta { app_version: env!("CARGO_PKG_VERSION").into(), layers: self.layers.clone(), brushes };
+        let meta = Meta { app_version: env!("CARGO_PKG_VERSION").into(), layers: self.layers.clone(), brushes, look: self.look.clone() };
         let meta = toml::to_string(&meta).expect("document metadata always serializes");
 
         let mut w = Vec::new();
@@ -154,7 +157,7 @@ impl Document {
         if meta.layers.is_empty() {
             return Err(DocError::Corrupt("no layers".into()));
         }
-        Ok(Document::from_parts(meta.layers, strokes, meta.brushes, thumbnail))
+        Ok(Document::from_parts(meta.layers, strokes, meta.brushes, thumbnail, meta.look))
     }
 
     /// Writes to a temporary file first and renames it over `path`, so a crash or full disk
@@ -483,6 +486,19 @@ mod tests {
         // Saving upgrades it to the current format losslessly.
         let upgraded = Document::from_bytes(&d.to_bytes()).unwrap();
         assert_eq!(upgraded.strokes(), d.strokes());
+    }
+
+    #[test]
+    fn look_round_trips_and_is_optional() {
+        let mut d = Document::new();
+        assert_eq!(Document::from_bytes(&d.to_bytes()).unwrap().look(), None);
+        d.set_look(Some("com.airdraw.clay".into()));
+        assert!(d.is_dirty() && !d.can_undo(), "a view setting: dirty, but not undoable");
+        let back = Document::from_bytes(&d.to_bytes()).unwrap();
+        assert_eq!(back.look(), Some("com.airdraw.clay"));
+        // Metadata from before Looks (no key) still parses.
+        let meta: Meta = toml::from_str("app_version = \"0.1.0\"\nlayers = []\n").unwrap();
+        assert_eq!(meta.look, None);
     }
 
     #[test]

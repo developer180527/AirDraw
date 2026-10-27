@@ -77,6 +77,8 @@ pub struct Document {
     pub(crate) thumbnail: Option<Arc<[u8]>>,
     /// The drawn 3D guide strokes land on; `None` means the app's plane presets.
     guide: Option<Arc<Guide>>,
+    /// Id of the Look strokes are shaded with; `None` means the app's default.
+    pub(crate) look: Option<String>,
 }
 
 impl Default for Document {
@@ -98,6 +100,7 @@ impl Document {
             dirty: false,
             thumbnail: None,
             guide: None,
+            look: None,
         }
     }
 
@@ -107,6 +110,7 @@ impl Document {
         strokes: Vec<Stroke>,
         brushes: Vec<BrushDef>,
         thumbnail: Option<Arc<[u8]>>,
+        look: Option<String>,
     ) -> Self {
         let next_stroke = strokes.iter().map(|s| s.id.0 + 1).max().unwrap_or(1);
         let active_layer = layers.first().map_or(LayerId(1), |l| l.id);
@@ -121,6 +125,7 @@ impl Document {
             dirty: false,
             thumbnail,
             guide: None,
+            look,
         }
     }
 
@@ -153,6 +158,19 @@ impl Document {
     /// True if there are edits since the last load/save.
     pub fn is_dirty(&self) -> bool {
         self.dirty
+    }
+
+    /// The Look id saved with the sketch, if any.
+    pub fn look(&self) -> Option<&str> {
+        self.look.as_deref()
+    }
+
+    /// Sets the Look. A view choice like layer visibility: saved, but not an undo step.
+    pub fn set_look(&mut self, look: Option<String>) {
+        if self.look != look {
+            self.look = look;
+            self.dirty = true;
+        }
     }
 
     /// The active drawn guide, if any (otherwise strokes use the app's plane presets).

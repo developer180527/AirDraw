@@ -1,0 +1,13 @@
+# Unlit colour everywhere, like marker on paper.
+schema = 1
+id = "com.airdraw.flat"
+name = "Flat"
+shader = "flat"
+
+[environment]
+background = "#F4F3EF"
+ambient = "#FFFFFF"
+ambient_energy = 1.0
+sun_energy = 0.0
+shadows = false
+ssao = false

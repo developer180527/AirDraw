@@ -15,6 +15,7 @@ signal plane_requested(index: int)  ## GuideController preset index (3 = view-al
 signal guide_offset_changed(offset: float)
 signal view_requested(view: String)  ## front, back, side, left, top, bottom, 3d
 signal orbit_requested(delta: Vector2)
+signal look_requested(id: String)
 signal layout_changed
 
 const SETTINGS := "user://settings.cfg"
@@ -62,6 +63,8 @@ var _toast_serial := 0
 var _menu: PanelContainer
 var _scrim: Control
 var _left_handed_item: Button
+var _look_items := {}  ## look id → menu item
+var _look := ""
 var _guide_path: Line2D
 ## Guide state shown in the context bars.
 var _has_drawn_guide := false
@@ -250,6 +253,11 @@ func find_button(key: String) -> Button:
 	return null
 
 
+## Marks the sketch's Look in the menu.
+func show_look(id: String) -> void:
+	_look = id
+
+
 func close_menu() -> void:
 	if _menu and _menu.visible:
 		_menu.visible = false
@@ -382,6 +390,16 @@ func _build_menu() -> void:
 	var hide_item: Button = item.call("Hide interface", "Hide interface", toggle_ui)
 	hide_item.tooltip_text = Shortcuts.tooltip("Hide interface", "toggle_ui")
 	col.add_child(HSeparator.new())
+	var look_title := Label.new()
+	look_title.text = "Look"
+	look_title.theme_type_variation = "Small"
+	col.add_child(look_title)
+	for l in canvas.looks():
+		var id: String = l.id
+		var b: Button = item.call("Look " + l.name, l.name, look_requested.emit.bind(id))
+		b.set_meta("label", l.name)
+		_look_items[id] = b
+	col.add_child(HSeparator.new())
 	item.call("Import brushes", "Import brushes", action.emit.bind("import_brushes"))
 	item.call("Clear sketch", "Clear sketch", action.emit.bind("clear"))
 
@@ -391,6 +409,8 @@ func _open_menu() -> void:
 		close_menu()
 		return
 	_left_handed_item.text = ("✓  " if left_handed else "") + "Left-handed mode"
+	for id in _look_items:
+		_look_items[id].text = ("✓  " if id == _look else "") + str(_look_items[id].get_meta("label"))
 	_apply_sizes()
 	_menu.reset_size()
 	var anchor := find_button("More").get_global_rect()

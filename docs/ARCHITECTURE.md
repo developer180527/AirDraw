@@ -630,7 +630,7 @@ struct Guide { shape: GuideShape, opacity: f32 }
 2. Whether guide-draw mode returns to the brush after one guide (proposed: yes).
 3. Sweep extent (proposed: ±3 m, shown fading at the edges).
 
-### 3g. Looks: how strokes are shaded (approved 2026-10-27 with the proposed defaults; step 1 implemented)
+### 3g. Looks: how strokes are shaded (approved 2026-10-27 with the proposed defaults; steps 1–2 implemented)
 
 **Goal.** Switch a sketch between cartoon, line-art, clay or realistic rendering. This is
 not a colour template: each Look changes how the GPU computes every pixel. The strokes and
@@ -714,7 +714,7 @@ void light() {
 | Step | Deliverable |
 |---|---|
 | 1 ✅ | UVs + tangents in tube, ribbon and dots geometry and streams; Godot meshes carry them; exporters write them. Tube rings and sphere rows gain a seam vertex (u/v wrap cleanly), so tube strokes have ~12% more vertices; the triangles are unchanged (fingerprinted before/after). Tests: tangent unit, ⟂ normal, w = ±1 and agreeing with the UV directions on every triangle (fails 0/624 when the handedness is flipped); tube u = distance, seam closes; split tests now include UVs/tangents. Re-imported: GLB/glTF/FBX (Godot) with UVs + tangents, OBJ/USDA/USDZ (Model I/O) with UVs; PLY writes `s`/`t` (Blender's names) but Model I/O ignores PLY UVs under any name. The C plugin ABI (`AdExportMesh`) is unchanged: plugin UVs need ABI v2. Per-update cost unchanged within noise |
-| 2 | Look model + `.look.toml`; Shaded, Flat, Clay; Look picker in the ⋯ menu; saved in the document |
+| 2 ✅ | New crate `airdraw-look`: `LookDef` (`.look.toml`: shader, optional unlit-brush shader, float params, environment), validated (known shader, `#RRGGBB` colours, schema); built-in Shaded, Flat, Clay and their shaders embedded like built-in brushes (`airdraw-look/looks`, `airdraw-look/shaders` instead of `app/looks`, so they need no file access on device). Each shader has one `render_mode` line starting `cull_back`; double-sided brushes get a `cull_disabled` variant. The canvas builds one `ShaderMaterial` per brush snapshot with the brush's colour, roughness, metallic and emission as uniforms, compiling each (shader, double-sided) once; changing the Look re-applies materials to every stroke, including the one being drawn. `main.gd` applies the Look's lighting (SSAO only on Forward+). The document saves the Look as an optional metadata key (older apps ignore it; no format bump); it's dirty but not undoable. Picker: the ⋯ menu's Look section. Verified: Shaded through the new pipeline is pixel-identical to the old `StandardMaterial3D` (0 of 1.3M pixels, all four brushes); all Looks render under the Mobile renderer; smoke test picks Clay by touch, checks every stroke's shader and the lighting, and save/reload |
 | 3 | Toon and Ink: ramp light function + inverted-hull outline pass |
 | 4 | Realistic: PBR + sky lighting + shadows; desktop extras (SSAO, SSIL) |
 | 5 | Textured brushes (paper grain, hatching) using the UVs |

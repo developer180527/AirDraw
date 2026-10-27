@@ -1,0 +1,9 @@
+[package]
+name = "airdraw-look"
+description = "Looks: how strokes are shaded (shader + lighting preset), as data files."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+toml.workspace = true

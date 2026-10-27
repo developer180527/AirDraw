@@ -258,6 +258,33 @@ func _ready() -> void:
 	rig.set_view("front")
 	await get_tree().create_timer(0.5).timeout
 
+	# Looks: pick Clay from the ⋯ menu by touch; every stroke switches shader, the lighting
+	# follows, and the Look is saved with the sketch. A new sketch starts Shaded.
+	await _tap(shell.find_button("More"))
+	await _settle()
+	await _tap(shell.find_button("Look Clay"))
+	await _settle()
+	var stroke_shaders := []
+	for c in canvas.get_children():
+		if c is MeshInstance3D and c.material_override is ShaderMaterial:
+			stroke_shaders.append("diffuse_lambert_wrap" in c.material_override.shader.code)
+	var env: Environment = main.get("environment").environment
+	print("SMOKE look picked=", canvas.look(), " strokes_clay=", stroke_shaders.size() > 0 and stroke_shaders.all(func(x): return x),
+		" lighting_follows=", env.background_color.is_equal_approx(canvas.look_environment().background), " shadows=", main.get("sun").shadow_enabled)
+	await _shot("user://look_clay.png")
+	var look_path := ProjectSettings.globalize_path("user://test_documents/look.airdraw")
+	canvas.save_document(look_path)
+	canvas.new_document()
+	var fresh_look: String = canvas.look()
+	canvas.load_document(look_path)
+	print("SMOKE look new_sketch=", fresh_look, " reloaded=", canvas.look(), " env_reloaded=",
+		env.background_color.is_equal_approx(canvas.look_environment().background))
+	await _tap(shell.find_button("More"))
+	await _settle()
+	await _tap(shell.find_button("Look Shaded"))
+	await _settle()
+	print("SMOKE look back_to=", canvas.look())
+
 	# Editor layouts: landscape, portrait (bottom sheet), left-handed.
 	await _shot("user://layout_landscape.png")
 	var win := get_window()

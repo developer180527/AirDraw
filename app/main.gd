@@ -7,6 +7,8 @@ extends Node3D
 const PLUGIN_DIR := "user://plugins"
 
 var rig: OrbitCamera
+var environment: WorldEnvironment
+var sun: DirectionalLight3D
 var canvas: SketchCanvas
 var session: SketchSession
 var guides: GuideController
@@ -46,14 +48,15 @@ func _ready() -> void:
 	AppPaths.migrate_ios_documents()
 	app_files.load_recents(ProjectSettings.globalize_path(recents_file))
 
-	var env := WorldEnvironment.new()
-	env.environment = Environment.new()
-	env.environment.background_mode = Environment.BG_COLOR
-	env.environment.background_color = Color(0.93, 0.93, 0.91)
-	env.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.environment.ambient_light_color = Color(0.75, 0.75, 0.8)
-	add_child(env)
-	var sun := DirectionalLight3D.new()
+	# Lighting comes from the sketch's Look (applied in _apply_look); these are its defaults.
+	environment = WorldEnvironment.new()
+	environment.environment = Environment.new()
+	environment.environment.background_mode = Environment.BG_COLOR
+	environment.environment.background_color = Color(0.93, 0.93, 0.91)
+	environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	environment.environment.ambient_light_color = Color(0.75, 0.75, 0.8)
+	add_child(environment)
+	sun = DirectionalLight3D.new()
 	sun.rotation = Vector3(-0.9, 0.5, 0.0)
 	sun.light_energy = 0.8
 	add_child(sun)
@@ -64,6 +67,7 @@ func _ready() -> void:
 	canvas.load_brush_dir(ProjectSettings.globalize_path("user://brushes"))
 	canvas.strokes_changed.connect(func(_n: int) -> void: _update_hud())
 	canvas.brush_changed.connect(func(_id: String) -> void: _update_hud())
+	canvas.look_changed.connect(_apply_look)
 	add_child(canvas)
 
 	session = SketchSession.new()
@@ -101,6 +105,9 @@ func _ready() -> void:
 			guides.set_preset(i))
 	toolbar.guide_offset_changed.connect(guides.set_offset)
 	toolbar.tool_selected.connect(set_tool)
+	toolbar.look_requested.connect(func(id: String) -> void:
+		canvas.set_look(id)
+		_update_hud())
 	session.guide_path_changed.connect(toolbar.show_guide_path)
 	session.guide_drawn.connect(func(created: bool) -> void:
 		if created:
@@ -116,6 +123,7 @@ func _ready() -> void:
 	toolbar.action.connect(_file_action)
 	toolbar.setup(canvas, rig.camera)
 	guides.attach(canvas)
+	_apply_look()
 	export_dialog = ExportDialog.new()
 	export_dialog.finished.connect(_set_status)
 	export_dialog.visibility_changed.connect(_update_ui_regions)
@@ -264,6 +272,22 @@ func _handle_key(event: InputEventKey) -> void:
 			var id := toolbar.recent_brush(int(action.trim_prefix("brush_")) - 1)
 			if not id.is_empty():
 				canvas.set_brush(id)
+
+
+## The sketch's Look sets the lighting: background, ambient, key light, shadows, and
+## screen-space AO where the renderer has it (Forward+ on desktop, not the iPad's Mobile one).
+func _apply_look() -> void:
+	var e: Dictionary = canvas.look_environment()
+	var env := environment.environment
+	env.background_color = e.background
+	env.ambient_light_color = e.ambient
+	env.ambient_light_energy = e.ambient_energy
+	sun.light_energy = e.sun_energy
+	sun.visible = e.sun_energy > 0.0
+	sun.shadow_enabled = e.shadows
+	env.ssao_enabled = e.ssao and RenderingServer.get_current_rendering_method() == "forward_plus"
+	if toolbar:
+		toolbar.show_look(canvas.look())
 
 
 ## Switches the pen's tool. The Guide tool draws one guide, then the app goes back to Draw.

@@ -6,10 +6,11 @@ use std::time::Duration;
 use airdraw_brush::{Brush, BrushLibrary, BrushSource, InputPoint, MaterialDesc, MeshBuffers, Shading, StageRegistry};
 use airdraw_doc::{BrushRef, Change, Document, Stroke, StrokeId, read_thumbnail};
 use airdraw_guide::Guide;
+use airdraw_look::LookLibrary;
 use airdraw_export::{ExporterRegistry, FolderSink, SceneOptions, build_scene};
 use godot::classes::base_material_3d::{CullMode, Feature, ShadingMode};
 use godot::classes::mesh::PrimitiveType;
-use godot::classes::{ArrayMesh, INode3D, Material, MeshInstance3D, Node3D, StandardMaterial3D};
+use godot::classes::{ArrayMesh, INode3D, Material, MeshInstance3D, Node3D, Shader, ShaderMaterial, StandardMaterial3D};
 use godot::prelude::*;
 
 use crate::export_bridge::{def_to_dict, dict_to_def, dict_to_params, slot_from_name, spec_to_dict};
@@ -35,6 +36,10 @@ pub struct SketchCanvas {
     /// Compiled brushes and Godot materials per document brush snapshot.
     compiled: HashMap<BrushRef, Arc<Brush>>,
     materials: HashMap<BrushRef, Gd<Material>>,
+    /// How strokes are shaded (§3g); the document says which one.
+    looks: LookLibrary,
+    /// Compiled Look shaders by (shader name, double-sided).
+    shaders: HashMap<(String, bool), Gd<Shader>>,
     nodes: HashMap<StrokeId, Gd<MeshInstance3D>>,
     current: Option<LiveStroke>,
     /// Per-update live-stroke costs, recorded only while benchmarking.
@@ -62,6 +67,8 @@ impl INode3D for SketchCanvas {
             doc: Document::new(),
             compiled: HashMap::new(),
             materials: HashMap::new(),
+            looks: LookLibrary::with_builtins(),
+            shaders: HashMap::new(),
             nodes: HashMap::new(),
             current: None,
             timings: None,
@@ -85,6 +92,63 @@ impl SketchCanvas {
     /// The drawn 3D guide was set, removed, or changed by undo/redo or loading.
     #[signal]
     fn guide_changed();
+    /// The Look changed (picked, or a sketch was loaded): apply `look_environment()`.
+    #[signal]
+    fn look_changed();
+
+    // ---- Looks ---------------------------------------------------------------------------
+
+    /// Available Looks in menu order: `[{id, name}]`.
+    #[func]
+    fn looks(&self) -> Array<VarDictionary> {
+        self.looks
+            .iter()
+            .map(|l| {
+                let mut d = VarDictionary::new();
+                d.set("id", l.id.as_str());
+                d.set("name", l.name.as_str());
+                d
+            })
+            .collect()
+    }
+
+    /// The sketch's Look id (the default for sketches without one).
+    #[func]
+    fn look(&self) -> GString {
+        GString::from(self.looks.get_or_default(self.doc.look()).id.as_str())
+    }
+
+    /// Shades every stroke with Look `id` and saves it with the sketch. False if unknown.
+    #[func]
+    fn set_look(&mut self, id: GString) -> bool {
+        let id = id.to_string();
+        if self.looks.get(&id).is_none() {
+            return false;
+        }
+        self.doc.set_look(Some(id));
+        self.refresh_materials();
+        self.signals().look_changed().emit();
+        true
+    }
+
+    /// The Look's lighting: `{background, ambient: Color, ambient_energy, sun_energy: float,
+    /// shadows, ssao: bool}`.
+    #[func]
+    fn look_environment(&self) -> VarDictionary {
+        let e = &self.looks.get_or_default(self.doc.look()).environment;
+        let color = |hex: &str| {
+            let [r, g, b] = airdraw_look::parse_color(hex).unwrap_or([1.0; 3]);
+            Color::from_rgb(r, g, b)
+        };
+        let mut d = VarDictionary::new();
+        d.set("background", color(&e.background));
+        d.set("ambient", color(&e.ambient));
+        d.set("ambient_energy", e.ambient_energy);
+        d.set("sun_energy", e.sun_energy);
+        d.set("shadows", e.shadows);
+        d.set("ssao", e.ssao);
+        d
+    }
 
     // ---- 3D guide ------------------------------------------------------------------------
 
@@ -595,6 +659,7 @@ impl SketchCanvas {
                 Change::Guide => self.signals().guide_changed().emit(),
                 Change::Reset => {
                     self.signals().guide_changed().emit();
+                    self.signals().look_changed().emit();
                     for (_, mut node) in self.nodes.drain() {
                         node.queue_free();
                     }
@@ -639,13 +704,55 @@ impl SketchCanvas {
         compiled
     }
 
+    /// The material for a brush snapshot under the current Look: the Look's shader (its unlit
+    /// variant for unlit brushes; back faces drawn for double-sided ones) with the brush's
+    /// colour, roughness, metallic and emission plus the Look's own parameters as uniforms.
     fn material_for(&mut self, r: BrushRef) -> Gd<Material> {
         if let Some(m) = self.materials.get(&r) {
             return m.clone();
         }
-        let m = godot_material(self.brush_for(r).material());
+        let d = self.brush_for(r).material().clone();
+        let look = self.looks.get_or_default(self.doc.look()).clone();
+        let key = (look.shader_for(d.shading == Shading::Unshaded).to_string(), d.double_sided);
+        let shader = self
+            .shaders
+            .entry(key.clone())
+            .or_insert_with(|| {
+                let mut s = Shader::new_gd();
+                s.set_code(&airdraw_look::shader_code(&key.0, key.1).expect("looks are validated"));
+                s
+            })
+            .clone();
+        let mut m = ShaderMaterial::new_gd();
+        m.set_shader(&shader);
+        let [cr, cg, cb, ca] = d.color;
+        m.set_shader_parameter("albedo", &Color::from_rgba(cr, cg, cb, ca).to_variant());
+        m.set_shader_parameter("roughness", &d.roughness.to_variant());
+        m.set_shader_parameter("metallic", &d.metallic.to_variant());
+        m.set_shader_parameter("emission_energy", &d.emission.to_variant());
+        for (name, value) in &look.params {
+            m.set_shader_parameter(name.as_str(), &value.to_variant());
+        }
+        let m: Gd<Material> = m.upcast();
         self.materials.insert(r, m.clone());
         m
+    }
+
+    /// Re-applies materials to every stroke (after the Look changed).
+    fn refresh_materials(&mut self) {
+        self.materials.clear();
+        let nodes: Vec<(StrokeId, Gd<MeshInstance3D>)> = self.nodes.iter().map(|(k, v)| (*k, v.clone())).collect();
+        for (id, mut node) in nodes {
+            if let Some(brush) = self.doc.stroke(id).map(|s| s.brush) {
+                node.set_material_override(&self.material_for(brush));
+            }
+        }
+        if let Some(r) = self.current.as_ref().map(|s| s.brush_ref) {
+            let m = self.material_for(r);
+            if let Some(s) = &mut self.current {
+                s.set_material(&m);
+            }
+        }
     }
 
     // ---- Brushes -------------------------------------------------------------------------

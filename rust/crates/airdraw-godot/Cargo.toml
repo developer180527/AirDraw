@@ -13,6 +13,7 @@ glam.workspace = true
 airdraw-brush.workspace = true
 airdraw-doc.workspace = true
 airdraw-guide.workspace = true
+airdraw-look.workspace = true
 airdraw-export.workspace = true
 airdraw-ffi.workspace = true
 airdraw-input.workspace = true

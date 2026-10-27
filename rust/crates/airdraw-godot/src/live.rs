@@ -105,6 +105,12 @@ impl LiveStroke {
         Some((self.instance, self.brush_ref, self.points, timing))
     }
 
+    /// Changes the material while drawing (the Look changed mid-stroke).
+    pub fn set_material(&mut self, material: &Gd<Material>) {
+        self.instance.set_material_override(material);
+        self.live_node.set_material_override(material);
+    }
+
     pub fn cancel(mut self) {
         // The live node is a child of the instance and goes with it.
         self.instance.queue_free();

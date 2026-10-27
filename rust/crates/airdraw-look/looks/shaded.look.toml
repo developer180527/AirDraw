@@ -1,0 +1,14 @@
+# Today's look: lit, physically based, brush colours as drawn. Unlit brushes stay unlit.
+schema = 1
+id = "com.airdraw.shaded"
+name = "Shaded"
+shader = "lit"
+unshaded_shader = "flat"
+
+[environment]
+background = "#EDEDE8"
+ambient = "#BFBFCC"
+ambient_energy = 1.0
+sun_energy = 0.8
+shadows = false
+ssao = false
