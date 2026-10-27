@@ -1,0 +1,8 @@
+[package]
+name = "airdraw-guide"
+description = "3D guides: surfaces pen strokes are projected onto (planes, drawn sweeps)."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+glam.workspace = true

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use airdraw_guide::{Guide, Hit, Ray, Sweep, SweepOptions};
 use airdraw_input::{Command, DeviceCaps, InputRouter, PenEvent, PenSample, Routed, RouterConfig, StrokeEvent, ViewEvent};
 use airdraw_platform::{InputSource, MergedInput, Platform, QueueInput, QueueSender};
 use godot::classes::{Camera3D, INode, InputEvent, Node, Os};
@@ -9,8 +10,9 @@ use crate::canvas::{SketchCanvas, input_point};
 use crate::godot_input::GodotInput;
 
 /// Wires platform input to the sketch: platform events → router → canvas / camera signals.
-/// Screen positions are projected onto the guide plane here; the app layer only owns the
-/// camera rig, the guide's placement and keyboard shortcuts.
+/// Screen positions are projected onto the active 3D guide here: the canvas's drawn guide if
+/// there is one, else the preset plane the app places (`guide_normal`, `guide_origin`). The app
+/// layer owns the camera rig, the preset plane and keyboard shortcuts.
 #[derive(GodotClass)]
 #[class(base = Node)]
 pub struct SketchSession {
@@ -26,6 +28,13 @@ pub struct SketchSession {
     /// One finger draws instead of orbiting (devices without a stylus).
     #[export]
     finger_draws: bool,
+    /// The next pen stroke draws a 3D guide instead of ink, then this turns off.
+    #[var]
+    guide_drawing: bool,
+    /// The guide the current stroke started on; it stays on it until the pen lifts.
+    stroke_guide: Option<Guide>,
+    /// Screen positions and camera rays of the guide being drawn.
+    guide_path: Vec<(Vector2, Ray)>,
     platform: Platform,
     /// Feeds the platform's input source with converted Godot events.
     tx: QueueSender,
@@ -54,6 +63,9 @@ impl INode for SketchSession {
             guide_normal: Vector3::FORWARD,
             guide_origin: Vector3::ZERO,
             finger_draws: false,
+            guide_drawing: false,
+            stroke_guide: None,
+            guide_path: Vec::new(),
             platform: Platform::builder(data_root).input(input).build(),
             tx,
             godot_input: GodotInput::default(),
@@ -132,6 +144,12 @@ impl SketchSession {
     /// "squeeze", "doubletap" or "barrelbutton".
     #[signal]
     fn pen_action(name: GString);
+    /// The guide stroke so far, in screen pixels, for a live overlay; empty when it ends.
+    #[signal]
+    fn guide_path_changed(points: PackedVector2Array);
+    /// A guide stroke ended; `created` is false if it was too short to make a guide.
+    #[signal]
+    fn guide_drawn(created: bool);
 
     /// Screen rectangles covered by UI (toolbar, open dialogs). Contacts starting there are
     /// ignored, since native backends see touches the GUI also handles.
@@ -183,12 +201,17 @@ impl SketchSession {
     }
 
     fn stroke(&mut self, e: StrokeEvent) {
+        if self.guide_drawing {
+            self.guide_stroke(e);
+            return;
+        }
         match e {
             // Eraser behaves like the brush until erasing is implemented.
             StrokeEvent::Begin { sample, .. } => {
                 self.cancel_drawing();
                 self.pending_begin = Some(sample);
                 self.last_pressure = 1.0;
+                self.stroke_guide = Some(self.active_guide());
             }
             StrokeEvent::Extend { samples, predicted } => {
                 let mut points = Vec::with_capacity(samples.len() + 1);
@@ -211,6 +234,68 @@ impl SketchSession {
         }
     }
 
+    /// Guide-draw mode: collects the pen path, then turns it into a guide perpendicular to the
+    /// view (Feather's "draw 3D guide").
+    fn guide_stroke(&mut self, e: StrokeEvent) {
+        match e {
+            StrokeEvent::Begin { sample, .. } => {
+                self.guide_path.clear();
+                self.add_guide_point(sample.pos);
+            }
+            StrokeEvent::Extend { samples, .. } => {
+                for s in samples {
+                    self.add_guide_point(s.pos);
+                }
+            }
+            StrokeEvent::End { sample } => {
+                self.add_guide_point(sample.pos);
+                let guide = self.build_guide();
+                self.guide_path.clear();
+                self.signals().guide_path_changed().emit(&PackedVector2Array::new());
+                self.guide_drawing = false;
+                let created = guide.is_some();
+                if let Some(g) = guide {
+                    self.with_canvas(|c| c.set_drawn_guide(g));
+                }
+                self.signals().guide_drawn().emit(created);
+                return;
+            }
+            StrokeEvent::Cancel => self.guide_path.clear(),
+        }
+        let path: PackedVector2Array = self.guide_path.iter().map(|(p, _)| *p).collect();
+        self.signals().guide_path_changed().emit(&path);
+    }
+
+    fn add_guide_point(&mut self, pos: glam::Vec2) {
+        if let Some(ray) = self.ray(pos) {
+            self.guide_path.push((Vector2::new(pos.x, pos.y), ray));
+        }
+    }
+
+    /// A sweep along the camera rays of the drawn path, its curve at the depth where the path
+    /// starts on the current guide (or 5 units ahead if it misses).
+    fn build_guide(&self) -> Option<Guide> {
+        let cam = self.camera.as_ref()?;
+        let b = cam.get_global_transform().basis;
+        let forward = glam::Vec3::new(-b.col_c().x, -b.col_c().y, -b.col_c().z);
+        let rays: Vec<Ray> = self.guide_path.iter().map(|(_, r)| *r).collect();
+        let current = self.active_guide();
+        let anchor = rays
+            .iter()
+            .find_map(|r| current.intersect(*r).map(|h| h.point))
+            .unwrap_or_else(|| rays.first().map_or(glam::Vec3::ZERO, |r| r.origin + r.dir * 5.0));
+        Sweep::from_view(&rays, forward, anchor, SweepOptions::default()).map(Guide::Sweep)
+    }
+
+    /// The guide strokes land on now: the drawn guide, else the preset plane.
+    fn active_guide(&self) -> Guide {
+        let drawn = self.canvas.as_ref().and_then(|c| c.bind().drawn_guide());
+        match drawn {
+            Some(g) => (*g).clone(),
+            None => Guide::Plane { origin: v3(self.guide_origin), normal: v3(self.guide_normal) },
+        }
+    }
+
     fn cancel_drawing(&mut self) {
         self.pending_begin = None;
         if self.drawing {
@@ -219,49 +304,46 @@ impl SketchSession {
         }
     }
 
-    /// Projects samples onto the guide and hands them to the canvas in one batch (one mesh
-    /// rebuild), together with the predicted tail.
+    /// Projects samples onto the stroke's guide and hands them to the canvas in one batch (one
+    /// mesh update), together with the predicted tail. Samples that miss the guide are
+    /// dropped, so a stroke draws only where the guide is.
     fn feed(&mut self, samples: &[PenSample], predicted: &[PenSample]) {
-        let normal = self.guide_normal.normalized();
         let mut points = Vec::with_capacity(samples.len());
         for s in samples {
-            let Some(p) = self.project(s.pos) else { continue };
+            let Some(hit) = self.project(s.pos) else { continue };
             if let Some(pr) = s.pressure {
                 self.last_pressure = pr;
             }
-            points.push((p, self.last_pressure, s.t));
+            points.push((hit, self.last_pressure, s.t));
         }
         let tail: Vec<_> = predicted
             .iter()
             .filter_map(|s| {
-                let p = self.project(s.pos)?;
-                Some(input_point(p, normal, s.pressure.unwrap_or(self.last_pressure), s.t))
+                let hit = self.project(s.pos)?;
+                Some(input_point(gv3(hit.point), gv3(hit.normal), s.pressure.unwrap_or(self.last_pressure), s.t))
             })
             .collect();
         let mut rest = points.as_slice();
         if !self.drawing {
-            let Some((&(p, pressure, t), others)) = rest.split_first() else { return };
-            self.with_canvas(|c| c.begin_stroke(p, normal, pressure, t));
+            let Some((&(hit, pressure, t), others)) = rest.split_first() else { return };
+            self.with_canvas(|c| c.begin_stroke(gv3(hit.point), gv3(hit.normal), pressure, t));
             self.drawing = true;
             rest = others;
         }
-        let batch: Vec<_> = rest.iter().map(|&(p, pr, t)| input_point(p, normal, pr, t)).collect();
+        let batch: Vec<_> = rest.iter().map(|&(h, pr, t)| input_point(gv3(h.point), gv3(h.normal), pr, t)).collect();
         self.with_canvas(|c| c.extend_stroke(&batch, &tail));
     }
 
-    /// Screen position → point on the guide plane, or `None` if the ray misses it.
-    fn project(&self, pos: glam::Vec2) -> Option<Vector3> {
+    /// Screen position → hit on the current stroke's guide, or `None` if the ray misses it.
+    fn project(&self, pos: glam::Vec2) -> Option<Hit> {
+        self.stroke_guide.as_ref()?.intersect(self.ray(pos)?)
+    }
+
+    /// The camera ray through a screen position.
+    fn ray(&self, pos: glam::Vec2) -> Option<Ray> {
         let cam = self.camera.as_ref()?;
         let screen = Vector2::new(pos.x, pos.y);
-        let from = cam.project_ray_origin(screen);
-        let dir = cam.project_ray_normal(screen);
-        let n = self.guide_normal.normalized();
-        let denom = n.dot(dir);
-        if denom.abs() < 1e-6 {
-            return None;
-        }
-        let t = n.dot(self.guide_origin - from) / denom;
-        (t >= 0.0).then(|| from + dir * t)
+        Some(Ray { origin: v3(cam.project_ray_origin(screen)), dir: v3(cam.project_ray_normal(screen)).normalize_or(glam::Vec3::NEG_Z) })
     }
 
     fn with_canvas(&mut self, f: impl FnOnce(&mut SketchCanvas)) {
@@ -269,4 +351,12 @@ impl SketchSession {
             f(&mut canvas.bind_mut());
         }
     }
+}
+
+fn v3(v: Vector3) -> glam::Vec3 {
+    glam::Vec3::new(v.x, v.y, v.z)
+}
+
+fn gv3(v: glam::Vec3) -> Vector3 {
+    Vector3::new(v.x, v.y, v.z)
 }

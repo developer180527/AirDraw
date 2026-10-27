@@ -213,8 +213,35 @@ func _ready() -> void:
 		var id: String = "com.airdraw." + ext
 		var r: Dictionary = canvas.export_document(id, ProjectSettings.globalize_path("user://exports/clean." + ext), {})
 		print("SMOKE clean_", ext, " error='", r.error, "'")
-	# Editor layouts: landscape, portrait (bottom sheet), left-handed.
+	# 3D guide (Feather-style): from the front, a horizontal guide stroke becomes a sheet
+	# running away from the viewer; from the top, a stroke drawn across it lands at real depth.
 	var shell = main.get("toolbar")
+	var guide_before: int = canvas.stroke_count()
+	await _tap(shell.find_button("Draw guide"))
+	var mode_on: bool = main.get("session").guide_drawing
+	await _stroke(center, func(t: float) -> Vector2: return Vector2(-250.0 + 500.0 * t, 0.0))
+	print("SMOKE guide mode_on=", mode_on, " drawn=", canvas.has_drawn_guide(), " mode_after=", main.get("session").guide_drawing,
+		" button_after=", shell.find_button("Draw guide").button_pressed, " strokes_unchanged=", canvas.stroke_count() == guide_before)
+	rig.set_view("top")
+	await get_tree().create_timer(0.5).timeout
+	await _stroke(center, func(t: float) -> Vector2: return Vector2(0.0, -150.0 + 300.0 * t))
+	var depth: float = canvas.strokes_aabb().size.z
+	print("SMOKE guide stroke_added=", canvas.stroke_count() == guide_before + 1, " drawn_on_guide_depth_ok=", depth > 0.5)
+	await _shot("user://guide_top.png")
+	rig.set_view("3d")
+	await get_tree().create_timer(0.5).timeout
+	await _shot("user://guide_3d.png")
+	_key(KEY_Z, true)
+	_key(KEY_Z, true)
+	var undone: bool = not canvas.has_drawn_guide()
+	_key(KEY_Z, true, true)
+	print("SMOKE guide undo_removes=", undone, " redo_restores=", canvas.has_drawn_guide())
+	main.get("guides").set_preset(0)
+	print("SMOKE guide preset_replaces=", not canvas.has_drawn_guide())
+	rig.set_view("front")
+	await get_tree().create_timer(0.5).timeout
+
+	# Editor layouts: landscape, portrait (bottom sheet), left-handed.
 	await _shot("user://layout_landscape.png")
 	var win := get_window()
 	var original_size := win.size

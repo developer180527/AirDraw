@@ -12,6 +12,7 @@ signal action(name: String)  ## gallery, export, undo, redo, edit_brush, import_
 signal plane_requested(index: int)  ## GuideController preset index (3 = view-aligned)
 signal guide_offset_changed(offset: float)
 signal view_requested(view: String)  ## front, side, top, 3d
+signal guide_draw_toggled(on: bool)  ## the next pen stroke draws a 3D guide
 signal layout_changed
 
 const SETTINGS := "user://settings.cfg"
@@ -19,7 +20,7 @@ const PANELS := ["Brushes", "Guide", "Layers"]
 const TOOLS := [
 	["brush", "Brush", true], ["eraser", "Eraser", false], ["select", "Select", false],
 	[],
-	["plane", "Plane guide", true], ["sphere", "Sphere guide", false], ["cylinder", "Cylinder guide", false],
+	["guide", "Draw guide", true], ["sphere", "Sphere guide", false], ["cylinder", "Cylinder guide", false],
 	[],
 	["symmetry", "Symmetry", false], ["snap", "Snap to strokes", false],
 ]
@@ -60,6 +61,8 @@ var _plane_buttons: Array[Button] = []
 var _plane_group := ButtonGroup.new()
 var _offset_slider: HSlider
 var _offset_label: Label
+var _drawn_row: HBoxContainer
+var _guide_path: Line2D
 
 
 func setup(p_canvas: SketchCanvas) -> void:
@@ -82,6 +85,12 @@ func setup(p_canvas: SketchCanvas) -> void:
 	_build_views()
 	_build_toast()
 	_build_menu()
+	_guide_path = Line2D.new()
+	_guide_path.default_color = Color(1.0, 0.55, 0.1)
+	_guide_path.joint_mode = Line2D.LINE_JOINT_ROUND
+	_guide_path.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	_guide_path.end_cap_mode = Line2D.LINE_CAP_ROUND
+	_root.add_child(_guide_path)
 
 	canvas.brushes_changed.connect(_rebuild_brushes)
 	canvas.brush_changed.connect(func(_id: String) -> void: _sync_brushes())
@@ -120,9 +129,26 @@ func set_title(text: String, dirty: bool) -> void:
 	_fit_title()
 
 
+## Highlights the active preset plane; `index` -1 when a drawn guide is active instead.
 func show_plane(index: int) -> void:
 	for i in _plane_buttons.size():
 		_plane_buttons[i].set_pressed_no_signal(i == index)
+
+
+func show_drawn_guide(on: bool) -> void:
+	_drawn_row.visible = on
+	_offset_slider.editable = not on
+
+
+## Syncs the rail's Draw guide button (it turns off after one guide stroke).
+func set_guide_drawing(on: bool) -> void:
+	find_button("Draw guide").set_pressed_no_signal(on)
+
+
+## The guide stroke being drawn, in screen pixels (empty clears it).
+func show_guide_path(points: PackedVector2Array) -> void:
+	_guide_path.points = points
+	_guide_path.width = 3 * _s
 
 
 func set_guide_offset(offset: float) -> void:
@@ -205,9 +231,11 @@ func _build_rail() -> void:
 		b.tooltip_text = t[1] if t[2] else "%s — coming soon" % t[1]
 		if t[0] in ["brush", "eraser", "select"]:
 			b.button_group = tool_group
-		elif t[0] in ["plane", "sphere", "cylinder"]:
+		elif t[0] in ["sphere", "cylinder"]:
 			b.button_group = guide_group
-		b.button_pressed = t[0] in ["brush", "plane"]
+		b.button_pressed = t[0] == "brush"
+		if t[0] == "guide":
+			b.toggled.connect(guide_draw_toggled.emit)
 		col.add_child(b)
 
 
@@ -225,6 +253,14 @@ func _build_bodies() -> void:
 
 	# Guide
 	var guide := VBoxContainer.new()
+	_drawn_row = HBoxContainer.new()
+	var drawn_label := Label.new()
+	drawn_label.text = "Drawn guide"
+	drawn_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_drawn_row.add_child(drawn_label)
+	_drawn_row.add_child(_button("Remove guide", "", "Remove", action.emit.bind("remove_guide")))
+	_drawn_row.visible = false
+	guide.add_child(_drawn_row)
 	var planes := HBoxContainer.new()
 	for i in GUIDE_PLANES.size():
 		var b := _button(GUIDE_PLANES[i], "", GUIDE_PLANES[i], plane_requested.emit.bind(i))

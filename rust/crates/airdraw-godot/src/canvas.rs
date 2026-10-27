@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use airdraw_brush::{Brush, BrushLibrary, BrushSource, InputPoint, MaterialDesc, MeshBuffers, Shading, StageRegistry};
 use airdraw_doc::{BrushRef, Change, Document, Stroke, StrokeId, read_thumbnail};
+use airdraw_guide::Guide;
 use airdraw_export::{ExporterRegistry, FolderSink, SceneOptions, build_scene};
 use godot::classes::base_material_3d::{CullMode, Feature, ShadingMode};
 use godot::classes::mesh::PrimitiveType;
@@ -81,6 +82,50 @@ impl SketchCanvas {
     /// Brushes were added or replaced (e.g. user brushes loaded).
     #[signal]
     fn brushes_changed();
+    /// The drawn 3D guide was set, removed, or changed by undo/redo or loading.
+    #[signal]
+    fn guide_changed();
+
+    // ---- 3D guide ------------------------------------------------------------------------
+
+    /// True while a drawn guide is active (otherwise strokes use the plane presets).
+    #[func]
+    fn has_drawn_guide(&self) -> bool {
+        self.doc.guide().is_some()
+    }
+
+    /// Removes the drawn guide (undoable); strokes go back to the plane presets.
+    #[func]
+    fn remove_guide(&mut self) {
+        let changes = self.doc.set_guide(None);
+        self.apply(changes);
+    }
+
+    /// The drawn guide's display mesh (UVs in world units for the grid shader), or null.
+    #[func]
+    fn guide_mesh(&self) -> Option<Gd<ArrayMesh>> {
+        let Some(Guide::Sweep(sweep)) = self.doc.guide().map(|g| &**g) else { return None };
+        Some(crate::live::guide_mesh(&sweep.mesh(8)))
+    }
+
+    /// The drawn guide's start edge (two points), or empty.
+    #[func]
+    fn guide_start_line(&self) -> PackedVector3Array {
+        match self.doc.guide().map(|g| &**g) {
+            Some(Guide::Sweep(sweep)) => sweep.start_line().iter().map(|v| Vector3::new(v.x, v.y, v.z)).collect(),
+            _ => PackedVector3Array::new(),
+        }
+    }
+
+    /// Makes `guide` the active guide (undoable).
+    pub(crate) fn set_drawn_guide(&mut self, guide: Guide) {
+        let changes = self.doc.set_guide(Some(guide));
+        self.apply(changes);
+    }
+
+    pub(crate) fn drawn_guide(&self) -> Option<Arc<Guide>> {
+        self.doc.guide().cloned()
+    }
 
     // ---- Strokes -------------------------------------------------------------------------
 
@@ -547,7 +592,9 @@ impl SketchCanvas {
                         set_mesh(&mut node, &self.brush_for(stroke.brush).build(&stroke.points));
                     }
                 }
+                Change::Guide => self.signals().guide_changed().emit(),
                 Change::Reset => {
+                    self.signals().guide_changed().emit();
                     for (_, mut node) in self.nodes.drain() {
                         node.queue_free();
                     }

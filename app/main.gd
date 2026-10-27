@@ -77,7 +77,8 @@ func _ready() -> void:
 	guides = GuideController.new(session)
 	guides.changed.connect(func() -> void:
 		if toolbar:
-			toolbar.show_plane(guides.preset)
+			toolbar.show_plane(-1 if guides.has_drawn() else guides.preset)
+			toolbar.show_drawn_guide(guides.has_drawn())
 			toolbar.set_guide_offset(guides.offset())
 		_update_hud())
 	add_child(guides)
@@ -99,9 +100,15 @@ func _ready() -> void:
 		else:
 			guides.set_preset(i))
 	toolbar.guide_offset_changed.connect(guides.set_offset)
+	toolbar.guide_draw_toggled.connect(_set_guide_drawing)
+	session.guide_path_changed.connect(toolbar.show_guide_path)
+	session.guide_drawn.connect(func(created: bool) -> void:
+		toolbar.set_guide_drawing(false)
+		_set_status("Guide ready. Orbit to see it, then draw on it." if created else "Draw a longer line to make a guide."))
 	toolbar.view_requested.connect(rig.set_view)
 	toolbar.action.connect(_file_action)
 	toolbar.setup(canvas)
+	guides.attach(canvas)
 	export_dialog = ExportDialog.new()
 	export_dialog.finished.connect(_set_status)
 	export_dialog.visibility_changed.connect(_update_ui_regions)
@@ -245,6 +252,16 @@ func _handle_key(event: InputEventKey) -> void:
 			guides.reset_origin()
 		KEY_B:
 			_cycle_brush(-1 if event.shift_pressed else 1)
+		KEY_G:
+			_set_guide_drawing(not session.guide_drawing)
+
+
+## Guide-draw mode: the next pen stroke becomes a 3D guide instead of ink.
+func _set_guide_drawing(on: bool) -> void:
+	session.guide_drawing = on
+	toolbar.set_guide_drawing(on)
+	if on:
+		_set_status("Draw a line: it becomes a surface you can draw on.")
 
 
 func _file_action(action: String) -> void:
@@ -258,6 +275,9 @@ func _file_action(action: String) -> void:
 		"clear":
 			canvas.clear()
 			_set_status("Cleared — Undo brings it back")
+		"remove_guide":
+			canvas.remove_guide()
+			_set_status("Guide removed — Undo brings it back")
 		"export":
 			export_dialog.open(canvas, toolbar.popup_theme())
 		"edit_brush":

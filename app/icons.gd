@@ -12,6 +12,7 @@ const _PATHS := {
 	"eraser": '<path d="M7 20h13"/><path d="M4 15 14 5l5 5-8 8H7z"/><path d="m9 10 5 5"/>',
 	"select": '<path d="M4 4h4M12 4h4M20 4v4M20 12v4M20 20h-4M12 20H8M4 20v-4M4 12V8" />',
 	"plane": '<path d="M3 16 9 8h12l-6 8z"/>',
+	"guide": '<path d="M4 17c3-7 7-9 16-9"/><path d="M4 17v3M20 8v3" stroke-dasharray="1.5 1.5"/><path d="M4 20c3-7 7-9 16-9" opacity="0.5"/>',
 	"sphere": '<circle cx="12" cy="12" r="8"/><ellipse cx="12" cy="12" rx="8" ry="3"/>',
 	"cylinder": '<ellipse cx="12" cy="6" rx="6" ry="2.5"/><path d="M6 6v12a6 2.5 0 0 0 12 0V6"/>',
 	"symmetry": '<path d="M12 3v18" stroke-dasharray="2 2"/><path d="M9 7 4 12l5 5zM15 7l5 5-5 5z"/>',

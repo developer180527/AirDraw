@@ -17,6 +17,7 @@ airdraw-input = { path = "crates/airdraw-input" }
 airdraw-platform = { path = "crates/airdraw-platform" }
 airdraw-brush = { path = "crates/airdraw-brush" }
 airdraw-doc = { path = "crates/airdraw-doc" }
+airdraw-guide = { path = "crates/airdraw-guide" }
 airdraw-export = { path = "crates/airdraw-export" }
 airdraw-ios = { path = "crates/airdraw-ios" }
 airdraw-ffi = { path = "crates/airdraw-ffi" }

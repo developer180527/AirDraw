@@ -16,6 +16,7 @@ name = "airdraw-doc"
 version = "0.1.0"
 dependencies = [
  "airdraw-brush",
+ "airdraw-guide",
  "glam",
  "serde",
  "toml",
@@ -50,11 +51,19 @@ dependencies = [
  "airdraw-doc",
  "airdraw-export",
  "airdraw-ffi",
+ "airdraw-guide",
  "airdraw-input",
  "airdraw-ios",
  "airdraw-platform",
  "glam",
  "godot",
+]
+
+[[package]]
+name = "airdraw-guide"
+version = "0.1.0"
+dependencies = [
+ "glam",
 ]
 
 [[package]]

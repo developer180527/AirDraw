@@ -171,6 +171,21 @@ fn vertex_range(indices: &[i32]) -> Range<usize> {
     lo as usize..hi as usize + 1
 }
 
+/// A guide's display mesh, with UVs for the grid shader. Guides are two-sided, so winding
+/// doesn't matter.
+pub(crate) fn guide_mesh(m: &airdraw_guide::GuideMesh) -> Gd<ArrayMesh> {
+    let v3 = |v: &glam::Vec3| Vector3::new(v.x, v.y, v.z);
+    let mut arrays = VarArray::new();
+    arrays.resize(ArrayType::MAX.ord() as usize, &Variant::nil());
+    arrays.set(ArrayType::VERTEX.ord() as usize, &m.positions.iter().map(v3).collect::<PackedVector3Array>().to_variant());
+    arrays.set(ArrayType::NORMAL.ord() as usize, &m.normals.iter().map(v3).collect::<PackedVector3Array>().to_variant());
+    arrays.set(ArrayType::TEX_UV.ord() as usize, &m.uvs.iter().map(|u| Vector2::new(u.x, u.y)).collect::<PackedVector2Array>().to_variant());
+    arrays.set(ArrayType::INDEX.ord() as usize, &m.indices.iter().map(|&i| i as i32).collect::<PackedInt32Array>().to_variant());
+    let mut mesh = ArrayMesh::new_gd();
+    mesh.add_surface_from_arrays(PrimitiveType::TRIANGLES, &arrays);
+    mesh
+}
+
 /// Surface arrays for a whole mesh.
 pub(crate) fn mesh_arrays(m: &MeshBuffers) -> VarArray {
     surface_arrays(m, 0..m.positions.len(), None, &[&m.indices])

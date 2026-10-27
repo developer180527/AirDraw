@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use airdraw_brush::{BrushDef, InputPoint};
+use airdraw_guide::Guide;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -45,6 +46,8 @@ pub enum Change {
     Updated(StrokeId),
     /// Everything changed (document loaded or replaced): rebuild all.
     Reset,
+    /// The active 3D guide was set, replaced or removed.
+    Guide,
 }
 
 /// A reversible edit. Holds what's needed to apply and revert it.
@@ -54,6 +57,7 @@ enum Op {
     /// Strokes with their indices, ascending.
     Remove { items: Vec<(usize, Stroke)> },
     SetBrush { changes: Vec<(StrokeId, BrushRef, BrushRef)> },
+    SetGuide { before: Option<Arc<Guide>>, after: Option<Arc<Guide>> },
 }
 
 const MAX_UNDO: usize = 1000;
@@ -71,6 +75,8 @@ pub struct Document {
     dirty: bool,
     /// PNG preview stored in the file for OS thumbnailers and the app's Recents.
     pub(crate) thumbnail: Option<Arc<[u8]>>,
+    /// The drawn 3D guide strokes land on; `None` means the app's plane presets.
+    guide: Option<Arc<Guide>>,
 }
 
 impl Default for Document {
@@ -91,6 +97,7 @@ impl Document {
             redo: Vec::new(),
             dirty: false,
             thumbnail: None,
+            guide: None,
         }
     }
 
@@ -103,7 +110,18 @@ impl Document {
     ) -> Self {
         let next_stroke = strokes.iter().map(|s| s.id.0 + 1).max().unwrap_or(1);
         let active_layer = layers.first().map_or(LayerId(1), |l| l.id);
-        Self { layers, strokes, brushes, next_stroke, active_layer, undo: Vec::new(), redo: Vec::new(), dirty: false, thumbnail }
+        Self {
+            layers,
+            strokes,
+            brushes,
+            next_stroke,
+            active_layer,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            dirty: false,
+            thumbnail,
+            guide: None,
+        }
     }
 
     // ---- Queries -----------------------------------------------------------------------
@@ -135,6 +153,11 @@ impl Document {
     /// True if there are edits since the last load/save.
     pub fn is_dirty(&self) -> bool {
         self.dirty
+    }
+
+    /// The active drawn guide, if any (otherwise strokes use the app's plane presets).
+    pub fn guide(&self) -> Option<&Arc<Guide>> {
+        self.guide.as_ref()
     }
 
     /// The embedded PNG preview, if any.
@@ -214,6 +237,14 @@ impl Document {
         self.commit(Op::SetBrush { changes })
     }
 
+    /// Replaces the active guide (`None` removes it). Undoable, like strokes.
+    pub fn set_guide(&mut self, guide: Option<Guide>) -> Vec<Change> {
+        if guide.is_none() && self.guide.is_none() {
+            return Vec::new();
+        }
+        self.commit(Op::SetGuide { before: self.guide.clone(), after: guide.map(Arc::new) })
+    }
+
     pub fn undo(&mut self) -> Vec<Change> {
         let Some(op) = self.undo.pop() else { return Vec::new() };
         let changes = self.revert(&op);
@@ -255,6 +286,10 @@ impl Document {
                 items.iter().map(|(_, s)| Change::Removed(s.id)).collect()
             }
             Op::SetBrush { changes } => self.set_refs(changes.iter().map(|&(id, _, new)| (id, new))),
+            Op::SetGuide { after, .. } => {
+                self.guide = after.clone();
+                vec![Change::Guide]
+            }
         }
     }
 
@@ -271,6 +306,10 @@ impl Document {
                 items.iter().map(|(_, s)| Change::Added(s.id)).collect()
             }
             Op::SetBrush { changes } => self.set_refs(changes.iter().map(|&(id, old, _)| (id, old))),
+            Op::SetGuide { before, .. } => {
+                self.guide = before.clone();
+                vec![Change::Guide]
+            }
         }
     }
 
@@ -319,6 +358,21 @@ pub(crate) mod tests {
         assert_eq!(d.strokes().len(), 1);
         assert_eq!(d.redo(), vec![Change::Added(b2)]);
         assert_eq!(d.strokes().iter().map(|s| s.id).collect::<Vec<_>>(), vec![a, b2]);
+    }
+
+    #[test]
+    fn guide_set_remove_undo() {
+        let mut d = Document::new();
+        assert!(d.set_guide(None).is_empty(), "removing nothing is no edit");
+        let g = Guide::Plane { origin: Vec3::ZERO, normal: Vec3::Y };
+        assert_eq!(d.set_guide(Some(g.clone())), vec![Change::Guide]);
+        assert_eq!(d.guide().map(|g| (**g).clone()), Some(g.clone()));
+        assert_eq!(d.set_guide(None), vec![Change::Guide]);
+        assert!(d.guide().is_none());
+        assert_eq!(d.undo(), vec![Change::Guide]);
+        assert_eq!(d.guide().map(|g| (**g).clone()), Some(g));
+        d.undo();
+        assert!(d.guide().is_none() && !d.can_undo());
     }
 
     #[test]
