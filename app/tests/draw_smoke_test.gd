@@ -106,6 +106,23 @@ func _ready() -> void:
 	canvas.new_document()
 	print("SMOKE after_new=", canvas.stroke_count())
 	print("SMOKE load_error='", canvas.load_document(path), "' strokes=", canvas.stroke_count(), " dirty=", canvas.is_dirty())
+	# Undo history is saved with the sketch: clear, save, reopen, then undo brings the
+	# strokes back (from the file) and redo clears them again.
+	var before_clear: int = canvas.stroke_count()
+	canvas.clear()
+	var history_path := ProjectSettings.globalize_path("user://test_documents/history.airdraw")
+	canvas.save_document(history_path)
+	canvas.new_document()
+	canvas.load_document(history_path)
+	var reopened_empty: bool = canvas.stroke_count() == 0 and canvas.can_undo() and not canvas.is_dirty()
+	canvas.undo()
+	var restored: int = canvas.stroke_count()
+	canvas.redo()
+	var cleared_again: bool = canvas.stroke_count() == 0
+	canvas.undo()
+	print("SMOKE history reopened_empty=", reopened_empty, " undo_restores=", restored == before_clear, " redo_clears=", cleared_again,
+		" meshes=", canvas.get_children().filter(func(c): return c is MeshInstance3D and c.visible).size() >= before_clear)
+	canvas.load_document(path)
 	# Toolbar by touch: tap the Glow brush and Undo buttons.
 	var bar = main.get("toolbar")
 	print("SMOKE glow_button=", bar.find_button("test.glow") != null)
@@ -261,7 +278,7 @@ func _ready() -> void:
 	var cleared: bool = not canvas.has_drawn_guide() and not main.get("guides")._drawn.visible
 	canvas.load_document(guide_path)
 	print("SMOKE guide new_clears=", cleared, " reloaded=", canvas.has_drawn_guide(), " shown=", main.get("guides")._drawn.visible,
-		" same_shape=", canvas.guide_start_line() == guide_line, " not_undoable=", not canvas.can_undo())
+		" same_shape=", canvas.guide_start_line() == guide_line, " not_dirty=", not canvas.is_dirty())
 	# Opacity: the Guide bar slider sets it on the guide's material. It's a device setting:
 	# it never dirties the sketch and survives switching sketches.
 	main.set_tool("guide")

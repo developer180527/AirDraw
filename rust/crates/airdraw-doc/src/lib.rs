@@ -5,6 +5,7 @@
 pub mod bench;
 mod document;
 mod file;
+mod history;
 mod strokes;
 pub mod recents;
 

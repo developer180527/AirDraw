@@ -60,7 +60,9 @@ Rust crates:
 - **Brushes:** 4 built-ins, brush editor with live preview and pressure-curve editor,
   save / save as new / delete / share / import (`.brush.toml`).
 - **Documents:** home screen with Recents (thumbnails), + New, Open…, autosave (15 s, on
-  background, before quit, when switching sketches), undo/redo, re-brush strokes.
+  background, before quit, when switching sketches; only sketches that were edited, so
+  viewing never changes a file), undo/redo saved with the sketch (deleted strokes can be
+  brought back after reopening), re-brush strokes.
   Sketches are ordinary files the OS manages: `Files › On My iPad › AirDraw › Sketches` on
   iPad, `~/Documents/AirDraw/Sketches` on macOS.
 - **Export:** 9 built-in formats plus plugins; outputs verified by Apple Model I/O (OBJ,

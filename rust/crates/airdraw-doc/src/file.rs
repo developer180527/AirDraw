@@ -50,7 +50,7 @@ use airdraw_pack::{CodecId, Codecs, PackError, ReadLimits, Section, SectionId, W
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
-use crate::document::{BrushRef, Document, Layer, LayerId, Stroke, StrokeId};
+use crate::document::{BrushRef, Document, Layer, LayerId, Op, Stroke, StrokeId};
 
 pub const EXTENSION: &str = "airdraw";
 const MAGIC: &[u8; 4] = b"ADRW";
@@ -60,6 +60,7 @@ pub const FORMAT_VERSION: u16 = 4;
 const SECTIONS_SINCE: u16 = 4;
 const META: SectionId = SectionId(*b"META");
 const STRK: SectionId = SectionId(*b"STRK");
+const HIST: SectionId = SectionId(*b"HIST");
 /// Codec for new files. Reading accepts every codec in [`codecs`], whatever this says.
 const WRITE_CODEC: CodecId = CodecId::ZSTD;
 /// First format with an embedded thumbnail.
@@ -124,11 +125,14 @@ fn codecs() -> &'static Codecs {
 pub struct SaveOptions {
     /// `Fast` for saves and autosaves, `Max` for copies meant to be shared.
     pub level: Level,
+    /// Include undo/redo history (within its size cap). Off for "Save a Copy Without
+    /// History": deleted strokes are then gone from the file.
+    pub history: bool,
 }
 
 impl Default for SaveOptions {
     fn default() -> Self {
-        Self { level: Level::Fast }
+        Self { level: Level::Fast, history: true }
     }
 }
 
@@ -170,13 +174,13 @@ struct Content<'a> {
 /// guide crate stays free of file-format concerns.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
-enum GuideDef {
+pub(crate) enum GuideDef {
     Plane { origin: [f32; 3], normal: [f32; 3] },
     Sweep { near: f32, far: f32, profile: Vec<[f32; 3]>, dirs: Vec<[f32; 3]> },
 }
 
 impl GuideDef {
-    fn new(guide: &Guide) -> Self {
+    pub(crate) fn new(guide: &Guide) -> Self {
         let arr = |v: &[Vec3]| v.iter().map(|p| p.to_array()).collect();
         match guide {
             Guide::Plane { origin, normal } => GuideDef::Plane { origin: origin.to_array(), normal: normal.to_array() },
@@ -184,7 +188,7 @@ impl GuideDef {
         }
     }
 
-    fn into_guide(self) -> Result<Guide, DocError> {
+    pub(crate) fn into_guide(self) -> Result<Guide, DocError> {
         let bad = |why: &str| DocError::Corrupt(format!("guide: {why}"));
         let finite = |v: &[[f32; 3]]| v.iter().flatten().all(|x| x.is_finite());
         match self {
@@ -215,12 +219,19 @@ impl Document {
     }
 
     pub fn to_bytes_with(&self, opts: SaveOptions) -> Vec<u8> {
-        let (brushes, remap) = self.used_brushes();
-        let strokes = crate::strokes::encode(&self.strokes, |s| remap[s.brush.0 as usize].unwrap());
-        let hash = content_hash(&self.content_toml(&brushes), &strokes);
+        let (undo_from, redo_from) =
+            if opts.history { crate::history::kept(&self.undo, &self.redo, &self.strokes) } else { (self.undo.len(), self.redo.len()) };
+        let (undo, redo) = (&self.undo[undo_from..], &self.redo[redo_from..]);
+        let (brushes, remap, live) = self.used_brushes(undo.iter().chain(redo).flat_map(Op::brushes));
+        let file_brush = |r: BrushRef| remap[r.0 as usize].unwrap();
+        let strokes = crate::strokes::encode(&self.strokes, |s| file_brush(s.brush));
+        let hash = content_hash(&self.content_toml(&brushes[..live]), &strokes);
         let meta = self.meta_toml(brushes, Some(hash));
         let mut w = self.file_head(FORMAT_VERSION);
-        let sections = [Section { id: META, required: true, data: meta.into_bytes() }, Section { id: STRK, required: true, data: strokes }];
+        let mut sections = vec![Section { id: META, required: true, data: meta.into_bytes() }, Section { id: STRK, required: true, data: strokes }];
+        if !undo.is_empty() || !redo.is_empty() {
+            sections.push(Section { id: HIST, required: false, data: crate::history::encode(undo, redo, &self.strokes, &file_brush) });
+        }
         airdraw_pack::write(&mut w, &sections, codecs(), WriteOptions { codec: WRITE_CODEC, level: opts.level })
             .expect("the write codec is registered and in-memory compression doesn't fail");
         w
@@ -230,7 +241,7 @@ impl Document {
     /// size comparisons; the app writes the current format.
     #[doc(hidden)]
     pub fn to_bytes_format3(&self) -> Vec<u8> {
-        let (brushes, remap) = self.used_brushes();
+        let (brushes, remap, _) = self.used_brushes(std::iter::empty());
         let meta = self.meta_toml(brushes, None);
         let mut w = self.file_head(3);
         put_u32(&mut w, meta.len() as u32);
@@ -248,23 +259,30 @@ impl Document {
     /// as they're saved. Not the thumbnail (it depends on the GPU), the app version, the
     /// content id, history, or compression: two files with the same hash hold the same model.
     pub fn content_hash(&self) -> String {
-        let (brushes, remap) = self.used_brushes();
+        let (brushes, remap, _) = self.used_brushes(std::iter::empty());
         content_hash(&self.content_toml(&brushes), &crate::strokes::encode(&self.strokes, |s| remap[s.brush.0 as usize].unwrap()))
     }
 
-    /// The brush snapshots strokes use, renumbered in first-use order, and each snapshot's
-    /// new index.
-    fn used_brushes(&self) -> (Vec<BrushDef>, Vec<Option<u32>>) {
-        let mut remap: Vec<Option<u32>> = vec![None; self.brushes.len()];
-        let mut brushes = Vec::new();
-        for s in &self.strokes {
-            let slot = &mut remap[s.brush.0 as usize];
-            if slot.is_none() {
-                *slot = Some(brushes.len() as u32);
-                brushes.push(self.brushes[s.brush.0 as usize].clone());
+    /// The brush snapshots the strokes use, then those only `history` uses, each in
+    /// first-use order; each snapshot's new index; and how many the strokes use. Live
+    /// strokes' numbering never depends on history, so neither does the content hash.
+    fn used_brushes(&self, history: impl Iterator<Item = BrushRef>) -> (Vec<BrushDef>, Vec<Option<u32>>, usize) {
+        fn number(r: BrushRef, remap: &mut [Option<u32>], order: &mut Vec<usize>) {
+            if remap[r.0 as usize].is_none() {
+                remap[r.0 as usize] = Some(order.len() as u32);
+                order.push(r.0 as usize);
             }
         }
-        (brushes, remap)
+        let mut remap: Vec<Option<u32>> = vec![None; self.brushes.len()];
+        let mut order = Vec::new();
+        for s in &self.strokes {
+            number(s.brush, &mut remap, &mut order);
+        }
+        let live = order.len();
+        for r in history {
+            number(r, &mut remap, &mut order);
+        }
+        (order.iter().map(|&i| self.brushes[i].clone()).collect(), remap, live)
     }
 
     fn content_toml(&self, brushes: &[BrushDef]) -> String {
@@ -306,7 +324,7 @@ impl Document {
         if version > FORMAT_VERSION {
             return Err(DocError::NewerVersion(version));
         }
-        let (meta, strokes, thumbnail) = if version >= SECTIONS_SINCE { read_sections(bytes)? } else { read_format3(bytes, version)? };
+        let (meta, strokes, thumbnail, history) = if version >= SECTIONS_SINCE { read_sections(bytes)? } else { read_format3(bytes, version)? };
         for s in &strokes {
             if s.brush.0 as usize >= meta.brushes.len() {
                 return Err(DocError::Corrupt(format!("stroke {} uses missing brush {}", s.id.0, s.brush.0)));
@@ -323,7 +341,13 @@ impl Document {
         // (a Look from a newer app), else the default.
         let look = meta.look_def.filter(|l| l.validate().is_ok()).or_else(|| LookLibrary::with_builtins().get(meta.look.as_deref()?).cloned());
         let content_id = meta.content_id.filter(|id| valid_content_id(id)).unwrap_or_else(|| blake3::hash(bytes).to_hex()[..32].to_string());
-        Ok(Document::from_parts(meta.layers, strokes, meta.brushes, thumbnail, look, guide, content_id))
+        let brush_count = meta.brushes.len();
+        let mut doc = Document::from_parts(meta.layers, strokes, meta.brushes, thumbnail, look, guide, content_id);
+        // History is optional: if it doesn't fit the strokes, the sketch opens without it.
+        if let Some(Ok((undo, redo))) = history.map(|h| crate::history::decode(&h, &doc.strokes, brush_count)) {
+            doc.set_history(undo, redo);
+        }
+        Ok(doc)
     }
 
     /// Writes to a temporary file first and renames it over `path`, so a crash or full disk
@@ -361,7 +385,8 @@ fn valid_content_id(id: &str) -> bool {
 }
 
 type Thumbnail = Option<Arc<[u8]>>;
-type Parts = (Meta, Vec<Stroke>, Thumbnail);
+/// Metadata, strokes, thumbnail and the raw `HIST` section, if any.
+type Parts = (Meta, Vec<Stroke>, Thumbnail, Option<Vec<u8>>);
 
 /// Reads the thumbnail at offset 8 (format 2+); returns it and where the rest starts.
 fn read_head_thumbnail(bytes: &[u8]) -> Result<(Thumbnail, usize), DocError> {
@@ -390,7 +415,8 @@ fn read_sections(bytes: &[u8]) -> Result<Parts, DocError> {
     let meta = std::str::from_utf8(section(META)?).map_err(|_| DocError::Corrupt("metadata is not UTF-8".into()))?;
     let meta: Meta = toml::from_str(meta).map_err(|e| DocError::Corrupt(format!("metadata: {e}")))?;
     let strokes = crate::strokes::decode(section(STRK)?)?;
-    Ok((meta, strokes, thumbnail))
+    let history = decoded.get(HIST).map(|s| s.data.clone());
+    Ok((meta, strokes, thumbnail, history))
 }
 
 fn read_format3(bytes: &[u8], version: u16) -> Result<Parts, DocError> {
@@ -412,7 +438,7 @@ fn read_format3(bytes: &[u8], version: u16) -> Result<Parts, DocError> {
     if r.pos != body.len() || u32::from_le_bytes(sum.try_into().unwrap()) != adler32(body) {
         return Err(DocError::Corrupt("checksum mismatch".into()));
     }
-    Ok((meta, strokes, thumbnail))
+    Ok((meta, strokes, thumbnail, None))
 }
 
 /// Reads only the embedded PNG preview from the start of a file, without loading strokes.
@@ -607,7 +633,7 @@ mod tests {
         assert_eq!(loaded.strokes(), d.strokes());
         assert_eq!(loaded.layers(), d.layers());
         assert_eq!(loaded.brush_def(BrushRef(1)), d.brush_def(BrushRef(1)));
-        assert!(!loaded.is_dirty() && !loaded.can_undo());
+        assert!(!loaded.is_dirty());
     }
 
     #[test]
@@ -641,14 +667,14 @@ mod tests {
     fn format4_is_compressed_sections_and_round_trips_at_every_level() {
         let d = sample_doc();
         for level in [Level::Fast, Level::Default, Level::Max] {
-            let bytes = d.to_bytes_with(SaveOptions { level });
+            let bytes = d.to_bytes_with(SaveOptions { level, ..Default::default() });
             assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 4);
             let back = Document::from_bytes(&bytes).unwrap();
             assert_eq!(back.strokes(), d.strokes());
             assert_eq!(back.layers(), d.layers());
         }
         let ids: Vec<_> = sections(&d.to_bytes()).sections.iter().map(|s| (s.id, s.required)).collect();
-        assert_eq!(ids, [(META, true), (STRK, true)]);
+        assert_eq!(ids, [(META, true), (STRK, true), (HIST, false)]);
         assert!(d.to_bytes().len() < d.to_bytes_format3().len());
     }
 
@@ -705,6 +731,169 @@ mod tests {
         println!("{}", crate::bench::file_format(&samples, 1_000_000));
     }
 
+    /// Draw three strokes, re-brush one, delete one, set a guide, undo twice: undo and redo
+    /// history with a deleted stroke, a history-only brush and a guide.
+    fn edited_doc() -> Document {
+        let mut d = Document::new();
+        let ink = d.intern_brush(&brush("com.airdraw.ink"));
+        let ribbon = d.intern_brush(&brush("com.airdraw.ribbon"));
+        let (a, _) = d.add_stroke(ink, points(30, 0.0));
+        let (b, _) = d.add_stroke(ink, points(20, 1.0));
+        d.add_stroke(ribbon, points(25, 2.0));
+        d.set_brush(&[a], ribbon);
+        d.remove_strokes(&[b]);
+        d.set_guide(Some(sweep()));
+        d.undo();
+        d.undo();
+        d
+    }
+
+    /// Ids, brushes and points of the strokes, plus the guide: what undo/redo must reproduce.
+    /// Brushes by definition, since saving renumbers snapshots.
+    type State = (Vec<(StrokeId, String, Vec<InputPoint>)>, Option<Guide>);
+
+    fn state(d: &Document) -> State {
+        let strokes = d.strokes().iter().map(|s| (s.id, d.brush_def(s.brush).unwrap().id.clone(), s.points.to_vec())).collect();
+        (strokes, d.guide().map(|g| (**g).clone()))
+    }
+
+    #[test]
+    fn history_survives_save_and_open() {
+        let d = edited_doc();
+        assert!(d.can_undo() && d.can_redo());
+        let mut back = Document::from_bytes(&d.to_bytes()).unwrap();
+        assert!(!back.is_dirty() && back.can_undo() && back.can_redo(), "opening isn't an edit");
+        let mut orig = d.clone();
+        assert_eq!(state(&back), state(&orig));
+        // Every step back and forward matches the original session.
+        while orig.can_redo() {
+            orig.redo();
+            back.redo();
+            assert_eq!(state(&back), state(&orig));
+        }
+        while orig.can_undo() {
+            orig.undo();
+            back.undo();
+            assert_eq!(state(&back), state(&orig));
+        }
+        assert!(!back.can_undo() && back.strokes().is_empty());
+    }
+
+    #[test]
+    fn deleted_strokes_come_back_after_reopening() {
+        let mut d = Document::new();
+        let ink = d.intern_brush(&brush("com.airdraw.ink"));
+        let (id, _) = d.add_stroke(ink, points(40, 0.0));
+        let deleted = d.strokes()[0].clone();
+        d.clear();
+        let mut back = Document::from_bytes(&d.to_bytes()).unwrap();
+        assert!(back.strokes().is_empty());
+        back.undo();
+        assert_eq!(back.stroke(id), Some(&deleted));
+        // New strokes never reuse an id the history knows.
+        let mut fresh = Document::from_bytes(&d.to_bytes()).unwrap();
+        let ink = fresh.intern_brush(&brush("com.airdraw.ink"));
+        let (new_id, _) = fresh.add_stroke(ink, points(3, 0.0));
+        assert_ne!(new_id, id);
+    }
+
+    #[test]
+    fn history_is_its_own_optional_section() {
+        let d = edited_doc();
+        let with = d.to_bytes();
+        let ids: Vec<_> = sections(&with).sections.iter().map(|s| (s.id, s.required)).collect();
+        assert_eq!(ids, [(META, true), (STRK, true), (HIST, false)]);
+        // Without history: no section, nothing to undo, deleted strokes gone from the file.
+        let without = d.to_bytes_with(SaveOptions { history: false, ..Default::default() });
+        assert!(sections(&without).get(HIST).is_none());
+        let back = Document::from_bytes(&without).unwrap();
+        assert!(!back.can_undo() && !back.can_redo());
+        assert_eq!(state(&back), state(&d));
+        // A sketch without edits has no section either.
+        assert!(sections(&Document::from_bytes(&without).unwrap().to_bytes()).get(HIST).is_none());
+        // History doesn't change the content hash; it does keep brushes only it uses.
+        assert_eq!(Document::from_bytes(&with).unwrap().content_hash(), back.content_hash());
+        let meta = |b: &[u8]| String::from_utf8(sections(b).get(META).unwrap().data.clone()).unwrap();
+        assert!(meta(&with).matches("[[brushes]]").count() >= meta(&without).matches("[[brushes]]").count());
+    }
+
+    #[test]
+    fn saving_with_history_is_deterministic() {
+        let bytes = edited_doc().to_bytes();
+        assert_eq!(Document::from_bytes(&bytes).unwrap().to_bytes(), bytes);
+    }
+
+    #[test]
+    fn bad_history_opens_the_sketch_without_it() {
+        let d = edited_doc();
+        let mut all = sections(&d.to_bytes()).sections;
+        let hist = all.pop().unwrap();
+        let reopen = |data: Vec<u8>| {
+            let mut w = d.file_head(FORMAT_VERSION);
+            let mut secs = all.clone();
+            secs.push(Section { id: HIST, required: false, data });
+            airdraw_pack::write(&mut w, &secs, codecs(), WriteOptions { codec: WRITE_CODEC, level: Level::Fast }).unwrap();
+            Document::from_bytes(&w).unwrap()
+        };
+        // Garbage, a truncated pool, and ops that don't fit the strokes.
+        let text = |h: &[u8]| String::from_utf8_lossy(&h[4..4 + u32::from_le_bytes(h[..4].try_into().unwrap()) as usize]).into_owned();
+        let with_text = |t: String| {
+            let mut out = (t.len() as u32).to_le_bytes().to_vec();
+            out.extend_from_slice(t.as_bytes());
+            out.extend_from_slice(&hist.data[4 + text(&hist.data).len()..]);
+            out
+        };
+        let wrong_index = with_text(text(&hist.data).replacen("index = 0", "index = 7", 1).replacen("index = 1", "index = 7", 1).replacen("index = 2", "index = 7", 1));
+        let missing_stroke = with_text(text(&hist.data).replace("stroke = [", "stroke = [9999, 0] # ["));
+        let missing_brush = with_text(text(&hist.data).replace("stroke = [3, 0]", "stroke = [3, 77]"));
+        for bad in [b"garbage".to_vec(), hist.data[..hist.data.len() - 3].to_vec(), wrong_index, missing_stroke, missing_brush] {
+            let back = reopen(bad);
+            assert_eq!(state(&back), state(&d), "the sketch itself still opens");
+            assert!(!back.can_undo() && !back.can_redo());
+        }
+        assert!(reopen(hist.data.clone()).can_undo(), "the untouched section still works");
+    }
+
+    #[test]
+    fn undoing_clear_survives_reopening_a_large_sketch() {
+        // Far over 1 MB, then cleared: the sketch is empty, but its peak size sets the budget.
+        let mut d = Document::new();
+        let ink = d.intern_brush(&brush("com.airdraw.ink"));
+        for i in 0..8 {
+            d.add_stroke(ink, points(10_000, i as f32));
+        }
+        let before = state(&d);
+        d.clear();
+        let mut back = Document::from_bytes(&d.to_bytes()).unwrap();
+        back.undo();
+        assert_eq!(state(&back), before);
+    }
+
+    #[test]
+    fn history_is_capped_oldest_first() {
+        // Draw a ~400 KB stroke and delete it, six times: the sketch never holds more than
+        // one, so the budget (1 MB) keeps only the newest cycles.
+        let mut d = Document::new();
+        let ink = d.intern_brush(&brush("com.airdraw.ink"));
+        let mut ids = Vec::new();
+        for i in 0..6 {
+            let (id, _) = d.add_stroke(ink, points(10_000, i as f32));
+            d.remove_strokes(&[id]);
+            ids.push(id);
+        }
+        let mut back = Document::from_bytes(&d.to_bytes()).unwrap();
+        let (mut undone, mut seen) = (0, std::collections::HashSet::new());
+        while back.can_undo() {
+            back.undo();
+            undone += 1;
+            seen.extend(back.strokes().iter().map(|s| s.id));
+        }
+        assert!((2..12).contains(&undone), "kept {undone} of 12 steps");
+        // The kept steps are the newest: undoing brings back the last-deleted strokes, never
+        // the first ones.
+        assert!(seen.contains(&ids[5]) && !seen.contains(&ids[0]));
+    }
+
     #[test]
     fn real_ipad_sketch_upgrades_losslessly() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/format2_ipad.airdraw");
@@ -725,7 +914,7 @@ mod tests {
         d.intern_brush(&brush("com.airdraw.dots"));
         let first = d.strokes()[0].id;
         d.remove_strokes(&[first]);
-        let loaded = Document::from_bytes(&d.to_bytes()).unwrap();
+        let loaded = Document::from_bytes(&d.to_bytes_with(SaveOptions { history: false, ..Default::default() })).unwrap();
         assert_eq!(loaded.brushes.len(), 1);
         assert_eq!(loaded.brush_def(loaded.strokes()[0].brush).unwrap().id, "com.airdraw.ribbon");
     }
@@ -741,7 +930,8 @@ mod tests {
 
     #[test]
     fn bad_files_give_clear_errors() {
-        let bytes = sample_doc().to_bytes();
+        // Without history, so the last bytes are stroke data (damage in history only drops it).
+        let bytes = sample_doc().to_bytes_with(SaveOptions { history: false, ..Default::default() });
         assert_eq!(Document::from_bytes(b"PK\x03\x04 a zip file").unwrap_err(), DocError::NotAirDraw);
         assert_eq!(Document::from_bytes(&bytes[..bytes.len() / 2]).unwrap_err(), DocError::Truncated);
         let mut newer = bytes.clone();
@@ -915,7 +1105,7 @@ mod tests {
         copy.content_id = "another-sketch-id".into();
         copy.set_thumbnail(Some(png())).unwrap();
         assert_eq!(copy.content_hash(), hash);
-        assert_eq!(Document::from_bytes(&d.to_bytes_with(SaveOptions { level: Level::Max })).unwrap().content_hash(), hash);
+        assert_eq!(Document::from_bytes(&d.to_bytes_with(SaveOptions { level: Level::Max, ..Default::default() })).unwrap().content_hash(), hash);
         // Any change to the artwork changes it.
         let mut moved = d.clone();
         moved.remove_strokes(&[moved.strokes()[0].id]);
@@ -942,7 +1132,7 @@ mod tests {
             let back = Document::from_bytes(&d.to_bytes()).unwrap();
             assert_eq!(back.guide().map(|g| &**g), Some(&guide));
             assert_eq!(back.strokes(), d.strokes());
-            assert!(!back.can_undo(), "loading the guide is not an edit");
+            assert!(!back.is_dirty(), "loading the guide is not an edit");
         }
         assert!(Document::from_bytes(&sample_doc().to_bytes()).unwrap().guide().is_none());
     }

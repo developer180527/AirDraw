@@ -52,8 +52,8 @@ pub enum Change {
 }
 
 /// A reversible edit. Holds what's needed to apply and revert it.
-#[derive(Clone, Debug)]
-enum Op {
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Op {
     Add { index: usize, stroke: Stroke },
     /// Strokes with their indices, ascending.
     Remove { items: Vec<(usize, Stroke)> },
@@ -61,7 +61,26 @@ enum Op {
     SetGuide { before: Option<Arc<Guide>>, after: Option<Arc<Guide>> },
 }
 
-const MAX_UNDO: usize = 1000;
+impl Op {
+    /// Strokes this op holds (added or removed ones).
+    pub(crate) fn strokes(&self) -> Box<dyn Iterator<Item = &Stroke> + '_> {
+        match self {
+            Op::Add { stroke, .. } => Box::new(std::iter::once(stroke)),
+            Op::Remove { items } => Box::new(items.iter().map(|(_, s)| s)),
+            Op::SetBrush { .. } | Op::SetGuide { .. } => Box::new(std::iter::empty()),
+        }
+    }
+
+    /// Brush snapshots this op refers to.
+    pub(crate) fn brushes(&self) -> Vec<BrushRef> {
+        match self {
+            Op::SetBrush { changes } => changes.iter().flat_map(|&(_, old, new)| [old, new]).collect(),
+            _ => self.strokes().map(|s| s.brush).collect(),
+        }
+    }
+}
+
+pub(crate) const MAX_UNDO: usize = 1000;
 
 #[derive(Debug, Clone)]
 pub struct Document {
@@ -71,8 +90,10 @@ pub struct Document {
     pub(crate) brushes: Vec<BrushDef>,
     pub(crate) next_stroke: u64,
     active_layer: LayerId,
-    undo: Vec<Op>,
-    redo: Vec<Op>,
+    /// Oldest first; saved with the file (format 4, `HIST`).
+    pub(crate) undo: Vec<Op>,
+    /// The next redo is last.
+    pub(crate) redo: Vec<Op>,
     dirty: bool,
     /// PNG preview stored in the file for OS thumbnailers and the app's Recents.
     pub(crate) thumbnail: Option<Arc<[u8]>>,
@@ -185,6 +206,15 @@ impl Document {
             self.look = look;
             self.dirty = true;
         }
+    }
+
+    /// Installs undo/redo history read from a file (already checked against the strokes).
+    /// New stroke ids continue after every id the history mentions, so a redo can't collide.
+    pub(crate) fn set_history(&mut self, undo: Vec<Op>, redo: Vec<Op>) {
+        let max_id = undo.iter().chain(&redo).flat_map(Op::strokes).map(|s| s.id.0).max().unwrap_or(0);
+        self.next_stroke = self.next_stroke.max(max_id + 1);
+        self.undo = undo;
+        self.redo = redo;
     }
 
     /// The sketch's permanent random id (32 hex digits).

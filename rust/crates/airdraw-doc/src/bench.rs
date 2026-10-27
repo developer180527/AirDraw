@@ -16,8 +16,8 @@ use crate::file::{Level, SaveOptions};
 /// per-point jitter so no copy repeats another (exact repeats compress unrealistically well).
 pub fn file_format(samples: &[(String, Document)], big_points: usize) -> String {
     let mut out = String::new();
-    let fast = SaveOptions { level: Level::Fast };
-    let max = SaveOptions { level: Level::Max };
+    let fast = SaveOptions { level: Level::Fast, ..Default::default() };
+    let max = SaveOptions { level: Level::Max, ..Default::default() };
     let _ = writeln!(
         out,
         "{:<26} {:>9} {:>9} {:>10} {:>10} {:>7} {:>10} {:>7} {:>10}",
@@ -81,13 +81,28 @@ pub fn file_format(samples: &[(String, Document)], big_points: usize) -> String 
         runs.sort();
         runs[2].as_secs_f64() * 1000.0
     };
-    let rows: [(&str, f64); 6] = [
+    // Worst case for history: Clear, so history holds every stroke (all deleted).
+    let mut cleared = big.clone();
+    cleared.clear();
+    let cleared_bytes = cleared.to_bytes_with(fast);
+    let _ = writeln!(
+        out,
+        "{:<26} {:>9} {:>9} {:>10} {:>10}   (after Clear: history holds every stroke)",
+        "tiled, cleared",
+        0,
+        "",
+        "",
+        cleared_bytes.len()
+    );
+    let rows: [(&str, f64); 8] = [
         ("save format 3", time(&|| drop(big.to_bytes_format3()))),
         ("save format 4 fast (autosave)", time(&|| drop(big.to_bytes_with(fast)))),
         ("save format 4 max (copy)", time(&|| drop(big.to_bytes_with(max)))),
         ("content hash (part of a save)", time(&|| drop(big.content_hash()))),
         ("open format 3", time(&|| drop(Document::from_bytes(&v3).unwrap()))),
         ("open format 4", time(&|| drop(Document::from_bytes(&v4).unwrap()))),
+        ("save after Clear", time(&|| drop(cleared.to_bytes_with(fast)))),
+        ("open after Clear (checks history)", time(&|| drop(Document::from_bytes(&cleared_bytes).unwrap()))),
     ];
     for (what, ms) in rows {
         let _ = writeln!(out, "  {what:<30} {ms:>8.1}");

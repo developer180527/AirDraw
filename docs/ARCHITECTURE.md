@@ -908,10 +908,36 @@ Mac (M4 Pro), real sketches copied off the iPad:
   still in the sketch is stored once (in `STRK`); only strokes that history alone holds
   (deleted ones, undone adds) go into a `HIST` stroke pool, with the same point encoding.
 - **Deleted strokes stay in the file** (decided). Anyone given the file can undo back to them.
-- **Size cap:** history's own data (pool + ops) is kept under the larger of the live strokes'
-  size or 1 MB (before compression); the oldest undo steps are dropped first, then redo.
+- **Size cap (revised in step 4):** history's own data (pool + ops, before compression) is
+  kept under the **sketch's peak size anywhere in its history**, or 1 MB if larger. The
+  first rule (current size) failed its benchmark: after Clear the sketch is empty, so the
+  Clear itself was dropped and couldn't be undone after reopening. With the peak, history
+  holds as much as the sketch ever did; the cap only bites on long draw-and-delete cycles.
+  The newest undo step and nearest redo step are always kept; beyond them, the oldest undo
+  steps go first, then the farthest redo steps.
 - Loading history isn't an edit: the file opens clean, Undo enabled.
 - Brush snapshots used only by history are kept in `META` (saving now drops unused ones).
+
+#### Step 4 results (2026-10-27)
+
+- `airdraw-doc/src/history.rs`: `HIST` is an optional section: TOML for the steps
+  (`add`, `remove`, `set_brush`, `set_guide`; strokes referenced as id + brush, since
+  re-brushing changes a stroke's brush over time), then a pool of strokes only history holds,
+  in the `STRK` encoding. Brushes only history uses follow the live ones in `META`, so live
+  numbering and the content hash don't depend on history.
+- **Checked on open:** the undo steps are rewound and the redo steps replayed on stroke ids
+  (an added stroke must be exactly where it was added, removed ones where they were removed),
+  so a damaged history can never make undo misbehave. Anything wrong drops the history and
+  opens the sketch. New stroke ids start above every id the history knows.
+- `SaveOptions { history: false }` writes without it (step 5 wires the menu).
+- **Times, 1M points** (Mac / iPad): autosave 37 / 36 ms; after Clear (history holds every
+  stroke) save 28 / 26 ms, open including the history check 17 / 16 ms. The check uses hash
+  sets, so it stays linear for a Clear of any size.
+- Tests: every undo/redo step after reopening matches the original session; a deleted stroke
+  comes back from the file; undoing Clear survives reopening a 3 MB sketch; the cap keeps
+  the newest steps; five kinds of bad history (garbage, truncated pool, wrong indices,
+  missing stroke, missing brush) open the sketch without history; saving is deterministic.
+  App smoke test: clear, save, reopen, undo restores, redo clears.
 
 #### Viewing must never change the file (audit 2026-10-27)
 
@@ -973,12 +999,12 @@ history, thumbnail or codec differ.
 | 1 ✅ | `airdraw-pack`: section container, `Codec` trait + registry, stored codec, CRC-32, required/optional sections; `airdraw-codec-zstd`; tests for round-trip, unknown sections and codecs, corruption, truncation, determinism |
 | 2 ✅ | Format 4 in `airdraw-doc` on top of it: point encoding (XOR + byte planes); formats 1–3 still read; large-sketch fixture + size/time benchmark (Mac and iPad); Quick Look still works |
 | 3 ✅ | Look snapshot and content id in `META`; content hash; guide opacity moved to device settings; fixed-angle thumbnail; smoke test: open, orbit, close leaves the file byte-identical |
-| 4 | `HIST`: history encoding with a shared stroke pool, size cap, damaged history → open without it; smoke test (draw, delete, save, reopen, undo, redo) |
+| 4 ✅ | `HIST`: history encoding with a shared stroke pool, size cap, damaged history → open without it; smoke test (draw, delete, save, reopen, undo, redo) |
 | 5 | Save a Copy Without History (⋯ menu, system save/share) |
 
 **Decided (2026-10-27):** zstd, behind a swappable codec interface. No camera in the file at
 all, and viewing never rewrites a file.
-**Open:** history cap (larger of live size or 1 MB, at most 1000 steps?).
+History cap: see the revised rule under Undo history.
 
 ---
 
