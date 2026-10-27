@@ -976,9 +976,22 @@ history, thumbnail or codec differ.
 
 #### "Save a copy without history"
 
-- ⋯ menu → **Save a Copy Without History…** → system save/share sheet. Writes the same file
-  without `HIST`, so deleted strokes are gone for good.
-- `Document::to_bytes_with(SaveOptions { history: bool, level })`.
+- ⋯ menu → **Save a Copy Without History…**. Writes the same file without `HIST`, so
+  deleted strokes are gone for good. The open sketch keeps its history and isn't marked
+  edited.
+- **Implemented (step 5):** `Document::save_with(path, SaveOptions { history: false, .. })`
+  (same temp-file + fsync + rename as saves), `canvas.save_copy_without_history(path)`.
+  - iOS: the copy is written to `user://copies/`, then the system **export picker**
+    ("Save to Files": choose a folder, `UIDocumentPickerViewController` for exporting, as a
+    copy) via `AppFiles.export_file`; `file_exported` / `export_cancelled` delete the
+    temporary file. Chosen over the share sheet, which on iPad needs a popover anchor in
+    view points (the pixel/point mapping that caused the stroke offset bug); a Share…
+    item can come later.
+  - Desktop: the native save dialog (Godot's own dialog where there's none), suggesting
+    "<name> copy.airdraw" in the Sketches folder.
+  - Compression level stays `Fast`: `Max` saves only 2–6% and takes ~1 s per 1M points.
+- Also fixed: the ⋯ menu's Look rows were built once at startup, so a Look that came with a
+  sketch from another device never appeared there. They're rebuilt each time the menu opens.
 - **Exports never carry history:** OBJ, FBX, STL, GLB… are final outputs
   built from the live strokes only.
 
@@ -1000,7 +1013,7 @@ history, thumbnail or codec differ.
 | 2 ✅ | Format 4 in `airdraw-doc` on top of it: point encoding (XOR + byte planes); formats 1–3 still read; large-sketch fixture + size/time benchmark (Mac and iPad); Quick Look still works |
 | 3 ✅ | Look snapshot and content id in `META`; content hash; guide opacity moved to device settings; fixed-angle thumbnail; smoke test: open, orbit, close leaves the file byte-identical |
 | 4 ✅ | `HIST`: history encoding with a shared stroke pool, size cap, damaged history → open without it; smoke test (draw, delete, save, reopen, undo, redo) |
-| 5 | Save a Copy Without History (⋯ menu, system save/share) |
+| 5 ✅ | Save a Copy Without History (⋯ menu, system save/share) |
 
 **Decided (2026-10-27):** zstd, behind a swappable codec interface. No camera in the file at
 all, and viewing never rewrites a file.

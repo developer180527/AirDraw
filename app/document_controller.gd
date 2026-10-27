@@ -13,6 +13,11 @@ const AUTOSAVE_SECONDS := 15.0
 var canvas: SketchCanvas
 var app_files: AppFiles
 var thumbnails: ThumbnailRenderer
+## Copies for the iOS export picker are written here first, then removed.
+const COPY_DIR := "user://copies"
+
+## The temporary copy the export picker is showing, if any.
+var _pending_copy := ""
 ## Where + New puts sketches (absolute).
 var sketch_dir := ""
 ## The open sketch's file (absolute) and, for picked files, its access bookmark.
@@ -29,6 +34,10 @@ func _init(p_canvas: SketchCanvas, p_app_files: AppFiles, p_thumbnails: Thumbnai
 	app_files = p_app_files
 	thumbnails = p_thumbnails
 	app_files.file_picked.connect(func(path: String, bookmark: String) -> void: open_path(path, bookmark))
+	app_files.file_exported.connect(func(name: String) -> void:
+		_drop_pending_copy()
+		status.emit("Saved a copy without history: " + name))
+	app_files.export_cancelled.connect(_drop_pending_copy)
 
 
 func _ready() -> void:
@@ -134,6 +143,61 @@ func show_open_dialog(dialog_parent: Node) -> void:
 		dialog.close_requested.connect(dialog.queue_free)
 		dialog_parent.add_child(dialog)
 		dialog.popup_centered_ratio(0.7)
+
+
+## ⋯ › Save a Copy Without History…: the sketch as it is now, minus its undo history, so
+## strokes deleted earlier can't be brought back by whoever gets it. The open sketch keeps
+## its history. iOS: written to a temporary file that the system "Save to Files" picker
+## copies where the user chooses. Elsewhere: the native save dialog (or Godot's own).
+func save_copy_without_history(dialog_parent: Node) -> void:
+	await update_thumbnail()
+	var title := "Save a Copy Without History"
+	var name := _copy_name()
+	DirAccess.make_dir_recursive_absolute(COPY_DIR)
+	_pending_copy = ProjectSettings.globalize_path(COPY_DIR.path_join(name))
+	var err: String = canvas.save_copy_without_history(_pending_copy)
+	if not err.is_empty():
+		_drop_pending_copy()
+		status.emit("Couldn't save a copy: " + err)
+		return
+	if app_files.export_file(_pending_copy):
+		return  # Result arrives through file_exported / export_cancelled.
+	_drop_pending_copy()
+	var save_to := func(path: String) -> void:
+		if not path.ends_with(".airdraw"):
+			path += ".airdraw"
+		var e: String = canvas.save_copy_without_history(path)
+		status.emit("Saved a copy without history: " + path.get_file() if e.is_empty() else "Couldn't save a copy: " + e)
+	if DisplayServer.has_feature(DisplayServer.FEATURE_NATIVE_DIALOG_FILE):
+		DisplayServer.file_dialog_show(title, sketch_dir, name, false, DisplayServer.FILE_DIALOG_MODE_SAVE_FILE,
+			PackedStringArray(["*.airdraw;AirDraw Sketch"]),
+			func(ok: bool, paths: PackedStringArray, _filter: int) -> void:
+				if ok and not paths.is_empty():
+					save_to.call(paths[0]))
+	else:
+		var dialog := FileDialog.new()
+		dialog.title = title
+		dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+		dialog.access = FileDialog.ACCESS_FILESYSTEM
+		dialog.filters = PackedStringArray(["*.airdraw;AirDraw Sketch"])
+		dialog.current_dir = sketch_dir
+		dialog.current_file = name
+		dialog.file_selected.connect(save_to)
+		dialog.close_requested.connect(dialog.queue_free)
+		dialog_parent.add_child(dialog)
+		dialog.popup_centered_ratio(0.7)
+
+
+## "Sketch 3 copy.airdraw" for the open sketch (the picker lets the user rename it).
+func _copy_name() -> String:
+	var base := doc_path.get_file().get_basename() if not doc_path.is_empty() else "Sketch"
+	return base + " copy.airdraw"
+
+
+func _drop_pending_copy() -> void:
+	if not _pending_copy.is_empty():
+		DirAccess.remove_absolute(_pending_copy)
+		_pending_copy = ""
 
 
 ## Home screen cards: [{entry, texture, exists}], newest first.

@@ -20,6 +20,9 @@ pub enum FileEvent {
     /// `bookmark` (hex) restores access later; present when the OS provides one.
     Picked { path: String, bookmark: Option<String> },
     Cancelled,
+    /// A file handed to [`export_file`] was saved; `name` is the name it got there.
+    Exported { name: String },
+    ExportCancelled,
 }
 
 /// Shows the system "Open" picker for files of `type_identifier`. Returns false where there
@@ -32,6 +35,21 @@ pub fn pick_file(type_identifier: &str) -> bool {
     #[cfg(not(target_os = "ios"))]
     {
         let _ = type_identifier;
+        false
+    }
+}
+
+/// Shows the system "Save to Files" picker for a copy of the file at `path`. Returns false
+/// where there is none (desktop: the app uses a native save dialog) or it couldn't be shown.
+/// The result arrives as `FileEvent::Exported` or `ExportCancelled`; then `path` can go.
+pub fn export_file(path: &str) -> bool {
+    #[cfg(target_os = "ios")]
+    {
+        files::export(path)
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        let _ = path;
         false
     }
 }

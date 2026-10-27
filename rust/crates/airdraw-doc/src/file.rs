@@ -353,13 +353,18 @@ impl Document {
     /// Writes to a temporary file first and renames it over `path`, so a crash or full disk
     /// mid-save never destroys the previous version.
     pub fn save(&self, path: &Path) -> Result<(), DocError> {
+        self.save_with(path, SaveOptions::default())
+    }
+
+    /// [`Document::save`] with options, e.g. a copy without history.
+    pub fn save_with(&self, path: &Path, opts: SaveOptions) -> Result<(), DocError> {
         let io = |e: std::io::Error| DocError::Io(format!("{}: {e}", path.display()));
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(io)?;
         }
         let tmp = path.with_extension(format!("{EXTENSION}.tmp"));
         let mut f = std::fs::File::create(&tmp).map_err(io)?;
-        f.write_all(&self.to_bytes()).and_then(|_| f.sync_all()).map_err(io)?;
+        f.write_all(&self.to_bytes_with(opts)).and_then(|_| f.sync_all()).map_err(io)?;
         std::fs::rename(&tmp, path).map_err(io)
     }
 

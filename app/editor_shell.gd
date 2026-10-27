@@ -9,7 +9,7 @@ extends CanvasLayer
 ## slim bar at the bottom holds the current tool's options. Same layout on tablet and desktop;
 ## left-handed mode mirrors the tray and cube.
 
-signal action(name: String)  ## gallery, export, undo, redo, edit_brush, import_brushes, clear, remove_guide
+signal action(name: String)  ## gallery, export, undo, redo, edit_brush, import_brushes, clear, remove_guide, save_copy
 signal tool_selected(tool: String)  ## draw, guide
 signal plane_requested(index: int)  ## GuideController preset index (3 = view-aligned)
 signal guide_offset_changed(offset: float)
@@ -65,6 +65,7 @@ var _menu: PanelContainer
 var _scrim: Control
 var _left_handed_item: Button
 var _look_items := {}  ## look id → menu item
+var _look_box: VBoxContainer  ## the menu's Look rows, rebuilt when it opens
 var _look := ""
 var _guide_path: Line2D
 ## Guide state shown in the context bars.
@@ -386,13 +387,7 @@ func _build_menu() -> void:
 	col.add_theme_constant_override("separation", 0)
 	_menu.add_child(col)
 	var item := func(name: String, text: String, on_press: Callable) -> Button:
-		var b := _button(name, "", text, func() -> void:
-			close_menu()
-			on_press.call())
-		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		b.theme_type_variation = "BrushRow"
-		col.add_child(b)
-		return b
+		return _menu_item(col, name, text, on_press)
 	_left_handed_item = item.call("Left-handed mode", "Left-handed mode", func() -> void:
 		left_handed = not left_handed
 		_save_settings()
@@ -404,20 +399,46 @@ func _build_menu() -> void:
 	look_title.text = "Look"
 	look_title.theme_type_variation = "Small"
 	col.add_child(look_title)
-	for l in canvas.looks():
-		var id: String = l.id
-		var b: Button = item.call("Look " + l.name, l.name, look_requested.emit.bind(id))
-		b.set_meta("label", l.name)
-		_look_items[id] = b
+	_look_box = VBoxContainer.new()
+	_look_box.add_theme_constant_override("separation", 0)
+	col.add_child(_look_box)
+	_rebuild_look_items()
 	col.add_child(HSeparator.new())
+	var copy: Button = item.call("Save a copy without history", "Save a Copy Without History…", action.emit.bind("save_copy"))
+	copy.tooltip_text = "The sketch as it is now, without undo history: strokes you deleted can't be brought back from the copy"
 	item.call("Import brushes", "Import brushes", action.emit.bind("import_brushes"))
 	item.call("Clear sketch", "Clear sketch", action.emit.bind("clear"))
+
+
+func _menu_item(parent: Control, name: String, text: String, on_press: Callable) -> Button:
+	var b := _button(name, "", text, func() -> void:
+		close_menu()
+		on_press.call())
+	b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	b.theme_type_variation = "BrushRow"
+	parent.add_child(b)
+	return b
+
+
+## One row per Look, rebuilt on open: a sketch from another device can bring a Look this
+## device doesn't have (the canvas lists it last).
+func _rebuild_look_items() -> void:
+	for c in _look_box.get_children():
+		_look_box.remove_child(c)
+		c.queue_free()
+	_look_items.clear()
+	for l in canvas.looks():
+		var id: String = l.id
+		var b := _menu_item(_look_box, "Look " + l.name, l.name, look_requested.emit.bind(id))
+		b.set_meta("label", l.name)
+		_look_items[id] = b
 
 
 func _open_menu() -> void:
 	if _menu.visible:
 		close_menu()
 		return
+	_rebuild_look_items()
 	_left_handed_item.text = ("✓  " if left_handed else "") + "Left-handed mode"
 	for id in _look_items:
 		_look_items[id].text = ("✓  " if id == _look else "") + str(_look_items[id].get_meta("label"))

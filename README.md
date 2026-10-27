@@ -62,7 +62,8 @@ Rust crates:
 - **Documents:** home screen with Recents (thumbnails), + New, Open…, autosave (15 s, on
   background, before quit, when switching sketches; only sketches that were edited, so
   viewing never changes a file), undo/redo saved with the sketch (deleted strokes can be
-  brought back after reopening), re-brush strokes.
+  brought back after reopening; ⋯ › Save a Copy Without History… for sharing without them),
+  re-brush strokes.
   Sketches are ordinary files the OS manages: `Files › On My iPad › AirDraw › Sketches` on
   iPad, `~/Documents/AirDraw/Sketches` on macOS.
 - **Export:** 9 built-in formats plus plugins; outputs verified by Apple Model I/O (OBJ,

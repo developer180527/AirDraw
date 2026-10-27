@@ -123,6 +123,20 @@ func _ready() -> void:
 	print("SMOKE history reopened_empty=", reopened_empty, " undo_restores=", restored == before_clear, " redo_clears=", cleared_again,
 		" meshes=", canvas.get_children().filter(func(c): return c is MeshInstance3D and c.visible).size() >= before_clear)
 	canvas.load_document(path)
+	# Save a Copy Without History: the copy has the strokes but no undo; the open sketch
+	# keeps its history and isn't marked edited. (The menu item opens the system picker /
+	# native dialog; that part is checked by hand.)
+	canvas.clear()
+	canvas.undo()
+	var dirty_before: bool = canvas.is_dirty()
+	var copy_path := ProjectSettings.globalize_path("user://test_documents/copy.airdraw")
+	var copy_err: String = canvas.save_copy_without_history(copy_path)
+	var kept_history: bool = canvas.can_undo() and canvas.can_redo() and canvas.is_dirty() == dirty_before
+	var strokes_now: int = canvas.stroke_count()
+	canvas.load_document(copy_path)
+	print("SMOKE save_copy error='", copy_err, "' strokes=", canvas.stroke_count() == strokes_now, " no_history=", not canvas.can_undo() and not canvas.can_redo(),
+		" original_kept_history=", kept_history, " menu_item=", main.get("toolbar").find_button("Save a copy without history") != null)
+	canvas.load_document(path)
 	# Toolbar by touch: tap the Glow brush and Undo buttons.
 	var bar = main.get("toolbar")
 	print("SMOKE glow_button=", bar.find_button("test.glow") != null)
@@ -455,6 +469,14 @@ func _ready() -> void:
 	await _tap(shell.find_button("Guide"))
 	print("SMOKE menu item_toggles=", lh, " item_closes=", not shell._menu.visible, " back=", not shell.left_handed,
 		" ui_works_after=", main.get("tool") == "guide")
+	# Look rows are rebuilt each time the menu opens: still one per Look, the current one ticked.
+	await _tap(shell.find_button("More"))
+	await _settle()
+	var look_rows: int = shell._look_box.get_child_count()
+	var ticked: int = shell._look_box.get_children().filter(func(b): return b.text.begins_with("✓")).size()
+	shell.close_menu()
+	print("SMOKE menu look_rows=", look_rows == canvas.looks().size(), " one_ticked=", ticked == 1,
+		" closes=", not shell._menu.visible)
 	await _tap(shell.find_button("Draw"))
 
 	# Home screen: Gallery autosaves; both sketches are in Recents with thumbnails.

@@ -578,6 +578,18 @@ impl SketchCanvas {
         }
     }
 
+    /// Writes a copy of the sketch to `path` without undo history (deleted strokes are gone
+    /// from it), for sharing. The open sketch, its file and its history are unchanged.
+    /// Returns an empty string on success, else the error message.
+    #[func]
+    fn save_copy_without_history(&self, path: GString) -> GString {
+        let opts = airdraw_doc::SaveOptions { history: false, ..Default::default() };
+        match self.doc.save_with(Path::new(&path.to_string()), opts) {
+            Ok(()) => GString::new(),
+            Err(e) => GString::from(&e.to_string()),
+        }
+    }
+
     /// File format size/speed table (docs/ARCHITECTURE.md §3h) for the sketches at `paths`,
     /// plus a sketch of at least `points` points tiled from them. For
     /// `tests/file_format_bench.tscn`; unreadable files are listed and skipped.

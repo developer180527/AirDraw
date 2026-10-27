@@ -22,6 +22,8 @@ thread_local! {
     /// The delegate is held weakly by the picker; keep it alive while a picker is shown.
     static DELEGATE: RefCell<Option<Retained<PickerDelegate>>> = const { RefCell::new(None) };
     static OPEN_SERVICE: RefCell<Option<Retained<OpenURLService>>> = const { RefCell::new(None) };
+    /// True while the picker shown is an export picker (results are `Exported*` events).
+    static EXPORTING: RefCell<bool> = const { RefCell::new(false) };
 }
 
 define_class!(
@@ -90,7 +92,10 @@ define_class!(
     unsafe impl UIDocumentPickerDelegate for PickerDelegate {
         #[unsafe(method(documentPicker:didPickDocumentsAtURLs:))]
         fn did_pick(&self, _picker: &UIDocumentPickerViewController, urls: &NSArray<NSURL>) {
-            if let Some(url) = urls.firstObject() {
+            if EXPORTING.with(|x| x.replace(false)) {
+                let name = urls.firstObject().and_then(|u| u.lastPathComponent()).map(|n| n.to_string()).unwrap_or_default();
+                EVENTS.with(|e| e.borrow_mut().push(FileEvent::Exported { name }));
+            } else if let Some(url) = urls.firstObject() {
                 let event = match begin_access(&url) {
                     Some(path) => FileEvent::Picked { path, bookmark: bookmark_hex(&url) },
                     None => FileEvent::Cancelled,
@@ -102,7 +107,8 @@ define_class!(
 
         #[unsafe(method(documentPickerWasCancelled:))]
         fn cancelled(&self, _picker: &UIDocumentPickerViewController) {
-            EVENTS.with(|e| e.borrow_mut().push(FileEvent::Cancelled));
+            let event = if EXPORTING.with(|x| x.replace(false)) { FileEvent::ExportCancelled } else { FileEvent::Cancelled };
+            EVENTS.with(|e| e.borrow_mut().push(event));
             DELEGATE.with(|d| d.borrow_mut().take());
         }
     }
@@ -130,6 +136,31 @@ pub fn pick(type_identifier: &str) -> bool {
     picker.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     picker.setShouldShowFileExtensions(true);
     DELEGATE.with(|d| *d.borrow_mut() = Some(delegate));
+    root.presentViewController_animated_completion(&picker, true, None);
+    true
+}
+
+/// Shows the system "Save to Files" picker for a copy of the file at `path` (the user picks
+/// a folder; the file is copied there). Returns false if it couldn't be shown.
+pub fn export(path: &str) -> bool {
+    let Some(mtm) = MainThreadMarker::new() else { return false };
+    let app = UIApplication::sharedApplication(mtm);
+    #[allow(deprecated)]
+    let Some(root) = app.keyWindow().or_else(|| app.windows().firstObject()).and_then(|w| w.rootViewController()) else {
+        return false;
+    };
+    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+    let picker = UIDocumentPickerViewController::initForExportingURLs_asCopy(
+        UIDocumentPickerViewController::alloc(mtm),
+        &NSArray::from_retained_slice(&[url]),
+        true,
+    );
+    let delegate = PickerDelegate::alloc(mtm).set_ivars(());
+    let delegate: Retained<PickerDelegate> = unsafe { msg_send![super(delegate), init] };
+    picker.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+    picker.setShouldShowFileExtensions(true);
+    DELEGATE.with(|d| *d.borrow_mut() = Some(delegate));
+    EXPORTING.with(|x| *x.borrow_mut() = true);
     root.presentViewController_animated_completion(&picker, true, None);
     true
 }

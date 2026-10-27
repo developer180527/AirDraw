@@ -39,6 +39,8 @@ impl INode for AppFiles {
                     self.signals().file_picked().emit(&path, &bookmark);
                 }
                 FileEvent::Cancelled => self.signals().pick_cancelled().emit(),
+                FileEvent::Exported { name } => self.signals().file_exported().emit(&GString::from(name.as_str())),
+                FileEvent::ExportCancelled => self.signals().export_cancelled().emit(),
             }
         }
     }
@@ -52,6 +54,19 @@ impl AppFiles {
     fn file_picked(path: GString, bookmark: GString);
     #[signal]
     fn pick_cancelled();
+    /// The file given to `export_file` was saved where the user chose, as `name`.
+    #[signal]
+    fn file_exported(name: GString);
+    #[signal]
+    fn export_cancelled();
+
+    /// Shows the native "Save to Files" picker for a copy of the file at `path` (iOS). False
+    /// where there is none (desktop: use Godot's native save dialog). The result arrives
+    /// through `file_exported` or `export_cancelled`; `path` can be deleted then.
+    #[func]
+    fn export_file(&self, path: GString) -> bool {
+        airdraw_ios::export_file(&path.to_string())
+    }
 
     /// Shows the native "Open" picker for sketches. False where there is none (desktop:
     /// use Godot's native file dialog instead).

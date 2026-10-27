@@ -325,6 +325,8 @@ func _file_action(action: String) -> void:
 			_set_status("Guide removed — Undo brings it back")
 		"export":
 			export_dialog.open(canvas, toolbar.popup_theme())
+		"save_copy":
+			documents.save_copy_without_history(self)
 		"edit_brush":
 			brush_editor.open(canvas, canvas.current_brush(), toolbar.popup_theme(), toolbar.bar_rect().end.y)
 		"import_brushes":
