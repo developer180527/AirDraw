@@ -5,6 +5,7 @@ extends Node3D
 
 ## Exporter plugin libraries (desktop). iOS builds link plugins in statically.
 const PLUGIN_DIR := "user://plugins"
+const GUIDE_READY := "Guide ready. Orbit to see it, then draw on it."
 
 var rig: OrbitCamera
 var environment: WorldEnvironment
@@ -83,7 +84,9 @@ func _ready() -> void:
 	guides = GuideController.new(session)
 	guides.changed.connect(func() -> void:
 		if toolbar:
-			toolbar.refresh_guide(guides.has_drawn(), guides.preset, guides.offset())
+			toolbar.refresh_guide(guides.has_drawn(), guides.preset, guides.offset(), guides.opacity())
+			if not guides.has_drawn():
+				toolbar.dismiss_toast(GUIDE_READY)
 		_update_hud())
 	add_child(guides)
 
@@ -104,6 +107,7 @@ func _ready() -> void:
 		else:
 			guides.set_preset(i))
 	toolbar.guide_offset_changed.connect(guides.set_offset)
+	toolbar.guide_opacity_changed.connect(guides.set_opacity)
 	toolbar.tool_selected.connect(set_tool)
 	toolbar.look_requested.connect(func(id: String) -> void:
 		canvas.set_look(id)
@@ -112,7 +116,7 @@ func _ready() -> void:
 	session.guide_drawn.connect(func(created: bool) -> void:
 		if created:
 			set_tool("draw")
-			_set_status("Guide ready. Orbit to see it, then draw on it.")
+			_set_status(GUIDE_READY)
 		else:
 			set_tool("guide")
 			_set_status("Draw a longer line to make a guide."))

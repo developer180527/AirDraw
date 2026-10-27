@@ -13,6 +13,7 @@ signal action(name: String)  ## gallery, export, undo, redo, edit_brush, import_
 signal tool_selected(tool: String)  ## draw, guide
 signal plane_requested(index: int)  ## GuideController preset index (3 = view-aligned)
 signal guide_offset_changed(offset: float)
+signal guide_opacity_changed(opacity: float)
 signal view_requested(view: String)  ## front, back, side, left, top, bottom, 3d
 signal orbit_requested(delta: Vector2)
 signal look_requested(id: String)
@@ -70,6 +71,7 @@ var _guide_path: Line2D
 var _has_drawn_guide := false
 var _plane := 0
 var _offset := 0.0
+var _guide_opacity := 0.1
 var _guide_drawing := false
 
 
@@ -158,10 +160,11 @@ func set_tool(p_tool: String) -> void:
 
 
 ## Guide state for the context bars: a drawn guide, or the preset plane and its offset.
-func refresh_guide(has_drawn: bool, plane: int, offset: float) -> void:
+func refresh_guide(has_drawn: bool, plane: int, offset: float, opacity: float) -> void:
 	_has_drawn_guide = has_drawn
 	_plane = plane
 	_offset = offset
+	_guide_opacity = opacity
 	_rebuild_bar()
 
 
@@ -208,6 +211,13 @@ func toggle_ui() -> void:
 ## The brush in tray slot `index` (0-based), or "".
 func recent_brush(index: int) -> String:
 	return recent_brushes[index] if index < recent_brushes.size() else ""
+
+
+## Hides the toast now if it's still showing `text` (the message went stale).
+func dismiss_toast(text: String) -> void:
+	if _toast.visible and _toast_label.text == text:
+		_toast_serial += 1
+		_toast.visible = false
 
 
 ## A short message that fades away.
@@ -495,6 +505,23 @@ func _guide_bar() -> void:
 		slider.value_changed.connect(guide_offset_changed.emit)
 		_bar_row.add_child(slider)
 		_bar_button("Reset position", "Reset", func() -> void: guide_offset_changed.emit(0.0))
+	_bar_row.add_child(VSeparator.new())
+	var label := Label.new()
+	label.text = "Opacity"
+	label.theme_type_variation = "Small"
+	_bar_row.add_child(label)
+	var opacity := HSlider.new()
+	opacity.name = "Guide opacity"
+	opacity.max_value = canvas.max_guide_opacity()
+	opacity.step = 0.01
+	opacity.value = _guide_opacity
+	opacity.tooltip_text = "How see-through the guide is (0 hides it; you still draw on it)"
+	opacity.custom_minimum_size.x = 100 * _s
+	opacity.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	opacity.value_changed.connect(func(v: float) -> void:
+		_guide_opacity = v
+		guide_opacity_changed.emit(v))
+	_bar_row.add_child(opacity)
 
 
 # ---- Brushes -----------------------------------------------------------------------------

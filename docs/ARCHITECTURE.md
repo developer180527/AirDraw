@@ -293,7 +293,8 @@ re-brushing strokes, re-meshing for export/LOD, and deterministic replay.
   `profile`, `dirs`), mapped in `airdraw-doc` so `airdraw-guide` stays serde-free. The
   version is bumped (unlike the optional `look` key) because a format 2 app would silently
   drop the guide and re-save without it. A mismatched or non-finite guide is reported as a
-  damaged file. Format 1–2 files open with no drawn guide. Loading isn't an edit.
+  damaged file. Format 1–2 files open with no drawn guide. Loading isn't an edit. An optional
+  `guide_opacity` (clamped to 0–0.9 on load) sits beside it.
 
 ### 3e. Incremental live strokes (implemented)
 
@@ -624,7 +625,7 @@ struct Guide { shape: GuideShape, opacity: f32 }
 |---|---|
 | 1 ✅ | `airdraw-guide`: `Guide` (plane, sweep), `Sweep::from_view`, ray tests (hits, normals, both sides, edge-on from the drawing view, depth from the side, nearest layer, degenerate input) |
 | 2 ✅ | Session projects onto the active guide (a stroke keeps the guide it started on; misses draw nothing; hit normals go into the stroke); rail **Draw guide** button (one-shot, `G` on desktop) with a live orange path; drawn guide shown with section lines and an orange start edge; Remove in the Guide panel; choosing a preset plane replaces the drawn guide; undo/redo via `SetGuide`. The smoke test drives it end to end. |
-| 3 (part) | ✅ `.airdraw` format 3 saves the drawn guide; it's shown again on open (smoke test: save, new, reopen). Display (translucent, section lines, orange start line) shipped in step 2. **Left:** guide opacity (needs an `opacity` field and the active-guide pill) |
+| 3 ✅ | `.airdraw` format 3 saves the drawn guide; it's shown again on open (smoke test: save, new, reopen). Display (translucent, section lines, orange start line) shipped in step 2. **Opacity:** an Opacity slider in the Guide bar, 0 (hidden, still drawable) to 0.9; default 0.1. Stored per sketch as `guide_opacity` in the metadata, not on `Guide` as sketched above: it applies to preset planes too and survives replacing the guide. A view setting like the Look: saved, not undoable. The Feather-style slide-on-the-close-button gesture waits for the active-guide pill |
 | 4 | **Bend** |
 | 5 | **Shapes** (cube, pyramid, sphere, tube + segments) with the joystick gizmo |
 | 6 | **Loft** (needs curve selection), saved guides + Resources panel |

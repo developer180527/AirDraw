@@ -62,6 +62,15 @@ enum Op {
 
 const MAX_UNDO: usize = 1000;
 
+/// Guide opacity for sketches that never set one.
+pub const DEFAULT_GUIDE_OPACITY: f32 = 0.1;
+/// "Nearly opaque": strokes behind the guide stay faintly visible.
+pub const MAX_GUIDE_OPACITY: f32 = 0.9;
+
+fn clamp_guide_opacity(opacity: f32) -> f32 {
+    if opacity.is_finite() { opacity.clamp(0.0, MAX_GUIDE_OPACITY) } else { DEFAULT_GUIDE_OPACITY }
+}
+
 #[derive(Debug, Clone)]
 pub struct Document {
     pub(crate) layers: Vec<Layer>,
@@ -79,6 +88,8 @@ pub struct Document {
     guide: Option<Arc<Guide>>,
     /// Id of the Look strokes are shaded with; `None` means the app's default.
     pub(crate) look: Option<String>,
+    /// How opaque the active guide is drawn; `None` = [`DEFAULT_GUIDE_OPACITY`].
+    pub(crate) guide_opacity: Option<f32>,
 }
 
 impl Default for Document {
@@ -101,6 +112,7 @@ impl Document {
             thumbnail: None,
             guide: None,
             look: None,
+            guide_opacity: None,
         }
     }
 
@@ -112,6 +124,7 @@ impl Document {
         thumbnail: Option<Arc<[u8]>>,
         look: Option<String>,
         guide: Option<Guide>,
+        guide_opacity: Option<f32>,
     ) -> Self {
         let next_stroke = strokes.iter().map(|s| s.id.0 + 1).max().unwrap_or(1);
         let active_layer = layers.first().map_or(LayerId(1), |l| l.id);
@@ -127,6 +140,7 @@ impl Document {
             thumbnail,
             guide: guide.map(Arc::new),
             look,
+            guide_opacity: guide_opacity.map(clamp_guide_opacity),
         }
     }
 
@@ -170,6 +184,21 @@ impl Document {
     pub fn set_look(&mut self, look: Option<String>) {
         if self.look != look {
             self.look = look;
+            self.dirty = true;
+        }
+    }
+
+    /// How opaque the active guide (drawn or preset plane) is drawn, 0 (hidden) to
+    /// [`MAX_GUIDE_OPACITY`].
+    pub fn guide_opacity(&self) -> f32 {
+        self.guide_opacity.unwrap_or(DEFAULT_GUIDE_OPACITY)
+    }
+
+    /// Sets the guide opacity (clamped). A view choice like the Look: saved, not an undo step.
+    pub fn set_guide_opacity(&mut self, opacity: f32) {
+        let opacity = clamp_guide_opacity(opacity);
+        if self.guide_opacity() != opacity {
+            self.guide_opacity = Some(opacity);
             self.dirty = true;
         }
     }

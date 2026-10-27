@@ -262,8 +262,28 @@ func _ready() -> void:
 	canvas.load_document(guide_path)
 	print("SMOKE guide new_clears=", cleared, " reloaded=", canvas.has_drawn_guide(), " shown=", main.get("guides")._drawn.visible,
 		" same_shape=", canvas.guide_start_line() == guide_line, " not_undoable=", not canvas.can_undo())
+	# Opacity: the Guide bar slider sets it on the guide's material; saved, not undoable.
+	main.set_tool("guide")
+	var opacity_slider: HSlider = shell.find_child("Guide opacity", true, false)
+	opacity_slider.value = 0.6
+	rig.set_view("3d")
+	await get_tree().create_timer(0.5).timeout
+	await _shot("user://guide_opacity.png")
+	rig.set_view("front")
+	var drawn_fill: Color = main.get("guides")._drawn.material_override.get_shader_parameter("fill_color")
+	canvas.save_document(guide_path)
+	var undo_after_opacity: bool = canvas.can_undo()
+	canvas.new_document()
+	var fresh_opacity: float = canvas.guide_opacity()
+	canvas.load_document(guide_path)
+	var reloaded_slider: HSlider = shell.find_child("Guide opacity", true, false)
+	print("SMOKE guide_opacity fill=", is_equal_approx(drawn_fill.a, 0.6), " not_undoable=", not undo_after_opacity,
+		" new_default=", is_equal_approx(fresh_opacity, 0.1), " reloaded=", is_equal_approx(canvas.guide_opacity(), 0.6),
+		" slider_reloaded=", reloaded_slider != null and is_equal_approx(reloaded_slider.value, 0.6))
+	main.set_tool("draw")
+	shell.toast(main.GUIDE_READY)
 	main.get("guides").set_preset(0)
-	print("SMOKE guide preset_replaces=", not canvas.has_drawn_guide())
+	print("SMOKE guide preset_replaces=", not canvas.has_drawn_guide(), " stale_toast_hidden=", not shell._toast.visible)
 	rig.set_view("front")
 	await get_tree().create_timer(0.5).timeout
 

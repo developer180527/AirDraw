@@ -11,6 +11,7 @@ const PLANE_NORMALS := [Vector3.FORWARD, Vector3.RIGHT, Vector3.UP]
 const PLANE_NAMES := ["Front (XY)", "Side (YZ)", "Top (XZ)"]
 ## Index used for the view-aligned plane (matches the toolbar's plane buttons).
 const VIEW_ALIGNED := 3
+const GUIDE_COLOR := Color(0.3, 0.45, 0.95)
 
 var session: SketchSession
 var normal := Vector3.FORWARD
@@ -39,7 +40,7 @@ func _init(p_session: SketchSession) -> void:
 	var guide_mesh := PlaneMesh.new()
 	guide_mesh.size = Vector2(4, 4)
 	_guide.mesh = guide_mesh
-	_guide.material_override = _grid_material(Color(0.3, 0.45, 0.95, 0.5), Color(0.3, 0.45, 0.95, 0.06), 0.1)
+	_guide.material_override = _grid_material(GUIDE_COLOR, GUIDE_COLOR, 0.1)
 	add_child(_guide)
 
 
@@ -89,6 +90,26 @@ func reset_origin() -> void:
 	_apply()
 
 
+## How opaque the guide (drawn or preset) is drawn; saved with the sketch.
+func opacity() -> float:
+	return canvas.guide_opacity() if canvas else 0.1
+
+
+func set_opacity(value: float) -> void:
+	canvas.set_guide_opacity(value)
+	_apply_opacity()
+
+
+## Fill alpha is the opacity; grid lines stay readable at low opacity and fade out near 0.
+func _apply_opacity() -> void:
+	var o := opacity()
+	var line := minf(1.0, 0.5 + o * 0.5) * clampf(o / 0.05, 0.0, 1.0)
+	for node: MeshInstance3D in [_guide, _drawn]:
+		if node:
+			node.material_override.set_shader_parameter("line_color", Color(GUIDE_COLOR, line))
+			node.material_override.set_shader_parameter("fill_color", Color(GUIDE_COLOR, o))
+
+
 ## Signed distance of the plane from the world origin, for display.
 func offset() -> float:
 	return origin.dot(normal)
@@ -118,7 +139,7 @@ func _show_drawn() -> void:
 	_guide.visible = not drawn
 	if _drawn == null:
 		_drawn = MeshInstance3D.new()
-		var mat := _grid_material(Color(0.3, 0.45, 0.95, 0.55), Color(0.3, 0.45, 0.95, 0.08), 0.25)
+		var mat := _grid_material(GUIDE_COLOR, GUIDE_COLOR, 0.25)
 		mat.set_shader_parameter("use_uv", true)
 		_drawn.material_override = mat
 		add_child(_drawn)
@@ -139,6 +160,7 @@ func _show_drawn() -> void:
 		line.surface_add_vertex(ends[1])
 		line.surface_end()
 		_start_line.mesh = line
+	_apply_opacity()
 	changed.emit()
 
 
