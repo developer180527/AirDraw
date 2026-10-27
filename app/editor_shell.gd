@@ -1,8 +1,9 @@
 class_name EditorShell
 extends CanvasLayer
-## The drawing screen's chrome: top bar, tool rail, panels and toasts around the canvas.
+## The drawing screen's chrome: floating buttons, tool rail, panels and toasts over the canvas.
 ##
-## Landscape: tool rail on one side, a fixed column of collapsible panels on the other.
+## Two floating pills sit in the top corners: Gallery and the sketch name on the left; undo,
+## redo, export and the menu on the right. Landscape: tool rail on one side, a fixed column of collapsible panels on the other.
 ## Portrait (or narrow windows): the panels become a bottom sheet with tabs. Left-handed
 ## mode swaps the sides. Tools that aren't built yet are present but disabled, so the layout
 ## is final and later features only switch them on.
@@ -31,7 +32,8 @@ var portrait := false
 var _s := 1.0
 var _theme: Theme
 var _root: Control
-var _top: PanelContainer
+var _nav: PanelContainer  ## top-left pill: Gallery + sketch name
+var _actions: PanelContainer  ## top-right pill: undo, redo, export, menu
 var _title: Label
 var _undo: Button
 var _redo: Button
@@ -68,7 +70,7 @@ func setup(p_canvas: SketchCanvas) -> void:
 	_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_root)
 
-	_build_top_bar()
+	_build_pills()
 	_build_rail()
 	_build_bodies()
 	_column = VBoxContainer.new()
@@ -96,14 +98,14 @@ func popup_theme() -> Theme:
 	return _theme
 
 
-## The top bar's rectangle (sheets and dialogs open below it).
+## The band the top pills occupy (sheets and dialogs open below it).
 func bar_rect() -> Rect2:
-	return _top.get_global_rect()
+	return _nav.get_global_rect().merge(_actions.get_global_rect())
 
 
 ## Screen areas covered by chrome; touches starting there must not draw.
 func ui_rects() -> Array[Rect2]:
-	var rects: Array[Rect2] = [_top.get_global_rect(), _rail.get_global_rect(), _views.get_global_rect()]
+	var rects: Array[Rect2] = [_nav.get_global_rect(), _actions.get_global_rect(), _rail.get_global_rect(), _views.get_global_rect()]
 	if portrait:
 		rects.append(_sheet.get_global_rect())
 	else:
@@ -115,6 +117,7 @@ func ui_rects() -> Array[Rect2]:
 
 func set_title(text: String, dirty: bool) -> void:
 	_title.text = text + ("  •" if dirty else "")
+	_fit_title()
 
 
 func show_plane(index: int) -> void:
@@ -158,23 +161,30 @@ func find_button(key: String) -> Button:
 
 # ---- Building ----------------------------------------------------------------------------
 
-func _build_top_bar() -> void:
-	_top = PanelContainer.new()
-	_root.add_child(_top)
-	var row := HBoxContainer.new()
-	_top.add_child(row)
-	row.add_child(_button("Gallery", "back", "Gallery", action.emit.bind("gallery")))
+func _build_pills() -> void:
+	_nav = PanelContainer.new()
+	_root.add_child(_nav)
+	var nav := HBoxContainer.new()
+	_nav.add_child(nav)
+	var gallery := _button("Gallery", "back", "", action.emit.bind("gallery"))
+	gallery.theme_type_variation = "ToolButton"
+	nav.add_child(gallery)
 	_title = Label.new()
-	_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_title.clip_text = true
-	row.add_child(_title)
+	_title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	nav.add_child(_title)
+
+	_actions = PanelContainer.new()
+	_root.add_child(_actions)
+	var row := HBoxContainer.new()
+	_actions.add_child(row)
 	_undo = _button("Undo", "undo", "", action.emit.bind("undo"))
 	_redo = _button("Redo", "redo", "", action.emit.bind("redo"))
-	row.add_child(_undo)
-	row.add_child(_redo)
-	row.add_child(_button("Export", "export", "Export", action.emit.bind("export")))
-	row.add_child(_button("More", "more", "", func() -> void: _open_menu()))
+	for b in [_undo, _redo, _button("Export", "export", "", action.emit.bind("export")),
+			_button("More", "more", "", func() -> void: _open_menu())]:
+		b.theme_type_variation = "ToolButton"
+		row.add_child(b)
 
 
 func _build_rail() -> void:
@@ -399,14 +409,17 @@ func _layout() -> void:
 	_root.theme = _theme
 	portrait = screen.y > screen.x or screen.x / _s < 760
 	var m := 10 * _s
-	var top_h := 56 * _s
 	var rail_w := 64 * _s
 	var col_w := 300 * _s
 	var rail_left := not left_handed
 
-	_top.position = Vector2.ZERO
-	_top.size = Vector2(screen.x, top_h)
-	_top.custom_minimum_size = Vector2(screen.x, top_h)
+	_apply_sizes()
+	# The pills float in the top corners; everything else starts below them.
+	_actions.reset_size()
+	_actions.position = Vector2(screen.x - m - _actions.size.x, m)
+	_fit_title()
+	_nav.position = Vector2(m, m)
+	var top_h := maxf(_nav.size.y, _actions.size.y) + m
 
 	_rail.reset_size()
 	_rail.position = Vector2(m if rail_left else screen.x - m - _rail.size.x, top_h + m)
@@ -452,6 +465,16 @@ func _layout() -> void:
 
 	_apply_sizes()
 	layout_changed.emit.call_deferred()
+
+
+## Sizes the sketch name to its text, up to the room left beside the right-hand pill.
+func _fit_title() -> void:
+	var font := _title.get_theme_font("font")
+	var text_w := font.get_string_size(_title.text, HORIZONTAL_ALIGNMENT_LEFT, -1, _title.get_theme_font_size("font_size")).x
+	var screen := get_viewport().get_visible_rect().size
+	var room := screen.x - 4 * 10 * _s - _actions.size.x - 44 * _s
+	_title.custom_minimum_size.x = clampf(text_w + 12 * _s, 0.0, minf(280 * _s, room))
+	_nav.reset_size()
 
 
 ## Touch-friendly sizes and crisp icons at the current scale.

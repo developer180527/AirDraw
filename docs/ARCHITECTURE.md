@@ -755,9 +755,13 @@ Decisions (2026-10-27):
 ### 5-2. Drawing screen layout (implemented)
 
 Decisions (2026-10-27): dark chrome around a light canvas; fixed right panel column for v1
-(no free-floating panels); left-handed mode.
+(no free-floating panels); left-handed mode. Later the same day the full-width top bar was
+replaced by floating pills so the canvas runs edge to edge, and the app follows the
+device's orientation (`display/window/handheld/orientation = sensor`; before this the
+iOS export allowed only one landscape orientation).
 
-- `app/editor_shell.gd`: top bar; tool rail (Brush / Eraser / Select · Plane / Sphere /
+- `app/editor_shell.gd`: floating pills in the top corners (Gallery + sketch name on the
+  left; undo, redo, export, ⋯ menu on the right, both fixed in left-handed mode); tool rail (Brush / Eraser / Select · Plane / Sphere /
   Cylinder · Symmetry / Snap — unbuilt tools disabled with "coming soon"); right column of
   collapsible cards (Brushes, Guide, Layers; shown/hidden from the ⋯ menu); portrait or
   narrow windows (< 760 logical px) get a tabbed bottom sheet instead; view switcher

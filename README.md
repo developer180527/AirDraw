@@ -44,8 +44,8 @@ Rust crates:
 
 ### Works (tested)
 
-- **Drawing screen:** dark chrome around a light canvas — top bar (Gallery, name, undo/redo,
-  export, ⋯ menu), tool rail, fixed right column of collapsible panels (Brushes, Guide,
+- **Drawing screen:** dark floating chrome over a full-screen light canvas — two pills in
+  the top corners (Gallery + sketch name; undo/redo, export, ⋯ menu), tool rail, fixed right column of collapsible panels (Brushes, Guide,
   Layers) that becomes a tabbed bottom sheet in portrait, view switcher (front/side/top/3D),
   toasts, and a left-handed mode that mirrors the layout. Tools not built yet (eraser,
   select, sphere/cylinder guides, symmetry, snap) are in the rail, disabled.
