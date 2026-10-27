@@ -71,7 +71,7 @@ var _guide_path: Line2D
 var _has_drawn_guide := false
 var _plane := 0
 var _offset := 0.0
-var _guide_opacity := 0.1
+var _guide_opacity := GuideController.DEFAULT_OPACITY
 var _guide_drawing := false
 
 
@@ -512,7 +512,7 @@ func _guide_bar() -> void:
 	_bar_row.add_child(label)
 	var opacity := HSlider.new()
 	opacity.name = "Guide opacity"
-	opacity.max_value = canvas.max_guide_opacity()
+	opacity.max_value = GuideController.MAX_OPACITY
 	opacity.step = 0.01
 	opacity.value = _guide_opacity
 	opacity.tooltip_text = "How see-through the guide is (0 hides it; you still draw on it)"

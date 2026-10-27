@@ -12,6 +12,12 @@ const PLANE_NAMES := ["Front (XY)", "Side (YZ)", "Top (XZ)"]
 ## Index used for the view-aligned plane (matches the toolbar's plane buttons).
 const VIEW_ALIGNED := 3
 const GUIDE_COLOR := Color(0.3, 0.45, 0.95)
+## Guide opacity is a device preference (how you like to see guides), not part of a sketch:
+## a file must never change because someone viewed it differently.
+const SETTINGS := "user://settings.cfg"
+const DEFAULT_OPACITY := 0.1
+## "Nearly opaque": strokes behind the guide stay faintly visible.
+const MAX_OPACITY := 0.9
 
 var session: SketchSession
 var normal := Vector3.FORWARD
@@ -24,6 +30,9 @@ var canvas: SketchCanvas
 var _guide: MeshInstance3D
 var _drawn: MeshInstance3D
 var _start_line: MeshInstance3D
+var _opacity := DEFAULT_OPACITY
+## Writes the opacity a moment after the slider stops, not on every step of a drag.
+var _save_timer: Timer
 
 
 func _init(p_session: SketchSession) -> void:
@@ -42,6 +51,16 @@ func _init(p_session: SketchSession) -> void:
 	_guide.mesh = guide_mesh
 	_guide.material_override = _grid_material(GUIDE_COLOR, GUIDE_COLOR, 0.1)
 	add_child(_guide)
+
+	var cfg := ConfigFile.new()
+	if cfg.load(SETTINGS) == OK:
+		_opacity = clampf(cfg.get_value("guide", "opacity", DEFAULT_OPACITY), 0.0, MAX_OPACITY)
+	_save_timer = Timer.new()
+	_save_timer.one_shot = true
+	_save_timer.wait_time = 0.5
+	_save_timer.timeout.connect(_save_opacity)
+	add_child(_save_timer)
+	_apply_opacity()
 
 
 ## Shows the canvas's drawn guide whenever it changes (draw, remove, undo, load).
@@ -90,14 +109,27 @@ func reset_origin() -> void:
 	_apply()
 
 
-## How opaque the guide (drawn or preset) is drawn; saved with the sketch.
+## How opaque the guide (drawn or preset) is drawn, 0 (hidden, still drawable) to MAX_OPACITY.
 func opacity() -> float:
-	return canvas.guide_opacity() if canvas else 0.1
+	return _opacity
 
 
 func set_opacity(value: float) -> void:
-	canvas.set_guide_opacity(value)
+	_opacity = clampf(value, 0.0, MAX_OPACITY)
 	_apply_opacity()
+	_save_timer.start()
+
+
+func _exit_tree() -> void:
+	if not _save_timer.is_stopped():
+		_save_opacity()
+
+
+func _save_opacity() -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(SETTINGS)
+	cfg.set_value("guide", "opacity", _opacity)
+	cfg.save(SETTINGS)
 
 
 ## Fill alpha is the opacity; grid lines stay readable at low opacity and fade out near 0.

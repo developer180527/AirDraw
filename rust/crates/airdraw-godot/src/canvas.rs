@@ -211,23 +211,6 @@ impl SketchCanvas {
         self.doc.guide().is_some()
     }
 
-    /// How opaque the active guide is drawn, 0 (hidden) to `max_guide_opacity()`.
-    #[func]
-    fn guide_opacity(&self) -> f32 {
-        self.doc.guide_opacity()
-    }
-
-    #[func]
-    fn max_guide_opacity(&self) -> f32 {
-        airdraw_doc::MAX_GUIDE_OPACITY
-    }
-
-    /// Sets the guide opacity (clamped), saved with the sketch; not an undo step.
-    #[func]
-    fn set_guide_opacity(&mut self, opacity: f32) {
-        self.doc.set_guide_opacity(opacity);
-    }
-
     /// Removes the drawn guide (undoable); strokes go back to the plane presets.
     #[func]
     fn remove_guide(&mut self) {

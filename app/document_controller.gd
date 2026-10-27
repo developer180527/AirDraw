@@ -80,10 +80,11 @@ func open_recent(entry: Dictionary) -> void:
 	open_path(path, entry.bookmark)
 
 
-## Saves the open sketch in place (with a fresh preview). A new sketch that was never
-## drawn in isn't written, so + New then back leaves no empty files behind.
+## Saves the open sketch in place (with a fresh preview), only if it was edited: a file
+## that was only viewed is never rewritten (docs/ARCHITECTURE.md §3h). A new sketch that was
+## never drawn in isn't written, so + New then back leaves no empty files behind.
 func save_current() -> void:
-	if doc_path.is_empty() or _saving:
+	if doc_path.is_empty() or _saving or not canvas.is_dirty():
 		return
 	if canvas.stroke_count() == 0 and not FileAccess.file_exists(doc_path):
 		return

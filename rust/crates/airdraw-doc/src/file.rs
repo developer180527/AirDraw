@@ -82,9 +82,6 @@ struct Meta {
     /// The drawn guide. Format 3 (a format 2 app would drop it and save the file guide-less).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     guide: Option<GuideDef>,
-    /// Guide opacity, when set (applies to preset planes too, so it's not part of `guide`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    guide_opacity: Option<f32>,
 }
 
 /// A [`Guide`] as stored in the metadata (`[guide] kind = "sweep"`, …). Kept here so the
@@ -147,7 +144,6 @@ impl Document {
             brushes,
             look: self.look.clone(),
             guide: self.guide().map(|g| GuideDef::new(g)),
-            guide_opacity: self.guide_opacity,
         };
         let meta = toml::to_string(&meta).expect("document metadata always serializes");
 
@@ -216,7 +212,7 @@ impl Document {
             return Err(DocError::Corrupt("no layers".into()));
         }
         let guide = meta.guide.map(GuideDef::into_guide).transpose()?;
-        Ok(Document::from_parts(meta.layers, strokes, meta.brushes, thumbnail, meta.look, guide, meta.guide_opacity))
+        Ok(Document::from_parts(meta.layers, strokes, meta.brushes, thumbnail, meta.look, guide))
     }
 
     /// Writes to a temporary file first and renames it over `path`, so a crash or full disk
@@ -577,27 +573,6 @@ mod tests {
             assert!(!back.can_undo(), "loading the guide is not an edit");
         }
         assert!(Document::from_bytes(&sample_doc().to_bytes()).unwrap().guide().is_none());
-    }
-
-    #[test]
-    fn guide_opacity_round_trips_and_is_clamped() {
-        use crate::{DEFAULT_GUIDE_OPACITY, MAX_GUIDE_OPACITY};
-        let mut d = Document::new();
-        assert_eq!(d.guide_opacity(), DEFAULT_GUIDE_OPACITY);
-        assert_eq!(Document::from_bytes(&d.to_bytes()).unwrap().guide_opacity(), DEFAULT_GUIDE_OPACITY);
-        d.set_guide_opacity(0.35);
-        assert!(d.is_dirty() && !d.can_undo(), "a view setting: dirty, but not undoable");
-        assert_eq!(Document::from_bytes(&d.to_bytes()).unwrap().guide_opacity(), 0.35);
-        d.set_guide_opacity(5.0);
-        assert_eq!(d.guide_opacity(), MAX_GUIDE_OPACITY);
-        d.set_guide_opacity(-1.0);
-        assert_eq!(d.guide_opacity(), 0.0);
-        d.set_guide_opacity(f32::NAN);
-        assert_eq!(d.guide_opacity(), DEFAULT_GUIDE_OPACITY);
-        // Out-of-range values in a file are clamped, not rejected.
-        let meta: Meta = toml::from_str("app_version = \"0.1.0\"\nlayers = []\nguide_opacity = 3.0\n").unwrap();
-        let loaded = Document::from_parts(meta.layers, Vec::new(), Vec::new(), None, None, None, meta.guide_opacity);
-        assert_eq!(loaded.guide_opacity(), MAX_GUIDE_OPACITY);
     }
 
     #[test]

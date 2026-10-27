@@ -293,8 +293,7 @@ re-brushing strokes, re-meshing for export/LOD, and deterministic replay.
   `profile`, `dirs`), mapped in `airdraw-doc` so `airdraw-guide` stays serde-free. The
   version is bumped (unlike the optional `look` key) because a format 2 app would silently
   drop the guide and re-save without it. A mismatched or non-finite guide is reported as a
-  damaged file. Format 1–2 files open with no drawn guide. Loading isn't an edit. An optional
-  `guide_opacity` (clamped to 0–0.9 on load) sits beside it.
+  damaged file. Format 1–2 files open with no drawn guide. Loading isn't an edit.
 
 ### 3e. Incremental live strokes (implemented)
 
@@ -625,7 +624,7 @@ struct Guide { shape: GuideShape, opacity: f32 }
 |---|---|
 | 1 ✅ | `airdraw-guide`: `Guide` (plane, sweep), `Sweep::from_view`, ray tests (hits, normals, both sides, edge-on from the drawing view, depth from the side, nearest layer, degenerate input) |
 | 2 ✅ | Session projects onto the active guide (a stroke keeps the guide it started on; misses draw nothing; hit normals go into the stroke); rail **Draw guide** button (one-shot, `G` on desktop) with a live orange path; drawn guide shown with section lines and an orange start edge; Remove in the Guide panel; choosing a preset plane replaces the drawn guide; undo/redo via `SetGuide`. The smoke test drives it end to end. |
-| 3 ✅ | `.airdraw` format 3 saves the drawn guide; it's shown again on open (smoke test: save, new, reopen). Display (translucent, section lines, orange start line) shipped in step 2. **Opacity:** an Opacity slider in the Guide bar, 0 (hidden, still drawable) to 0.9; default 0.1. Stored per sketch as `guide_opacity` in the metadata, not on `Guide` as sketched above: it applies to preset planes too and survives replacing the guide. A view setting like the Look: saved, not undoable. The Feather-style slide-on-the-close-button gesture waits for the active-guide pill |
+| 3 ✅ | `.airdraw` format 3 saves the drawn guide; it's shown again on open (smoke test: save, new, reopen). Display (translucent, section lines, orange start line) shipped in step 2. **Opacity:** an Opacity slider in the Guide bar, 0 (hidden, still drawable) to 0.9; default 0.1. A **device setting** (`user://settings.cfg`, `[guide] opacity`), not part of the sketch or `Guide` as sketched above: it's how you like to see guides, and a file must not change because someone viewed it differently (§3h). Applies to preset planes and drawn guides. The Feather-style slide-on-the-close-button gesture waits for the active-guide pill |
 | 4 | **Bend** |
 | 5 | **Shapes** (cube, pyramid, sphere, tube + segments) with the joystick gizmo |
 | 6 | **Loft** (needs curve selection), saved guides + Resources panel |
@@ -760,7 +759,7 @@ file never changes it. The file stays small enough to autosave every 15 s and to
 | Layers (name, visible, locked) | keep |
 | Look **id** | add the Look's definition, so a device without that Look still renders it |
 | Drawn guide | keep |
-| Guide opacity | move to device settings (a view preference) |
+| Guide opacity | moved to device settings ✅ (a view preference) |
 | Embedded PNG thumbnail | fixed angle, only re-rendered when content changes |
 | (none) | add undo/redo history |
 
@@ -867,15 +866,16 @@ Audit of everything a file holds or was planned to hold:
 | Look (+ planned snapshot of its definition) | authored appearance, changed on purpose | keep |
 | `app_version` | written only with a content save | keep |
 | Thumbnail | **rendered from the viewer's camera today**, on every save | keep, but render from a fixed angle (front-left-above, framing all strokes), only when content changed; excluded from the content hash (GPUs differ in a PNG's last bits) |
-| Guide opacity | **a view preference that dirties the file today** | move out: per-device setting |
+| Guide opacity | a view preference (dirtied the file) | moved to device settings ✅ |
 | Preset plane + offset | tool state | per-device, not in the file |
 | Camera, tool, brush, tray | view / tool state | not in the file (planned earlier; dropped) |
 | Last export settings | pipeline config | per-device for now; revisit with the export work (a team may want shared engine export settings, as an explicit choice) |
 
-**Bug found by the audit (today's app):** `save_current()` runs on open-another, + New, going
-home and quit **without checking dirty**, and re-renders the thumbnail from the current
-camera. So opening a file, orbiting and closing it rewrites it. Fix: save only when dirty;
-the thumbnail changes only with content.
+**Bug found by the audit (fixed, step 0):** `save_current()` ran on open-another, + New, going
+home and quit **without checking dirty**, re-rendering the thumbnail from the current camera,
+so opening a file, orbiting and closing it rewrote it. Now it saves only when dirty, so the
+thumbnail changes only with content. The smoke test opens a file, orbits, changes guide
+opacity and leaves: same bytes, same modification time.
 
 **Deterministic writer:** the same content always produces the same bytes: no timestamps,
 stable key and section order, fixed codec settings per level.
@@ -906,7 +906,7 @@ history, thumbnail or codec differ.
 
 | Step | Deliverable |
 |---|---|
-| 0 | Fix today's bug: save only when dirty (open-another, + New, home, quit); no re-render of the thumbnail without a content change |
+| 0 ✅ | Fix today's bug: save only when dirty (open-another, + New, home, quit), so no thumbnail re-render without a content change; guide opacity moved to device settings |
 | 1 | `airdraw-pack`: section container, `Codec` trait + registry, stored codec, CRC-32, required/optional sections; `airdraw-codec-zstd`; tests for round-trip, unknown sections and codecs, corruption, truncation, determinism |
 | 2 | Format 4 in `airdraw-doc` on top of it: point encoding (XOR + byte planes); formats 1–3 still read; large-sketch fixture + size/time benchmark (Mac and iPad); Quick Look still works |
 | 3 | Look snapshot and content id in `META`; content hash; guide opacity moved to device settings; fixed-angle thumbnail; smoke test: open, orbit, close leaves the file byte-identical |

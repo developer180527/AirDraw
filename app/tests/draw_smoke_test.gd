@@ -262,24 +262,42 @@ func _ready() -> void:
 	canvas.load_document(guide_path)
 	print("SMOKE guide new_clears=", cleared, " reloaded=", canvas.has_drawn_guide(), " shown=", main.get("guides")._drawn.visible,
 		" same_shape=", canvas.guide_start_line() == guide_line, " not_undoable=", not canvas.can_undo())
-	# Opacity: the Guide bar slider sets it on the guide's material; saved, not undoable.
+	# Opacity: the Guide bar slider sets it on the guide's material. It's a device setting:
+	# it never dirties the sketch and survives switching sketches.
 	main.set_tool("guide")
+	var guides = main.get("guides")
 	var opacity_slider: HSlider = shell.find_child("Guide opacity", true, false)
 	opacity_slider.value = 0.6
 	rig.set_view("3d")
-	await get_tree().create_timer(0.5).timeout
+	await get_tree().create_timer(0.6).timeout
 	await _shot("user://guide_opacity.png")
 	rig.set_view("front")
-	var drawn_fill: Color = main.get("guides")._drawn.material_override.get_shader_parameter("fill_color")
-	canvas.save_document(guide_path)
-	var undo_after_opacity: bool = canvas.can_undo()
+	var drawn_fill: Color = guides._drawn.material_override.get_shader_parameter("fill_color")
+	var settings := ConfigFile.new()
+	settings.load(GuideController.SETTINGS)
+	var stored: float = settings.get_value("guide", "opacity", -1.0)
+	var dirty_after_opacity: bool = canvas.is_dirty()
 	canvas.new_document()
-	var fresh_opacity: float = canvas.guide_opacity()
+	print("SMOKE guide_opacity fill=", is_equal_approx(drawn_fill.a, 0.6), " not_dirty=", not dirty_after_opacity,
+		" device_setting=", is_equal_approx(stored, 0.6), " kept_on_new=", is_equal_approx(guides.opacity(), 0.6),
+		" plane_fill=", is_equal_approx(guides._guide.material_override.get_shader_parameter("fill_color").a, 0.6))
+	guides.set_opacity(GuideController.DEFAULT_OPACITY)
+	guides._save_opacity()
+	# Viewing never rewrites a file: open it, orbit, change opacity, leave: same bytes, same
+	# modification time. An edit does save.
+	var file_before := FileAccess.get_file_as_bytes(guide_path)
+	var mtime := FileAccess.get_modified_time(guide_path)
+	await main.get("documents").open_path(guide_path, "")
+	rig.orbit(Vector2(0.4, 0.2))
+	guides.set_opacity(0.3)
+	guides.set_opacity(GuideController.DEFAULT_OPACITY)
+	await main.get("documents").save_current()
+	var unchanged := FileAccess.get_file_as_bytes(guide_path) == file_before and FileAccess.get_modified_time(guide_path) == mtime
+	canvas.remove_guide()
+	await main.get("documents").save_current()
+	var edited_saved := FileAccess.get_file_as_bytes(guide_path) != file_before
+	print("SMOKE view_only unchanged=", unchanged, " edit_saves=", edited_saved)
 	canvas.load_document(guide_path)
-	var reloaded_slider: HSlider = shell.find_child("Guide opacity", true, false)
-	print("SMOKE guide_opacity fill=", is_equal_approx(drawn_fill.a, 0.6), " not_undoable=", not undo_after_opacity,
-		" new_default=", is_equal_approx(fresh_opacity, 0.1), " reloaded=", is_equal_approx(canvas.guide_opacity(), 0.6),
-		" slider_reloaded=", reloaded_slider != null and is_equal_approx(reloaded_slider.value, 0.6))
 	main.set_tool("draw")
 	shell.toast(main.GUIDE_READY)
 	main.get("guides").set_preset(0)
