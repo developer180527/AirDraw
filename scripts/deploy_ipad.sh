@@ -4,7 +4,7 @@
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GODOT="$ROOT/engine/godot/bin/godot.macos.editor.arm64"
-DEVICE="${1:-$(xcrun devicectl list devices 2>/dev/null | awk '/iPad/ && /available/ && /physical/ {for (i=1;i<=NF;i++) if ($i ~ /^[0-9A-F]{8}-[0-9A-F]{16}$/) {print $i; exit}}')}"
+DEVICE="${1:-$(xcrun devicectl list devices 2>/dev/null | awk '/iPad/ && (/available/ || /connected/) && /physical/ {for (i=1;i<=NF;i++) if ($i ~ /^[0-9A-F]{8}-[0-9A-F]{16}$/) {print $i; exit}}')}"
 [ -n "$DEVICE" ] || { echo "No connected iPad found" >&2; exit 1; }
 
 "$ROOT/scripts/build_ios_core.sh"
