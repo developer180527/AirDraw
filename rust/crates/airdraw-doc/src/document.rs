@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use airdraw_brush::{BrushDef, InputPoint};
 use airdraw_guide::Guide;
+use airdraw_look::LookDef;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -77,8 +78,12 @@ pub struct Document {
     pub(crate) thumbnail: Option<Arc<[u8]>>,
     /// The drawn 3D guide strokes land on; `None` means the app's plane presets.
     guide: Option<Arc<Guide>>,
-    /// Id of the Look strokes are shaded with; `None` means the app's default.
-    pub(crate) look: Option<String>,
+    /// The Look strokes are shaded with, as a full copy (like brush snapshots), so a device
+    /// without that Look renders it the same; `None` means the app's default.
+    pub(crate) look: Option<LookDef>,
+    /// Random id given to the sketch when it's created; survives saves and edits. Lets
+    /// per-device state (camera, tool) be remembered outside the file (§3h).
+    pub(crate) content_id: String,
 }
 
 impl Default for Document {
@@ -101,6 +106,7 @@ impl Document {
             thumbnail: None,
             guide: None,
             look: None,
+            content_id: new_content_id(),
         }
     }
 
@@ -110,8 +116,9 @@ impl Document {
         strokes: Vec<Stroke>,
         brushes: Vec<BrushDef>,
         thumbnail: Option<Arc<[u8]>>,
-        look: Option<String>,
+        look: Option<LookDef>,
         guide: Option<Guide>,
+        content_id: String,
     ) -> Self {
         let next_stroke = strokes.iter().map(|s| s.id.0 + 1).max().unwrap_or(1);
         let active_layer = layers.first().map_or(LayerId(1), |l| l.id);
@@ -127,6 +134,7 @@ impl Document {
             thumbnail,
             guide: guide.map(Arc::new),
             look,
+            content_id,
         }
     }
 
@@ -161,17 +169,27 @@ impl Document {
         self.dirty
     }
 
-    /// The Look id saved with the sketch, if any.
-    pub fn look(&self) -> Option<&str> {
-        self.look.as_deref()
+    /// The Look saved with the sketch, if any.
+    pub fn look(&self) -> Option<&LookDef> {
+        self.look.as_ref()
     }
 
-    /// Sets the Look. A view choice like layer visibility: saved, but not an undo step.
-    pub fn set_look(&mut self, look: Option<String>) {
+    /// The saved Look's id, if any.
+    pub fn look_id(&self) -> Option<&str> {
+        self.look.as_ref().map(|l| l.id.as_str())
+    }
+
+    /// Sets the Look. A choice about the artwork's appearance: saved, but not an undo step.
+    pub fn set_look(&mut self, look: Option<LookDef>) {
         if self.look != look {
             self.look = look;
             self.dirty = true;
         }
+    }
+
+    /// The sketch's permanent random id (32 hex digits).
+    pub fn content_id(&self) -> &str {
+        &self.content_id
     }
 
     /// The active drawn guide, if any (otherwise strokes use the app's plane presets).
@@ -342,6 +360,23 @@ impl Document {
         }
         out
     }
+}
+
+/// 128 random bits as hex. `RandomState` is seeded from the OS's randomness per instance, so
+/// this needs no extra dependency; the time and a counter only make repeats even less likely.
+pub(crate) fn new_content_id() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let half = || {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u128(nanos);
+        h.write_u64(n);
+        h.finish()
+    };
+    format!("{:016x}{:016x}", half(), half())
 }
 
 #[cfg(test)]

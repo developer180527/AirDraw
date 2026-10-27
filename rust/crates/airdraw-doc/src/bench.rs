@@ -81,10 +81,11 @@ pub fn file_format(samples: &[(String, Document)], big_points: usize) -> String 
         runs.sort();
         runs[2].as_secs_f64() * 1000.0
     };
-    let rows: [(&str, f64); 5] = [
+    let rows: [(&str, f64); 6] = [
         ("save format 3", time(&|| drop(big.to_bytes_format3()))),
         ("save format 4 fast (autosave)", time(&|| drop(big.to_bytes_with(fast)))),
         ("save format 4 max (copy)", time(&|| drop(big.to_bytes_with(max)))),
+        ("content hash (part of a save)", time(&|| drop(big.content_hash()))),
         ("open format 3", time(&|| drop(Document::from_bytes(&v3).unwrap()))),
         ("open format 4", time(&|| drop(Document::from_bytes(&v4).unwrap()))),
     ];

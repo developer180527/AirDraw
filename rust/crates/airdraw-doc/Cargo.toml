@@ -7,8 +7,10 @@ edition.workspace = true
 [dependencies]
 airdraw-brush.workspace = true
 airdraw-guide.workspace = true
+airdraw-look.workspace = true
 airdraw-pack.workspace = true
 airdraw-codec-zstd.workspace = true
+blake3.workspace = true
 glam.workspace = true
 serde.workspace = true
 toml.workspace = true

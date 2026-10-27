@@ -95,7 +95,7 @@ func _ready() -> void:
 
 	thumbnails = ThumbnailRenderer.new()
 	add_child(thumbnails)
-	documents = DocumentController.new(canvas, app_files, thumbnails, func() -> Basis: return rig.camera.global_transform.basis)
+	documents = DocumentController.new(canvas, app_files, thumbnails)
 	documents.sketch_dir = ProjectSettings.globalize_path(sketch_dir) if not sketch_dir.is_empty() else AppPaths.sketches()
 	documents.opened.connect(_show_canvas)
 	documents.status.connect(_set_status)

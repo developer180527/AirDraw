@@ -13,8 +13,6 @@ const AUTOSAVE_SECONDS := 15.0
 var canvas: SketchCanvas
 var app_files: AppFiles
 var thumbnails: ThumbnailRenderer
-## Returns the basis previews are rendered from (the user's current view).
-var view_basis: Callable
 ## Where + New puts sketches (absolute).
 var sketch_dir := ""
 ## The open sketch's file (absolute) and, for picked files, its access bookmark.
@@ -26,11 +24,10 @@ var active := false
 var _saving := false
 
 
-func _init(p_canvas: SketchCanvas, p_app_files: AppFiles, p_thumbnails: ThumbnailRenderer, p_view_basis: Callable) -> void:
+func _init(p_canvas: SketchCanvas, p_app_files: AppFiles, p_thumbnails: ThumbnailRenderer) -> void:
 	canvas = p_canvas
 	app_files = p_app_files
 	thumbnails = p_thumbnails
-	view_basis = p_view_basis
 	app_files.file_picked.connect(func(path: String, bookmark: String) -> void: open_path(path, bookmark))
 
 
@@ -99,9 +96,10 @@ func save_current() -> void:
 		status.emit("Save failed: " + err)
 
 
-## Renders the preview embedded in the file on the next save, seen from the current view.
+## Renders the preview embedded in the file on the next save, from a fixed angle: the same
+## sketch gets the same preview whoever saves it and however they were looking at it.
 func update_thumbnail() -> void:
-	var png: PackedByteArray = await thumbnails.render(canvas, view_basis.call())
+	var png: PackedByteArray = await thumbnails.render(canvas)
 	var err: String = canvas.set_thumbnail(png)
 	if not err.is_empty():
 		push_warning("Thumbnail skipped: " + err)

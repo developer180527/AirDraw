@@ -297,6 +297,17 @@ func _ready() -> void:
 	await main.get("documents").save_current()
 	var edited_saved := FileAccess.get_file_as_bytes(guide_path) != file_before
 	print("SMOKE view_only unchanged=", unchanged, " edit_saves=", edited_saved)
+	# The preview is rendered from a fixed angle: two very different cameras, same PNG.
+	var renderer: ThumbnailRenderer = main.get("thumbnails")
+	rig.set_view("top")
+	await get_tree().create_timer(0.3).timeout
+	var png_top: PackedByteArray = await renderer.render(canvas)
+	rig.set_view("side")
+	await get_tree().create_timer(0.3).timeout
+	var png_side: PackedByteArray = await renderer.render(canvas)
+	rig.set_view("front")
+	print("SMOKE thumbnail_fixed_angle same=", png_top == png_side, " not_empty=", png_top.size() > 0,
+		" content_id=", canvas.content_id().length() == 32)
 	canvas.load_document(guide_path)
 	main.set_tool("draw")
 	shell.toast(main.GUIDE_READY)

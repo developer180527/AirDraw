@@ -14,6 +14,8 @@ serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.8"
 serde_json = "1.0.154"
 crc32fast = "1.5.3"
+# NEON: BLAKE3's SIMD code on ARM (Apple silicon, iPad, Android), several times faster.
+blake3 = { version = "1.8.7", features = ["neon"] }
 # No default features: drops legacy-format decoders and the dictionary builder (unused).
 zstd = { version = "0.14.3", default-features = false }
 airdraw-input = { path = "crates/airdraw-input" }

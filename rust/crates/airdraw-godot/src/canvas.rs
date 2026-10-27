@@ -118,11 +118,15 @@ impl SketchCanvas {
 
     // ---- Looks ---------------------------------------------------------------------------
 
-    /// Available Looks in menu order: `[{id, name}]`.
+    /// Available Looks in menu order: `[{id, name}]`, plus the sketch's own if it isn't built in.
     #[func]
     fn looks(&self) -> Array<VarDictionary> {
+        // A sketch's Look from another device (not in this library) is listed last, so the
+        // menu still shows what the sketch uses.
+        let current = self.doc.look().filter(|l| self.looks.get(&l.id).is_none());
         self.looks
             .iter()
+            .chain(current)
             .map(|l| {
                 let mut d = VarDictionary::new();
                 d.set("id", l.id.as_str());
@@ -135,17 +139,20 @@ impl SketchCanvas {
     /// The sketch's Look id (the default for sketches without one).
     #[func]
     fn look(&self) -> GString {
-        GString::from(self.looks.get_or_default(self.doc.look()).id.as_str())
+        GString::from(self.current_look().id.as_str())
+    }
+
+    /// The sketch's permanent id, for remembering per-device state outside the file.
+    #[func]
+    fn content_id(&self) -> GString {
+        GString::from(self.doc.content_id())
     }
 
     /// Shades every stroke with Look `id` and saves it with the sketch. False if unknown.
     #[func]
     fn set_look(&mut self, id: GString) -> bool {
-        let id = id.to_string();
-        if self.looks.get(&id).is_none() {
-            return false;
-        }
-        self.doc.set_look(Some(id));
+        let Some(look) = self.looks.get(&id.to_string()).cloned() else { return false };
+        self.doc.set_look(Some(look));
         self.refresh_materials();
         self.signals().look_changed().emit();
         true
@@ -188,7 +195,7 @@ impl SketchCanvas {
     /// shadows, ssao: bool}`.
     #[func]
     fn look_environment(&self) -> VarDictionary {
-        let e = &self.looks.get_or_default(self.doc.look()).environment;
+        let e = &self.current_look().environment;
         let color = |hex: &str| {
             let [r, g, b] = airdraw_look::parse_color(hex).unwrap_or([1.0; 3]);
             Color::from_rgb(r, g, b)
@@ -775,6 +782,12 @@ impl SketchCanvas {
         compiled
     }
 
+    /// The sketch's own copy of its Look (it may not be in this device's library), or the
+    /// default Look.
+    fn current_look(&self) -> airdraw_look::LookDef {
+        self.doc.look().cloned().unwrap_or_else(|| self.looks.get_or_default(None).clone())
+    }
+
     /// The material for a brush snapshot under the current Look: the Look's shader (its unlit
     /// variant for unlit brushes; back faces drawn for double-sided ones) with the brush's
     /// colour, roughness, metallic and emission plus the Look's own parameters as uniforms.
@@ -789,7 +802,7 @@ impl SketchCanvas {
     }
 
     fn build_material(&mut self, d: &MaterialDesc) -> Gd<Material> {
-        let look = self.looks.get_or_default(self.doc.look()).clone();
+        let look = self.current_look();
         let key = (look.shader_for(d.shading == Shading::Unshaded).to_string(), d.double_sided);
         let shader = self.shader(&key.0, key.1);
         let mut m = ShaderMaterial::new_gd();

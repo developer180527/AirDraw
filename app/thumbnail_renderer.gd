@@ -2,11 +2,15 @@ class_name ThumbnailRenderer
 extends SubViewport
 ## Renders a sketch preview offscreen for the file's embedded thumbnail (OS thumbnailers,
 ## Recents). Shares the canvas's 3D world but sees only the stroke render layer, so grids
-## and guides never appear, and frames all strokes from a given view direction.
+## and guides never appear, and frames all strokes from one fixed angle (VIEW), never the
+## user's camera: a file must not change because someone looked at it differently (§3h).
 
 const SIZE := 512
 ## Must match STROKE_LAYERS in the Rust canvas (layer 20).
 const STROKE_LAYER := 20
+## Front, a little from the left and above: the angle a new sketch opens at (OrbitCamera's
+## default yaw 0.6, pitch -0.45).
+static var VIEW := Basis.from_euler(Vector3(-0.45, 0.6, 0.0))
 
 var _camera: Camera3D
 
@@ -26,9 +30,9 @@ func _init() -> void:
 	add_child(_camera)
 
 
-## PNG bytes of all strokes seen along `view` (the basis of the camera to mimic), or empty
-## when there is nothing to draw. Must be awaited: rendering takes one frame.
-func render(canvas: SketchCanvas, view: Basis) -> PackedByteArray:
+## PNG bytes of all strokes seen from VIEW, or empty when there is nothing to draw. Must be
+## awaited: rendering takes one frame.
+func render(canvas: SketchCanvas, view: Basis = VIEW) -> PackedByteArray:
 	if canvas.stroke_count() == 0:
 		return PackedByteArray()
 	world_3d = canvas.get_world_3d()

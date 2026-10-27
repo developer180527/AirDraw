@@ -44,6 +44,7 @@ use std::sync::OnceLock;
 
 use airdraw_brush::{BrushDef, InputPoint};
 use airdraw_guide::{Guide, Sweep};
+use airdraw_look::{LookDef, LookLibrary};
 pub use airdraw_pack::Level;
 use airdraw_pack::{CodecId, Codecs, PackError, ReadLimits, Section, SectionId, WriteOptions};
 use glam::Vec3;
@@ -134,14 +135,34 @@ impl Default for SaveOptions {
 #[derive(Serialize, Deserialize)]
 struct Meta {
     app_version: String,
+    /// The sketch's permanent random id (format 4+; older files get one derived from their
+    /// bytes when opened).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    content_id: Option<String>,
+    /// BLAKE3 of the artwork only (see [`Document::content_hash`]); written for tools, which
+    /// can compare sketches by reading just this section. Format 4+.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    content_hash: Option<String>,
     layers: Vec<Layer>,
     #[serde(default)]
     brushes: Vec<BrushDef>,
     /// Look id. Optional, so older apps (which ignore unknown keys) still open these files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     look: Option<String>,
+    /// The Look's full definition (format 4+), so it renders the same on a device without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    look_def: Option<LookDef>,
     /// The drawn guide. Format 3 (a format 2 app would drop it and save the file guide-less).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    guide: Option<GuideDef>,
+}
+
+/// What [`Document::content_hash`] covers: the artwork, not who saved it or when.
+#[derive(Serialize)]
+struct Content<'a> {
+    layers: &'a [Layer],
+    brushes: &'a [BrushDef],
+    look_def: Option<&'a LookDef>,
     guide: Option<GuideDef>,
 }
 
@@ -194,12 +215,12 @@ impl Document {
     }
 
     pub fn to_bytes_with(&self, opts: SaveOptions) -> Vec<u8> {
-        let (meta, remap) = self.file_meta();
+        let (brushes, remap) = self.used_brushes();
+        let strokes = crate::strokes::encode(&self.strokes, |s| remap[s.brush.0 as usize].unwrap());
+        let hash = content_hash(&self.content_toml(&brushes), &strokes);
+        let meta = self.meta_toml(brushes, Some(hash));
         let mut w = self.file_head(FORMAT_VERSION);
-        let sections = [
-            Section { id: META, required: true, data: meta.into_bytes() },
-            Section { id: STRK, required: true, data: crate::strokes::encode(&self.strokes, |s| remap[s.brush.0 as usize].unwrap()) },
-        ];
+        let sections = [Section { id: META, required: true, data: meta.into_bytes() }, Section { id: STRK, required: true, data: strokes }];
         airdraw_pack::write(&mut w, &sections, codecs(), WriteOptions { codec: WRITE_CODEC, level: opts.level })
             .expect("the write codec is registered and in-memory compression doesn't fail");
         w
@@ -209,7 +230,8 @@ impl Document {
     /// size comparisons; the app writes the current format.
     #[doc(hidden)]
     pub fn to_bytes_format3(&self) -> Vec<u8> {
-        let (meta, remap) = self.file_meta();
+        let (brushes, remap) = self.used_brushes();
+        let meta = self.meta_toml(brushes, None);
         let mut w = self.file_head(3);
         put_u32(&mut w, meta.len() as u32);
         w.extend_from_slice(meta.as_bytes());
@@ -222,9 +244,17 @@ impl Document {
         w
     }
 
-    /// Metadata TOML, plus each brush snapshot's index in it: only snapshots that strokes
-    /// use are kept, renumbered in first-use order.
-    fn file_meta(&self) -> (String, Vec<Option<u32>>) {
+    /// BLAKE3 (hex) of the artwork: layers, brush snapshots, Look, drawn guide and strokes,
+    /// as they're saved. Not the thumbnail (it depends on the GPU), the app version, the
+    /// content id, history, or compression: two files with the same hash hold the same model.
+    pub fn content_hash(&self) -> String {
+        let (brushes, remap) = self.used_brushes();
+        content_hash(&self.content_toml(&brushes), &crate::strokes::encode(&self.strokes, |s| remap[s.brush.0 as usize].unwrap()))
+    }
+
+    /// The brush snapshots strokes use, renumbered in first-use order, and each snapshot's
+    /// new index.
+    fn used_brushes(&self) -> (Vec<BrushDef>, Vec<Option<u32>>) {
         let mut remap: Vec<Option<u32>> = vec![None; self.brushes.len()];
         let mut brushes = Vec::new();
         for s in &self.strokes {
@@ -234,14 +264,26 @@ impl Document {
                 brushes.push(self.brushes[s.brush.0 as usize].clone());
             }
         }
+        (brushes, remap)
+    }
+
+    fn content_toml(&self, brushes: &[BrushDef]) -> String {
+        let content = Content { layers: &self.layers, brushes, look_def: self.look.as_ref(), guide: self.guide().map(|g| GuideDef::new(g)) };
+        toml::to_string(&content).expect("document content always serializes")
+    }
+
+    fn meta_toml(&self, brushes: Vec<BrushDef>, content_hash: Option<String>) -> String {
         let meta = Meta {
             app_version: env!("CARGO_PKG_VERSION").into(),
+            content_id: Some(self.content_id.clone()),
+            content_hash,
             layers: self.layers.clone(),
             brushes,
-            look: self.look.clone(),
+            look: self.look_id().map(str::to_string),
+            look_def: self.look.clone(),
             guide: self.guide().map(|g| GuideDef::new(g)),
         };
-        (toml::to_string(&meta).expect("document metadata always serializes"), remap)
+        toml::to_string(&meta).expect("document metadata always serializes")
     }
 
     /// Magic, version, flags and the thumbnail: the part every format since 2 shares.
@@ -277,7 +319,11 @@ impl Document {
             return Err(DocError::Corrupt("no layers".into()));
         }
         let guide = meta.guide.map(GuideDef::into_guide).transpose()?;
-        Ok(Document::from_parts(meta.layers, strokes, meta.brushes, thumbnail, meta.look, guide))
+        // The embedded Look if this build can render it, else the built-in one with that id
+        // (a Look from a newer app), else the default.
+        let look = meta.look_def.filter(|l| l.validate().is_ok()).or_else(|| LookLibrary::with_builtins().get(meta.look.as_deref()?).cloned());
+        let content_id = meta.content_id.filter(|id| valid_content_id(id)).unwrap_or_else(|| blake3::hash(bytes).to_hex()[..32].to_string());
+        Ok(Document::from_parts(meta.layers, strokes, meta.brushes, thumbnail, look, guide, content_id))
     }
 
     /// Writes to a temporary file first and renames it over `path`, so a crash or full disk
@@ -297,6 +343,21 @@ impl Document {
         let bytes = std::fs::read(path).map_err(|e| DocError::Io(format!("{}: {e}", path.display())))?;
         Self::from_bytes(&bytes)
     }
+}
+
+/// See [`Document::content_hash`]. Versioned, so a future change to what's hashed can't
+/// collide with today's hashes.
+fn content_hash(content_toml: &str, strokes: &[u8]) -> String {
+    let mut h = blake3::Hasher::new();
+    h.update(b"airdraw content v1\0");
+    h.update(&(content_toml.len() as u64).to_le_bytes());
+    h.update(content_toml.as_bytes());
+    h.update(strokes);
+    h.finalize().to_hex().to_string()
+}
+
+fn valid_content_id(id: &str) -> bool {
+    (8..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 type Thumbnail = Option<Arc<[u8]>>;
@@ -761,17 +822,110 @@ mod tests {
         assert_eq!(upgraded.strokes(), d.strokes());
     }
 
+    fn clay() -> LookDef {
+        LookLibrary::with_builtins().get("com.airdraw.clay").unwrap().clone()
+    }
+
     #[test]
     fn look_round_trips_and_is_optional() {
         let mut d = Document::new();
         assert_eq!(Document::from_bytes(&d.to_bytes()).unwrap().look(), None);
-        d.set_look(Some("com.airdraw.clay".into()));
-        assert!(d.is_dirty() && !d.can_undo(), "a view setting: dirty, but not undoable");
+        d.set_look(Some(clay()));
+        assert!(d.is_dirty() && !d.can_undo(), "saved, but not undoable");
         let back = Document::from_bytes(&d.to_bytes()).unwrap();
-        assert_eq!(back.look(), Some("com.airdraw.clay"));
+        assert_eq!(back.look(), Some(&clay()));
         // Metadata from before Looks (no key) still parses.
         let meta: Meta = toml::from_str("app_version = \"0.1.0\"\nlayers = []\n").unwrap();
         assert_eq!(meta.look, None);
+    }
+
+    #[test]
+    fn embedded_look_renders_without_the_library() {
+        // A custom Look this device doesn't have travels with the sketch.
+        let mut custom = clay();
+        custom.id = "studio.custom.chalk".into();
+        custom.params.insert("wrap".into(), 0.7);
+        let mut d = Document::new();
+        d.set_look(Some(custom.clone()));
+        assert_eq!(Document::from_bytes(&d.to_bytes()).unwrap().look(), Some(&custom));
+        // One this build can't render (a shader from a newer app) falls back to the built-in
+        // Look with the same id, else to the default.
+        let mut newer = clay();
+        newer.shader = "hologram".into();
+        d.set_look(Some(newer));
+        assert_eq!(Document::from_bytes(&d.to_bytes()).unwrap().look(), Some(&clay()));
+        let mut unknown = custom;
+        unknown.shader = "hologram".into();
+        d.set_look(Some(unknown));
+        assert_eq!(Document::from_bytes(&d.to_bytes()).unwrap().look(), None);
+    }
+
+    #[test]
+    fn format3_look_id_still_resolves() {
+        let mut d = Document::new();
+        d.set_look(Some(clay()));
+        let mut bytes = d.to_bytes_format3();
+        // Format 3 files had only the id: strip the definition from the metadata.
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        assert!(text.contains("[look_def]"));
+        let (body, _) = bytes.split_at(bytes.len() - 4);
+        let meta_len = u32::from_le_bytes(body[12..16].try_into().unwrap()) as usize;
+        let meta = std::str::from_utf8(&body[16..16 + meta_len]).unwrap();
+        let mut meta: Meta = toml::from_str(meta).unwrap();
+        meta.look_def = None;
+        let meta = toml::to_string(&meta).unwrap();
+        let mut w = body[..12].to_vec();
+        put_u32(&mut w, meta.len() as u32);
+        w.extend_from_slice(meta.as_bytes());
+        w.extend_from_slice(&body[16 + meta_len..]);
+        let sum = adler32(&w);
+        put_u32(&mut w, sum);
+        bytes = w;
+        assert_eq!(Document::from_bytes(&bytes).unwrap().look(), Some(&clay()));
+    }
+
+    #[test]
+    fn content_id_is_kept_and_old_files_get_a_stable_one() {
+        let d = sample_doc();
+        assert_eq!(d.content_id().len(), 32);
+        assert_ne!(d.content_id(), Document::new().content_id());
+        let back = Document::from_bytes(&d.to_bytes()).unwrap();
+        assert_eq!(back.content_id(), d.content_id());
+        // Edits don't change it.
+        let mut edited = back.clone();
+        edited.remove_strokes(&[edited.strokes()[0].id]);
+        assert_eq!(Document::from_bytes(&edited.to_bytes()).unwrap().content_id(), d.content_id());
+        // A format 1 file has none: it gets one from its bytes, the same every time.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/format1_smoke.airdraw");
+        let old = std::fs::read(path).unwrap();
+        let (a, b) = (Document::from_bytes(&old).unwrap(), Document::from_bytes(&old).unwrap());
+        assert_eq!(a.content_id(), b.content_id());
+        assert!(valid_content_id(a.content_id()));
+    }
+
+    #[test]
+    fn content_hash_is_the_artwork_only() {
+        let d = sample_doc();
+        let hash = d.content_hash();
+        let bytes = d.to_bytes();
+        let meta = String::from_utf8(sections(&bytes).get(META).unwrap().data.clone()).unwrap();
+        assert!(meta.contains(&format!("content_hash = \"{hash}\"")), "stored for tools");
+        // Same model: another id, a thumbnail, another compression level, a reload.
+        let mut copy = Document::from_bytes(&bytes).unwrap();
+        copy.content_id = "another-sketch-id".into();
+        copy.set_thumbnail(Some(png())).unwrap();
+        assert_eq!(copy.content_hash(), hash);
+        assert_eq!(Document::from_bytes(&d.to_bytes_with(SaveOptions { level: Level::Max })).unwrap().content_hash(), hash);
+        // Any change to the artwork changes it.
+        let mut moved = d.clone();
+        moved.remove_strokes(&[moved.strokes()[0].id]);
+        assert_ne!(moved.content_hash(), hash);
+        let mut relooked = d.clone();
+        relooked.set_look(Some(clay()));
+        assert_ne!(relooked.content_hash(), hash);
+        let mut guided = d.clone();
+        guided.set_guide(Some(sweep()));
+        assert_ne!(guided.content_hash(), hash);
     }
 
     fn sweep() -> Guide {

@@ -878,6 +878,28 @@ Mac (M4 Pro), real sketches copied off the iPad:
   Autosave is well under the 50 ms budget on both. An empty sketch grows from 125 to 171
   bytes (section headers), which doesn't matter.
 
+#### Step 3 results (2026-10-27)
+
+- **Look copy:** `META` keeps `look = "<id>"` and adds `[look_def]`, the full definition
+  (`airdraw-look`'s `LookDef` is now serializable, with `validate()`). On open: the copy if
+  this build can render it (known schema and shaders, valid colours), else the built-in Look
+  with that id (a copy from a newer app), else the default. Format 3 files (id only) resolve
+  through the library as before. A sketch's Look from another device is listed last in the
+  Look menu. Picking a Look stores the library's current version, so re-picking refreshes it.
+- **Content id:** 128 random bits (hex) from `RandomState` (OS-seeded, no new dependency),
+  created with the sketch and kept across saves and edits. Files without one (formats
+  1–3) get one derived from their bytes, stable until they're saved. `canvas.content_id()`.
+- **Content hash:** `Document::content_hash()`, BLAKE3 over a versioned prefix, the content
+  TOML (layers, used brush snapshots, Look copy, guide) and the encoded strokes. Excludes the
+  thumbnail, app version, content id, history and compression level. Written to `META` as
+  `content_hash`, so tools can compare sketches by reading only that section. Costs about
+  10 ms per 1M points (NEON enabled): **autosave of 1M points is now 38 ms on the Mac and
+  36 ms on the iPad**, still under the 50 ms budget.
+- **Fixed-angle thumbnail:** rendered from the angle a new sketch opens at (yaw 0.6, pitch
+  −0.45), never the user's camera. Smoke test: renders from the top and side views are
+  byte-identical. With step 0 (saves only when edited), a viewed file never changes.
+- No format bump: everything added is optional `META` keys in format 4.
+
 #### Undo history (`HIST`)
 
 - **Stored:** the full undo **and** redo stacks (≤ 1000 ops), so reopening is the same as
@@ -950,7 +972,7 @@ history, thumbnail or codec differ.
 | 0 ✅ | Fix today's bug: save only when dirty (open-another, + New, home, quit), so no thumbnail re-render without a content change; guide opacity moved to device settings |
 | 1 ✅ | `airdraw-pack`: section container, `Codec` trait + registry, stored codec, CRC-32, required/optional sections; `airdraw-codec-zstd`; tests for round-trip, unknown sections and codecs, corruption, truncation, determinism |
 | 2 ✅ | Format 4 in `airdraw-doc` on top of it: point encoding (XOR + byte planes); formats 1–3 still read; large-sketch fixture + size/time benchmark (Mac and iPad); Quick Look still works |
-| 3 | Look snapshot and content id in `META`; content hash; guide opacity moved to device settings; fixed-angle thumbnail; smoke test: open, orbit, close leaves the file byte-identical |
+| 3 ✅ | Look snapshot and content id in `META`; content hash; guide opacity moved to device settings; fixed-angle thumbnail; smoke test: open, orbit, close leaves the file byte-identical |
 | 4 | `HIST`: history encoding with a shared stroke pool, size cap, damaged history → open without it; smoke test (draw, delete, save, reopen, undo, redo) |
 | 5 | Save a Copy Without History (⋯ menu, system save/share) |
 

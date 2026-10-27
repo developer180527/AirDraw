@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Newest Look file schema this build understands.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -37,7 +37,7 @@ const SHADERS: &[(&str, &str)] = &[
 pub const OUTLINE_SHADER: &str = "outline";
 
 /// Contents of a `.look.toml` file.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LookDef {
     pub schema: u32,
@@ -57,7 +57,7 @@ pub struct LookDef {
     pub environment: Environment,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Outline {
     /// sRGB hex.
@@ -67,7 +67,7 @@ pub struct Outline {
 }
 
 /// The lighting around the strokes.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Environment {
     /// sRGB hex.
@@ -108,20 +108,27 @@ impl std::error::Error for LookError {}
 impl LookDef {
     pub fn from_toml(text: &str) -> Result<Self, LookError> {
         let def: Self = toml::from_str(text).map_err(|e| LookError::Parse(e.to_string()))?;
-        if def.schema > SCHEMA_VERSION {
-            return Err(LookError::NewerSchema(def.schema));
+        def.validate()?;
+        Ok(def)
+    }
+
+    /// Checks a Look this build can render: known schema and shaders, valid colours. For
+    /// Looks that didn't come through [`LookDef::from_toml`], e.g. a sketch's embedded copy.
+    pub fn validate(&self) -> Result<(), LookError> {
+        if self.schema > SCHEMA_VERSION {
+            return Err(LookError::NewerSchema(self.schema));
         }
-        for s in std::iter::once(&def.shader).chain(&def.unshaded_shader) {
+        for s in std::iter::once(&self.shader).chain(&self.unshaded_shader) {
             if shader_source(s).is_none() {
                 return Err(LookError::UnknownShader(s.clone()));
             }
         }
-        parse_color(&def.environment.background)?;
-        parse_color(&def.environment.ambient)?;
-        if let Some(o) = &def.outline {
+        parse_color(&self.environment.background)?;
+        parse_color(&self.environment.ambient)?;
+        if let Some(o) = &self.outline {
             parse_color(&o.color)?;
         }
-        Ok(def)
+        Ok(())
     }
 
     /// The shader for a brush: its unlit variant for unlit brushes, if the Look has one.
