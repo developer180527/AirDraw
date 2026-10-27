@@ -571,6 +571,23 @@ impl SketchCanvas {
         }
     }
 
+    /// File format size/speed table (docs/ARCHITECTURE.md §3h) for the sketches at `paths`,
+    /// plus a sketch of at least `points` points tiled from them. For
+    /// `tests/file_format_bench.tscn`; unreadable files are listed and skipped.
+    #[func]
+    fn file_format_benchmark(&self, paths: PackedStringArray, points: i64) -> GString {
+        let mut samples = Vec::new();
+        let mut skipped = String::new();
+        for path in paths.as_slice() {
+            let path = path.to_string();
+            match Document::load(Path::new(&path)) {
+                Ok(d) => samples.push((Path::new(&path).file_name().unwrap_or_default().to_string_lossy().into_owned(), d)),
+                Err(e) => skipped.push_str(&format!("skipped {path}: {e}\n")),
+            }
+        }
+        GString::from(&(airdraw_doc::bench::file_format(&samples, points.max(0) as usize) + &skipped))
+    }
+
     /// Replaces the document with the file at an absolute path. Returns an empty string on
     /// success, else the error message (the current document is kept).
     #[func]

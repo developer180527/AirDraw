@@ -34,8 +34,9 @@ Rust crates:
 - `airdraw-brush` — brushes as data (`.brush.toml`): filters → dynamics → geometry → material,
   built-in Ink / Marker / Ribbon / Dots, user brushes, validation.
 - `airdraw-doc` — document model (raw input + brush snapshot per stroke), undo/redo,
-  `.airdraw` file format (v3: embedded PNG preview, Look, drawn guide), Recents list.
-- `airdraw-pack` — section container for the coming `.airdraw` format 4: required/optional
+  `.airdraw` file format (v4: embedded PNG preview, then zstd-compressed sections with
+  Look, drawn guide and strokes; v1–3 still open), Recents list.
+- `airdraw-pack` — section container for `.airdraw` format 4: required/optional
   sections, CRC-32, a swappable `Codec` interface (no compression library of its own).
 - `airdraw-codec-zstd` — the zstd codec for `airdraw-pack`.
 - `airdraw-export` — export scene + exporter registry; GLB, glTF, FBX (binary 7.4, own
@@ -164,9 +165,12 @@ verified by hand on device.
 ## File format
 
 `.airdraw` files are versioned binary: `ADRW`, format version, an embedded PNG preview right
-after the header (so OS thumbnailers read only the first bytes), TOML metadata (layers,
-brush snapshots, Look, the drawn guide), then per-stroke binary point data and a checksum.
-Format 1 and 2 files still open (they have no guide, so they open with the default plane). Details in `rust/crates/airdraw-doc/src/file.rs`.
+after the header (so OS thumbnailers read only the first bytes), then sections (format 4):
+TOML metadata (layers, brush snapshots, Look, the drawn guide) and the stroke data, each
+zstd-compressed and CRC-checked. Stroke data is stored losslessly but predicted and split
+into byte planes first, so it compresses about 3× (measured on real iPad sketches). The
+compressor is swappable (`airdraw-pack`'s `Codec` trait). Formats 1–3 still open (1 and 2
+have no guide, so they open with the default plane) and are upgraded on save. Details in `rust/crates/airdraw-doc/src/file.rs`.
 
 ## License
 

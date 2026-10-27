@@ -36,9 +36,12 @@ var doc_path: String:
 
 
 func _ready() -> void:
-	# scripts/bench_ipad.sh launches the app with this to run the live-stroke benchmark on device.
+	# scripts/bench_ipad.sh launches the app with these to run a benchmark on device.
 	if "bench-live-stroke" in OS.get_cmdline_user_args():
 		get_tree().change_scene_to_file.call_deferred("res://tests/live_stroke_bench.tscn")
+		return
+	if "bench-file-format" in OS.get_cmdline_user_args():
+		get_tree().change_scene_to_file.call_deferred("res://tests/file_format_bench.tscn")
 		return
 	Input.use_accumulated_input = false
 	# User-facing folders first (and the one-time iOS Documents migration, which moves user

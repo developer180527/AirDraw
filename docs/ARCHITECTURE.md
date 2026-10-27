@@ -288,12 +288,15 @@ re-brushing strokes, re-meshing for export/LOD, and deterministic replay.
   files still open (fixture `airdraw-doc/tests/fixtures/format1_smoke.airdraw`) and are
   upgraded on save. `Document::set_thumbnail` isn't an edit (no dirty flag, no undo);
   `read_thumbnail(path)` reads just the preview for Recents and thumbnailers.
-- **Format 3 (current): drawn guide.** An optional `[guide]` table in the metadata
+- **Format 3: drawn guide.** An optional `[guide]` table in the metadata
   (`kind = "plane"` with `origin`/`normal`, or `kind = "sweep"` with `near`, `far`,
   `profile`, `dirs`), mapped in `airdraw-doc` so `airdraw-guide` stays serde-free. The
   version is bumped (unlike the optional `look` key) because a format 2 app would silently
   drop the guide and re-save without it. A mismatched or non-finite guide is reported as a
   damaged file. Format 1–2 files open with no drawn guide. Loading isn't an edit.
+- **Format 4 (current): compressed sections** (§3h): `META` + `STRK` in an `airdraw-pack`
+  container, zstd, per-section CRC-32 instead of the whole-file Adler-32. Formats 1–3 still
+  open and are upgraded on save; `to_bytes_format3` remains for tests and benchmarks.
 
 ### 3e. Incremental live strokes (implemented)
 
@@ -832,16 +835,45 @@ pub struct WriteOptions { pub codec: CodecId, pub level: Level }
   Windows and Linux builds unverified until those toolchains are set up.
 - Tests run the container against the stored codec and a test codec, so the container is
   proven independent of zstd; the zstd crate has its own round-trip and corruption tests.
-- **Point encoding before compression (lossless; exact round-trip stays a rule):**
-  - Per stroke, store each channel as its own stream: x, y, z, pressure, tilt, time.
-  - Floats: XOR each value with the previous one in its stream, then split the bytes into
-    planes (all byte 0s, then all byte 1s…). Neighbouring samples share sign, exponent and
-    high mantissa bits, so planes become long runs zstd squeezes well.
-  - Time: delta from the previous sample. Shared normals and absent tilt stay omitted, as now.
+- **Point encoding before compression (lossless; exact round-trip stays a rule),**
+  `airdraw-doc/src/strokes.rs`:
+  - One stream per channel across all strokes: x, y, z, normal x/y/z, pressure, tilt, time.
+  - Positions, pressure and time: residual from a straight-line prediction
+    (`2·prev − prev2`) on the bit patterns, zigzag-coded. Normals and tilt: XOR with the
+    previous value. Then byte planes (all lowest bytes, then the next…).
+  - Measured per stream on real iPad sketches (zstd fast): the prediction beats plain XOR by
+    20% on positions and 45% on time. Pressure is the largest stream and barely compresses
+    (12,681 distinct values in 13,465 points): it's sensor noise, and lossless means it
+    stays. Shared normals and absent tilt stay omitted, as before.
 - **Thumbnail** is already PNG and stays stored.
 - **Target**, measured on a large fixture (≥1M points) and on the iPad: file ≥3× smaller
   than format 3; autosave of that sketch under 50 ms on iPad. Fixtures and a benchmark come
   with the crate.
+
+#### Step 2 results (2026-10-27)
+
+`file_format_benchmark` (desktop) and `tests/file_format_bench.tscn` (device:
+`BENCH=file-format scripts/bench_ipad.sh`) print the same table from `airdraw_doc::bench`.
+Mac (M4 Pro), real sketches copied off the iPad:
+
+| Sketch | Points | Thumbnail | Format 3 | Format 4 fast | Ratio | Without thumbnail |
+|---|---|---|---|---|---|---|
+| Sketch 1 | 1,746 | 29.7 KB | 73.8 KB | 45.6 KB | 1.6× | 2.8× |
+| Sketch 2 | 507 | 7.6 KB | 20.4 KB | 12.2 KB | 1.7× | 2.7× |
+| Sketch 3 | 4,204 | 5.3 KB | 108.4 KB | 35.4 KB | 3.1× | 3.4× |
+| Sketch 4 | 5,290 | 9.3 KB | 137.5 KB | 44.1 KB | 3.1× | 3.7× |
+| Sketch 5 | 1,718 | 3.5 KB | 59.5 KB | 30.4 KB | 2.0× | 2.1× |
+| All | | 63 KB | 435 KB | 186 KB | 2.3× | **3.0×** |
+
+- Stroke data meets the 3× target overall (3.4–3.7× on the larger sketches). Whole files
+  reach 2.3×: the 512 px PNG thumbnail doesn't compress and is now about a third of a
+  format 4 file. Shrinking it (size, palette) is the next lever, separately.
+- `Max` gains only 2–6% over `Fast` on real sketches.
+- **Times, 1M points** (sample strokes tiled with per-point jitter so no copy repeats; this
+  compresses worse than real data, 2.1×, so it's a pessimistic workload), median of 5:
+  save format 3 12 ms, **format 4 fast (autosave) 28 ms**, format 4 max 1.2 s, open
+  format 3 17 ms, **open format 4 15 ms**. Well under the 50 ms autosave budget on the Mac;
+  iPad numbers: run `BENCH=file-format scripts/bench_ipad.sh`.
 
 #### Undo history (`HIST`)
 
@@ -914,7 +946,7 @@ history, thumbnail or codec differ.
 |---|---|
 | 0 ✅ | Fix today's bug: save only when dirty (open-another, + New, home, quit), so no thumbnail re-render without a content change; guide opacity moved to device settings |
 | 1 ✅ | `airdraw-pack`: section container, `Codec` trait + registry, stored codec, CRC-32, required/optional sections; `airdraw-codec-zstd`; tests for round-trip, unknown sections and codecs, corruption, truncation, determinism |
-| 2 | Format 4 in `airdraw-doc` on top of it: point encoding (XOR + byte planes); formats 1–3 still read; large-sketch fixture + size/time benchmark (Mac and iPad); Quick Look still works |
+| 2 ✅ | Format 4 in `airdraw-doc` on top of it: point encoding (XOR + byte planes); formats 1–3 still read; large-sketch fixture + size/time benchmark (Mac and iPad); Quick Look still works |
 | 3 | Look snapshot and content id in `META`; content hash; guide opacity moved to device settings; fixed-angle thumbnail; smoke test: open, orbit, close leaves the file byte-identical |
 | 4 | `HIST`: history encoding with a shared stroke pool, size cap, damaged history → open without it; smoke test (draw, delete, save, reopen, undo, redo) |
 | 5 | Save a Copy Without History (⋯ menu, system save/share) |

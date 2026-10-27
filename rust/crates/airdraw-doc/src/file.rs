@@ -1,4 +1,20 @@
-//! The `.airdraw` file format (little-endian):
+//! The `.airdraw` file format (little-endian), docs/ARCHITECTURE.md §3c and §3h.
+//!
+//! Format 4 (current):
+//!
+//! ```text
+//! "ADRW"  u16 format version  u16 flags (0)
+//! u32 thumbnail length (0 = none), PNG bytes
+//! sections (airdraw-pack): META (required, TOML: app version, layers, brush snapshots, Look,
+//!   drawn guide), STRK (required, stroke data, see `strokes.rs`); each compressed by its
+//!   own codec and CRC-checked
+//! ```
+//!
+//! Sections carry their own checksums, so there's no whole-file checksum: an optional
+//! section added later can be damaged and dropped without losing the sketch. A required
+//! section this build doesn't know means the file needs a newer app.
+//!
+//! Formats 1–3 (still read; `to_bytes_format3` writes 3 for tests and benchmarks):
 //!
 //! ```text
 //! "ADRW"  u16 format version  u16 flags (0)
@@ -14,19 +30,22 @@
 //! Point data is binary (a sketch can hold millions of points); everything else is TOML so
 //! it stays readable and reuses the brush file format. Values round-trip exactly.
 //!
-//! The thumbnail sits at a fixed place right after the 8-byte header so OS thumbnail
-//! extensions (Quick Look, Windows shell, freedesktop) can read just the first bytes of a
-//! file: check "ADRW" and version >= 2, read the u32 at offset 8, then that many PNG bytes.
-//! Format 1 files (no thumbnail) and format 2 files (no guide) are still read; they open with
-//! the default plane.
+//! The thumbnail sits at a fixed place right after the 8-byte header in every format since
+//! 2, so OS thumbnail extensions (Quick Look, Windows shell, freedesktop) can read just the
+//! first bytes of a file: check "ADRW" and version >= 2, read the u32 at offset 8, then that
+//! many PNG bytes. Format 1 (no thumbnail) and 2 (no guide) files open with the default plane.
 
 use std::fmt;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
+use std::sync::OnceLock;
+
 use airdraw_brush::{BrushDef, InputPoint};
 use airdraw_guide::{Guide, Sweep};
+pub use airdraw_pack::Level;
+use airdraw_pack::{CodecId, Codecs, PackError, ReadLimits, Section, SectionId, WriteOptions};
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
@@ -35,7 +54,13 @@ use crate::document::{BrushRef, Document, Layer, LayerId, Stroke, StrokeId};
 pub const EXTENSION: &str = "airdraw";
 const MAGIC: &[u8; 4] = b"ADRW";
 /// Newest file format this build reads and the one it writes.
-pub const FORMAT_VERSION: u16 = 3;
+pub const FORMAT_VERSION: u16 = 4;
+/// First format made of `airdraw-pack` sections.
+const SECTIONS_SINCE: u16 = 4;
+const META: SectionId = SectionId(*b"META");
+const STRK: SectionId = SectionId(*b"STRK");
+/// Codec for new files. Reading accepts every codec in [`codecs`], whatever this says.
+const WRITE_CODEC: CodecId = CodecId::ZSTD;
 /// First format with an embedded thumbnail.
 const THUMBNAIL_SINCE: u16 = 2;
 /// Sanity cap; a 512×512 preview is ~50–150 KB.
@@ -51,6 +76,8 @@ pub enum DocError {
     NewerVersion(u16),
     Truncated,
     Corrupt(String),
+    /// Readable header, but it needs something this build lacks (a section or codec).
+    Unsupported(String),
     Io(String),
 }
 
@@ -63,12 +90,46 @@ impl fmt::Display for DocError {
             }
             DocError::Truncated => write!(f, "file is incomplete (truncated)"),
             DocError::Corrupt(why) => write!(f, "file is damaged: {why}"),
+            DocError::Unsupported(why) => write!(f, "{why}"),
             DocError::Io(e) => write!(f, "{e}"),
         }
     }
 }
 
 impl std::error::Error for DocError {}
+
+impl From<PackError> for DocError {
+    fn from(e: PackError) -> Self {
+        match e {
+            PackError::Truncated => DocError::Truncated,
+            PackError::UnknownCodec(_) => DocError::Unsupported(format!("file {e}")),
+            e => DocError::Corrupt(e.to_string()),
+        }
+    }
+}
+
+/// The codecs files are read and written with. Swapping or adding a codec happens here.
+fn codecs() -> &'static Codecs {
+    static CODECS: OnceLock<Codecs> = OnceLock::new();
+    CODECS.get_or_init(|| {
+        let mut c = Codecs::new();
+        c.register(std::sync::Arc::new(airdraw_codec_zstd::Zstd));
+        c
+    })
+}
+
+/// How a document is written.
+#[derive(Clone, Copy, Debug)]
+pub struct SaveOptions {
+    /// `Fast` for saves and autosaves, `Max` for copies meant to be shared.
+    pub level: Level,
+}
+
+impl Default for SaveOptions {
+    fn default() -> Self {
+        Self { level: Level::Fast }
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 struct Meta {
@@ -127,8 +188,43 @@ impl GuideDef {
 }
 
 impl Document {
+    /// The document as a current-format file, with [`SaveOptions::default`].
     pub fn to_bytes(&self) -> Vec<u8> {
-        // Keep only snapshots that strokes use, renumbered in first-use order.
+        self.to_bytes_with(SaveOptions::default())
+    }
+
+    pub fn to_bytes_with(&self, opts: SaveOptions) -> Vec<u8> {
+        let (meta, remap) = self.file_meta();
+        let mut w = self.file_head(FORMAT_VERSION);
+        let sections = [
+            Section { id: META, required: true, data: meta.into_bytes() },
+            Section { id: STRK, required: true, data: crate::strokes::encode(&self.strokes, |s| remap[s.brush.0 as usize].unwrap()) },
+        ];
+        airdraw_pack::write(&mut w, &sections, codecs(), WriteOptions { codec: WRITE_CODEC, level: opts.level })
+            .expect("the write codec is registered and in-memory compression doesn't fail");
+        w
+    }
+
+    /// The document as a format 3 file (uncompressed, whole-file checksum). For tests and
+    /// size comparisons; the app writes the current format.
+    #[doc(hidden)]
+    pub fn to_bytes_format3(&self) -> Vec<u8> {
+        let (meta, remap) = self.file_meta();
+        let mut w = self.file_head(3);
+        put_u32(&mut w, meta.len() as u32);
+        w.extend_from_slice(meta.as_bytes());
+        put_u32(&mut w, self.strokes.len() as u32);
+        for s in &self.strokes {
+            write_stroke(&mut w, s, remap[s.brush.0 as usize].unwrap());
+        }
+        let sum = adler32(&w);
+        put_u32(&mut w, sum);
+        w
+    }
+
+    /// Metadata TOML, plus each brush snapshot's index in it: only snapshots that strokes
+    /// use are kept, renumbered in first-use order.
+    fn file_meta(&self) -> (String, Vec<Option<u32>>) {
         let mut remap: Vec<Option<u32>> = vec![None; self.brushes.len()];
         let mut brushes = Vec::new();
         for s in &self.strokes {
@@ -145,23 +241,18 @@ impl Document {
             look: self.look.clone(),
             guide: self.guide().map(|g| GuideDef::new(g)),
         };
-        let meta = toml::to_string(&meta).expect("document metadata always serializes");
+        (toml::to_string(&meta).expect("document metadata always serializes"), remap)
+    }
 
+    /// Magic, version, flags and the thumbnail: the part every format since 2 shares.
+    fn file_head(&self, version: u16) -> Vec<u8> {
         let mut w = Vec::new();
         w.extend_from_slice(MAGIC);
-        w.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        w.extend_from_slice(&version.to_le_bytes());
         w.extend_from_slice(&0u16.to_le_bytes());
         let thumb = self.thumbnail.as_deref().unwrap_or_default();
         put_u32(&mut w, thumb.len() as u32);
         w.extend_from_slice(thumb);
-        put_u32(&mut w, meta.len() as u32);
-        w.extend_from_slice(meta.as_bytes());
-        put_u32(&mut w, self.strokes.len() as u32);
-        for s in &self.strokes {
-            write_stroke(&mut w, s, remap[s.brush.0 as usize].unwrap());
-        }
-        let sum = adler32(&w);
-        put_u32(&mut w, sum);
         w
     }
 
@@ -173,33 +264,7 @@ impl Document {
         if version > FORMAT_VERSION {
             return Err(DocError::NewerVersion(version));
         }
-        if bytes.len() < 12 {
-            return Err(DocError::Truncated);
-        }
-        let (body, sum) = bytes.split_at(bytes.len() - 4);
-        let mut r = Reader { b: body, pos: 8 };
-        let thumbnail = if version >= THUMBNAIL_SINCE {
-            let len = r.u32()? as usize;
-            if len > MAX_THUMBNAIL_BYTES {
-                return Err(DocError::Corrupt(format!("thumbnail of {len} bytes")));
-            }
-            let png = r.take(len)?;
-            (len > 0).then(|| Arc::from(png))
-        } else {
-            None
-        };
-        let meta_len = r.u32()? as usize;
-        let meta = std::str::from_utf8(r.take(meta_len)?).map_err(|_| DocError::Corrupt("metadata is not UTF-8".into()))?;
-        let meta: Meta = toml::from_str(meta).map_err(|e| DocError::Corrupt(format!("metadata: {e}")))?;
-        let count = r.u32()? as usize;
-        let mut strokes = Vec::with_capacity(count.min(1 << 16));
-        for _ in 0..count {
-            strokes.push(read_stroke(&mut r)?);
-        }
-        // Checked after parsing so truncation is reported as such rather than as a bad checksum.
-        if r.pos != body.len() || u32::from_le_bytes(sum.try_into().unwrap()) != adler32(body) {
-            return Err(DocError::Corrupt("checksum mismatch".into()));
-        }
+        let (meta, strokes, thumbnail) = if version >= SECTIONS_SINCE { read_sections(bytes)? } else { read_format3(bytes, version)? };
         for s in &strokes {
             if s.brush.0 as usize >= meta.brushes.len() {
                 return Err(DocError::Corrupt(format!("stroke {} uses missing brush {}", s.id.0, s.brush.0)));
@@ -232,6 +297,61 @@ impl Document {
         let bytes = std::fs::read(path).map_err(|e| DocError::Io(format!("{}: {e}", path.display())))?;
         Self::from_bytes(&bytes)
     }
+}
+
+type Thumbnail = Option<Arc<[u8]>>;
+type Parts = (Meta, Vec<Stroke>, Thumbnail);
+
+/// Reads the thumbnail at offset 8 (format 2+); returns it and where the rest starts.
+fn read_head_thumbnail(bytes: &[u8]) -> Result<(Thumbnail, usize), DocError> {
+    let mut r = Reader { b: bytes, pos: 8 };
+    let len = r.u32()? as usize;
+    if len > MAX_THUMBNAIL_BYTES {
+        return Err(DocError::Corrupt(format!("thumbnail of {len} bytes")));
+    }
+    let png = r.take(len)?;
+    Ok(((len > 0).then(|| Arc::from(png)), r.pos))
+}
+
+fn read_sections(bytes: &[u8]) -> Result<Parts, DocError> {
+    let (thumbnail, start) = read_head_thumbnail(bytes)?;
+    let (decoded, used) = airdraw_pack::read(&bytes[start..], codecs(), ReadLimits::default())?;
+    if start + used != bytes.len() {
+        return Err(DocError::Corrupt(format!("{} unexpected bytes after the sections", bytes.len() - start - used)));
+    }
+    if let Some(s) = decoded.sections.iter().find(|s| s.required && s.id != META && s.id != STRK) {
+        return Err(DocError::Unsupported(format!(
+            "file uses a feature from a newer AirDraw (section {}). Update the app.",
+            s.id
+        )));
+    }
+    let section = |id: SectionId| decoded.get(id).map(|s| &s.data[..]).ok_or_else(|| DocError::Corrupt(format!("no {id} section")));
+    let meta = std::str::from_utf8(section(META)?).map_err(|_| DocError::Corrupt("metadata is not UTF-8".into()))?;
+    let meta: Meta = toml::from_str(meta).map_err(|e| DocError::Corrupt(format!("metadata: {e}")))?;
+    let strokes = crate::strokes::decode(section(STRK)?)?;
+    Ok((meta, strokes, thumbnail))
+}
+
+fn read_format3(bytes: &[u8], version: u16) -> Result<Parts, DocError> {
+    if bytes.len() < 12 {
+        return Err(DocError::Truncated);
+    }
+    let (body, sum) = bytes.split_at(bytes.len() - 4);
+    let (thumbnail, start) = if version >= THUMBNAIL_SINCE { read_head_thumbnail(body)? } else { (None, 8) };
+    let mut r = Reader { b: body, pos: start };
+    let meta_len = r.u32()? as usize;
+    let meta = std::str::from_utf8(r.take(meta_len)?).map_err(|_| DocError::Corrupt("metadata is not UTF-8".into()))?;
+    let meta: Meta = toml::from_str(meta).map_err(|e| DocError::Corrupt(format!("metadata: {e}")))?;
+    let count = r.u32()? as usize;
+    let mut strokes = Vec::with_capacity(count.min(1 << 16));
+    for _ in 0..count {
+        strokes.push(read_stroke(&mut r)?);
+    }
+    // Checked after parsing so truncation is reported as such rather than as a bad checksum.
+    if r.pos != body.len() || u32::from_le_bytes(sum.try_into().unwrap()) != adler32(body) {
+        return Err(DocError::Corrupt("checksum mismatch".into()));
+    }
+    Ok((meta, strokes, thumbnail))
 }
 
 /// Reads only the embedded PNG preview from the start of a file, without loading strokes.
@@ -438,6 +558,104 @@ mod tests {
         pts.iter_mut().for_each(|p| p.tilt = None);
         d.add_stroke(ink, pts);
         assert_eq!(Document::from_bytes(&d.to_bytes()).unwrap().strokes(), d.strokes());
+        assert_eq!(Document::from_bytes(&d.to_bytes_format3()).unwrap().strokes(), d.strokes());
+    }
+
+    /// The sections of a format 4 file.
+    fn sections(bytes: &[u8]) -> airdraw_pack::Decoded {
+        let thumb = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        airdraw_pack::read(&bytes[12 + thumb..], codecs(), ReadLimits::default()).unwrap().0
+    }
+
+    /// `doc` as a format 4 file made of `extra` sections after the usual ones.
+    fn with_sections(doc: &Document, extra: &[Section]) -> Vec<u8> {
+        let mut all = sections(&doc.to_bytes()).sections;
+        all.extend_from_slice(extra);
+        let mut w = doc.file_head(FORMAT_VERSION);
+        airdraw_pack::write(&mut w, &all, codecs(), WriteOptions { codec: WRITE_CODEC, level: Level::Fast }).unwrap();
+        w
+    }
+
+    #[test]
+    fn format4_is_compressed_sections_and_round_trips_at_every_level() {
+        let d = sample_doc();
+        for level in [Level::Fast, Level::Default, Level::Max] {
+            let bytes = d.to_bytes_with(SaveOptions { level });
+            assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 4);
+            let back = Document::from_bytes(&bytes).unwrap();
+            assert_eq!(back.strokes(), d.strokes());
+            assert_eq!(back.layers(), d.layers());
+        }
+        let ids: Vec<_> = sections(&d.to_bytes()).sections.iter().map(|s| (s.id, s.required)).collect();
+        assert_eq!(ids, [(META, true), (STRK, true)]);
+        assert!(d.to_bytes().len() < d.to_bytes_format3().len());
+    }
+
+    #[test]
+    fn saving_is_deterministic() {
+        let d = sample_doc();
+        assert_eq!(d.to_bytes(), d.to_bytes());
+        // Open and save again without edits: the same bytes.
+        let bytes = d.to_bytes();
+        assert_eq!(Document::from_bytes(&bytes).unwrap().to_bytes(), bytes);
+    }
+
+    #[test]
+    fn unknown_sections_need_a_newer_app_only_when_required() {
+        let d = sample_doc();
+        let optional = with_sections(&d, &[Section { id: SectionId(*b"NEWX"), required: false, data: b"later".to_vec() }]);
+        assert_eq!(Document::from_bytes(&optional).unwrap().strokes(), d.strokes());
+        let required = with_sections(&d, &[Section { id: SectionId(*b"NEWX"), required: true, data: b"later".to_vec() }]);
+        assert!(matches!(Document::from_bytes(&required), Err(DocError::Unsupported(m)) if m.contains("NEWX")));
+    }
+
+    #[test]
+    fn format4_damage_is_reported() {
+        let bytes = sample_doc().to_bytes();
+        let mut longer = bytes.clone();
+        longer.push(0);
+        assert!(matches!(Document::from_bytes(&longer), Err(DocError::Corrupt(_))));
+        for cut in [9, 13, bytes.len() / 2, bytes.len() - 1] {
+            assert_eq!(Document::from_bytes(&bytes[..cut]).unwrap_err(), DocError::Truncated, "cut at {cut}");
+        }
+        // A section written with a codec this build doesn't have.
+        let mut unknown_codec = bytes.clone();
+        unknown_codec[12 + 4 + 5] = 99;
+        assert!(matches!(Document::from_bytes(&unknown_codec), Err(DocError::Unsupported(_))));
+    }
+
+    /// Size and speed table (docs/ARCHITECTURE.md §3h). Samples: the fixtures, plus every
+    /// `.airdraw` in `$AIRDRAW_BENCH_DIR`. Run with
+    /// `cargo test --release -p airdraw-doc file_format_benchmark -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn file_format_benchmark() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let mut dirs = vec![fixtures];
+        dirs.extend(std::env::var_os("AIRDRAW_BENCH_DIR").map(std::path::PathBuf::from));
+        let mut samples = Vec::new();
+        for dir in dirs {
+            let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| Some(e.ok()?.path())).collect();
+            files.sort();
+            for f in files.iter().filter(|f| f.extension().is_some_and(|e| e == EXTENSION)) {
+                samples.push((f.file_name().unwrap().to_string_lossy().into_owned(), Document::load(f).unwrap()));
+            }
+        }
+        println!("{}", crate::bench::file_format(&samples, 1_000_000));
+    }
+
+    #[test]
+    fn real_ipad_sketch_upgrades_losslessly() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/format2_ipad.airdraw");
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 2, "fixture must stay format 2");
+        let d = Document::from_bytes(&bytes).unwrap();
+        assert!(!d.strokes().is_empty() && d.thumbnail().is_some());
+        let upgraded = d.to_bytes();
+        let back = Document::from_bytes(&upgraded).unwrap();
+        assert_eq!(back.strokes(), d.strokes());
+        assert_eq!(back.thumbnail(), d.thumbnail());
+        assert!(upgraded.len() < bytes.len());
     }
 
     #[test]
@@ -579,15 +797,13 @@ mod tests {
     fn guide_is_readable_toml() {
         let mut d = Document::new();
         d.set_guide(Some(sweep()));
-        let bytes = d.to_bytes();
-        let meta_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
-        let meta = std::str::from_utf8(&bytes[16..16 + meta_len]).unwrap();
+        let meta = String::from_utf8(sections(&d.to_bytes()).get(META).unwrap().data.clone()).unwrap();
         assert!(meta.contains("[guide]\nkind = \"sweep\""), "{meta}");
     }
 
     #[test]
     fn format2_file_opens_with_the_default_plane() {
-        let mut bytes = sample_doc().to_bytes();
+        let mut bytes = sample_doc().to_bytes_format3();
         bytes[4..6].copy_from_slice(&2u16.to_le_bytes());
         let n = bytes.len() - 4;
         let sum = adler32(&bytes[..n]);

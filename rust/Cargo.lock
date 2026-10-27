@@ -24,7 +24,9 @@ name = "airdraw-doc"
 version = "0.1.0"
 dependencies = [
  "airdraw-brush",
+ "airdraw-codec-zstd",
  "airdraw-guide",
+ "airdraw-pack",
  "glam",
  "serde",
  "toml",
