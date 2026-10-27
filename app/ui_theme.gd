@@ -1,6 +1,10 @@
 class_name UiTheme
-## The app's dark chrome around a light canvas. One theme for the editor shell, dialogs,
-## sheets and the home screen, scaled so touch targets stay ≥ 44 pt on tablets.
+## The app's chrome around a light canvas. One theme for the editor shell, dialogs, sheets
+## and the home screen, scaled so touch targets stay ≥ 44 pt on tablets.
+##
+## Two families: light round buttons that float on the canvas (RoundButton), and a dense dark
+## tray for tools and brushes (TrayButton, BrushRow, Tray panels), with one accent colour for
+## selection.
 
 ## Logical layout height the UI is designed for; larger screens scale up.
 const DESIGN_HEIGHT := 900.0
@@ -13,6 +17,12 @@ const ACCENT := Color(0.33, 0.52, 1.0)
 const TEXT := Color(0.92, 0.92, 0.95)
 const TEXT_DIM := Color(0.62, 0.62, 0.68)
 const DANGER := Color(1.0, 0.45, 0.4)
+## Floating round buttons on the canvas.
+const LIGHT := Color(0.97, 0.97, 0.96, 0.96)
+const LIGHT_HOVER := Color(0.91, 0.91, 0.9, 0.98)
+const INK := Color(0.16, 0.17, 0.2)
+const TRAY := Color(0.14, 0.145, 0.16, 0.97)
+const DIVIDER := Color(1, 1, 1, 0.08)
 
 
 ## UI scale for a viewport size: 1 at the design height, up to 3 on large screens.
@@ -22,7 +32,7 @@ static func scale_for(size: Vector2) -> float:
 
 static func build(s: float) -> Theme:
 	var t := Theme.new()
-	t.default_font_size = roundi(15 * s)
+	t.default_font_size = roundi(14 * s)
 	var r := roundi(10 * s)
 
 	var normal := _box(RAISED, r, s)
@@ -50,6 +60,80 @@ static func build(s: float) -> Theme:
 		t.set_stylebox(state, "ToolButton", flat)
 	t.set_stylebox("disabled", "ToolButton", flat)
 
+	# Light round buttons floating on the canvas: dark glyph, soft shadow; accent when active.
+	t.set_type_variation("RoundButton", "Button")
+	var round_r := roundi(22 * s)
+	var round := _round(LIGHT, round_r, s, true)
+	for state in ["normal", "focus"]:
+		t.set_stylebox(state, "RoundButton", round)
+	t.set_stylebox("hover", "RoundButton", _round(LIGHT_HOVER, round_r, s, true))
+	t.set_stylebox("pressed", "RoundButton", _round(ACCENT, round_r, s, true))
+	t.set_stylebox("hover_pressed", "RoundButton", _round(ACCENT.lightened(0.08), round_r, s, true))
+	t.set_stylebox("disabled", "RoundButton", _round(Color(LIGHT, 0.7), round_r, s, true))
+	for prop in ["icon_normal_color", "icon_hover_color", "icon_focus_color", "font_color", "font_hover_color", "font_focus_color"]:
+		t.set_color(prop, "RoundButton", INK)
+	t.set_color("icon_disabled_color", "RoundButton", Color(INK, 0.3))
+
+	# Tray buttons (dark tray): no background; the selected one gets an accent outline.
+	t.set_type_variation("TrayButton", "Button")
+	var outline := StyleBoxFlat.new()
+	outline.bg_color = Color(1, 1, 1, 0.06)
+	outline.set_corner_radius_all(roundi(8 * s))
+	outline.set_border_width_all(maxi(2, roundi(2 * s)))
+	outline.border_color = ACCENT
+	outline.set_content_margin_all(4 * s)
+	var tray_flat := _box(Color(0, 0, 0, 0), roundi(8 * s), s)
+	tray_flat.set_content_margin_all(4 * s)
+	var tray_hover := _box(Color(1, 1, 1, 0.07), roundi(8 * s), s)
+	tray_hover.set_content_margin_all(4 * s)
+	for state in ["normal", "focus", "disabled"]:
+		t.set_stylebox(state, "TrayButton", tray_flat)
+	t.set_stylebox("hover", "TrayButton", tray_hover)
+	t.set_stylebox("pressed", "TrayButton", outline)
+	t.set_stylebox("hover_pressed", "TrayButton", outline)
+
+	# Brush list rows: flat; the current brush is filled with the accent.
+	t.set_type_variation("BrushRow", "Button")
+	var row := _box(Color(0, 0, 0, 0), roundi(6 * s), s)
+	var row_hover := _box(Color(1, 1, 1, 0.05), roundi(6 * s), s)
+	var row_on := _box(ACCENT, roundi(6 * s), s)
+	for state in ["normal", "focus", "disabled"]:
+		t.set_stylebox(state, "BrushRow", row)
+	t.set_stylebox("hover", "BrushRow", row_hover)
+	t.set_stylebox("pressed", "BrushRow", row_on)
+	t.set_stylebox("hover_pressed", "BrushRow", row_on)
+
+	# Panels: the dark tray docked at a screen edge (square on that side), the slim bar.
+	for side in ["Left", "Right"]:
+		var tray := StyleBoxFlat.new()
+		tray.bg_color = TRAY
+		tray.set_corner_radius_all(roundi(12 * s))
+		if side == "Left":
+			tray.corner_radius_top_left = 0
+			tray.corner_radius_bottom_left = 0
+		else:
+			tray.corner_radius_top_right = 0
+			tray.corner_radius_bottom_right = 0
+		tray.set_content_margin_all(6 * s)
+		tray.shadow_color = Color(0, 0, 0, 0.25)
+		tray.shadow_size = roundi(8 * s)
+		t.set_type_variation("Tray" + side, "PanelContainer")
+		t.set_stylebox("panel", "Tray" + side, tray)
+	var bar := StyleBoxFlat.new()
+	bar.bg_color = TRAY
+	bar.set_corner_radius_all(roundi(14 * s))
+	bar.set_content_margin_all(5 * s)
+	bar.shadow_color = Color(0, 0, 0, 0.25)
+	bar.shadow_size = roundi(8 * s)
+	t.set_type_variation("Bar", "PanelContainer")
+	t.set_stylebox("panel", "Bar", bar)
+	t.set_type_variation("Title", "Label")
+	t.set_color("font_color", "Title", INK)
+	t.set_font_size("font_size", "Title", roundi(15 * s))
+	t.set_type_variation("Small", "Label")
+	t.set_font_size("font_size", "Small", roundi(12 * s))
+	t.set_color("font_color", "Small", TEXT_DIM)
+
 	for kind in ["Label", "CheckBox", "OptionButton", "LineEdit", "SpinBox"]:
 		t.set_color("font_color", kind, TEXT)
 	t.set_color("font_color", "CheckBox", TEXT)
@@ -71,9 +155,9 @@ static func build(s: float) -> Theme:
 
 	var panel := StyleBoxFlat.new()
 	panel.bg_color = PANEL
-	panel.set_corner_radius_all(roundi(14 * s))
-	panel.set_content_margin_all(12 * s)
-	panel.shadow_color = Color(0, 0, 0, 0.35)
+	panel.set_corner_radius_all(roundi(12 * s))
+	panel.set_content_margin_all(10 * s)
+	panel.shadow_color = Color(0, 0, 0, 0.28)
 	panel.shadow_size = roundi(10 * s)
 	t.set_stylebox("panel", "PanelContainer", panel)
 	var popup := panel.duplicate()
@@ -83,8 +167,16 @@ static func build(s: float) -> Theme:
 	t.set_stylebox("hover", "PopupMenu", _box(ACCENT, roundi(6 * s), s))
 	t.set_constant("v_separation", "PopupMenu", roundi(10 * s))
 
-	t.set_constant("separation", "VBoxContainer", roundi(10 * s))
-	t.set_constant("separation", "HBoxContainer", roundi(8 * s))
+	t.set_constant("separation", "VBoxContainer", roundi(6 * s))
+	t.set_constant("separation", "HBoxContainer", roundi(6 * s))
+	t.set_color("color", "HSeparator", DIVIDER)
+	var line := StyleBoxLine.new()
+	line.color = DIVIDER
+	line.thickness = maxi(1, roundi(s))
+	t.set_stylebox("separator", "HSeparator", line)
+	var vline := line.duplicate()
+	vline.vertical = true
+	t.set_stylebox("separator", "VSeparator", vline)
 	t.set_constant("h_separation", "GridContainer", roundi(12 * s))
 	t.set_constant("v_separation", "GridContainer", roundi(8 * s))
 	t.set_constant("h_separation", "HFlowContainer", roundi(8 * s))
@@ -92,6 +184,20 @@ static func build(s: float) -> Theme:
 	t.set_color("font_color", "TooltipLabel", TEXT)
 	t.set_stylebox("panel", "TooltipPanel", _box(Color(0.05, 0.05, 0.06), roundi(6 * s), s))
 	return t
+
+
+## A circle (for a square button) with an optional soft shadow.
+static func _round(color: Color, radius: int, s: float, shadow: bool) -> StyleBoxFlat:
+	var b := StyleBoxFlat.new()
+	b.bg_color = color
+	b.set_corner_radius_all(radius)
+	b.set_content_margin_all(10 * s)
+	b.anti_aliasing = true
+	if shadow:
+		b.shadow_color = Color(0, 0, 0, 0.18)
+		b.shadow_size = roundi(6 * s)
+		b.shadow_offset = Vector2(0, 2 * s)
+	return b
 
 
 static func _box(color: Color, radius: int, s: float) -> StyleBoxFlat:

@@ -18,6 +18,13 @@ const _PATHS := {
 	"symmetry": '<path d="M12 3v18" stroke-dasharray="2 2"/><path d="M9 7 4 12l5 5zM15 7l5 5-5 5z"/>',
 	"snap": '<circle cx="12" cy="12" r="7"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5"/>',
 	"chevron_down": '<path d="m6 9 6 6 6-6"/>',
+	"chevrons_left": '<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/>',
+	"chevrons_right": '<path d="m13 17 5-5-5-5M6 17l5-5-5-5"/>',
+	"grid": '<rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/>',
+	"nib_pen": '<path d="M12 2.5 9.5 10v9.5h5V10z"/><path d="M12 2.5v5"/><path d="M9.5 13h5"/>',
+	"nib_marker": '<path d="M9 3h6l1 5v12H8V8z"/><path d="M10 3V1.5h4V3"/><path d="M8 11h8"/>',
+	"nib_flat": '<path d="M8 4h8l-1 4v12H9V8z"/><path d="M8 4h8" stroke-width="3"/>',
+	"nib_dots": '<circle cx="6" cy="12" r="1.8" fill="white"/><circle cx="12" cy="12" r="1.8" fill="white"/><circle cx="18" cy="12" r="1.8" fill="white"/><path d="M4 18c4 2 12 2 16 0"/>',
 	"chevron_up": '<path d="m6 15 6-6 6 6"/>',
 }
 

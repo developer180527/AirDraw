@@ -113,7 +113,7 @@ func _ready() -> void:
 	await _tap(bar.find_button("Brushes"))
 	await _settle()
 	print("SMOKE sheet_opened=", bar.sheet_open)
-	await _tap(bar.find_button("Dots"))
+	await _tap(bar.find_button("com.airdraw.dots"))
 	print("SMOKE tapped_dots=", canvas.current_brush())
 	await _tap(bar.find_button("test.glow"))
 	print("SMOKE tapped_glow=", canvas.current_brush())
@@ -177,6 +177,13 @@ func _ready() -> void:
 	editor.save_as_new()
 	var new_id: String = canvas.current_brush()
 	print("SMOKE saved_new=", new_id, " brushes=", count_before, "->", canvas.brush_ids().size())
+	# Saving from the editor keeps filters and dynamics (they used to be dropped on the way back
+	# from GDScript, so the edited width was lost).
+	var saved: Dictionary = canvas.brush_definition(new_id)
+	print("SMOKE saved_keeps_dynamics=", saved.dynamics.size() > 0 and is_equal_approx(saved.dynamics[0].params.base, 0.06),
+		" filters=", saved.filters.size())
+	var thick := func(id: String) -> float: return canvas.brush_preview(canvas.brush_definition(id)).mesh.get_aabb().size.z
+	print("SMOKE preview_marker_thicker_than_ink=", thick.call("com.airdraw.marker") > thick.call("com.airdraw.ink") * 2.0)
 	var strokes_before: int = canvas.stroke_count()
 	await _stroke(center + Vector2(-300, 60), func(t: float) -> Vector2: return Vector2(t * 250.0, sin(t * TAU) * 30.0))
 	print("SMOKE drew_with_new=", canvas.stroke_count() - strokes_before)

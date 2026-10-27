@@ -630,6 +630,101 @@ struct Guide { shape: GuideShape, opacity: f32 }
 2. Whether guide-draw mode returns to the brush after one guide (proposed: yes).
 3. Sweep extent (proposed: ±3 m, shown fading at the edges).
 
+### 3g. Looks: how strokes are shaded (proposed, awaiting sign-off)
+
+**Goal.** Switch a sketch between cartoon, line-art, clay or realistic rendering. This is
+not a colour template: each Look changes how the GPU computes every pixel. The strokes and
+their brushes stay the same.
+
+#### How a frame is drawn, and where a Look plugs in
+
+```
+mesh ──▶ VERTEX ──▶ raster ──▶ FRAGMENT ──▶ LIGHT (per light) ──▶ framebuffer ──▶ POST ──▶ screen
+         position              surface:      how much each light   colour, depth,   whole-image
+         (+ outline push)      albedo,       adds: the shading     normals          edges, AO,
+                               normal,       model                                  tone mapping
+                               roughness
+```
+
+| Stage | Realistic (PBR) | Toon / cel | Ink / line art | Clay |
+|---|---|---|---|---|
+| Vertex | project | project; outline pass pushes along the normal | same as toon | project |
+| Fragment | albedo, roughness, metallic (+ texture maps via UVs) | flat albedo; optional halftone/hatch from light level | white fill | grey, matte |
+| Light | Cook-Torrance GGX: smooth diffuse, roughness-shaped specular, Fresnel, energy conserving | N·L quantized into 2–3 bands, hard specular blob, rim light on the silhouette | none (unlit) | soft wrap diffuse, no specular |
+| Environment | HDR sky lighting (IBL), sun shadows, AO, GI on desktop | one key light, flat ambient, no/soft shadows | none | sky light, strong AO, soft shadows |
+| Post | filmic tone map, exposure, light bloom | none, or posterize | none | tone map |
+| Outlines | — | inverted hull (black, back faces) | inverted hull, thicker | — |
+
+Planned Looks: **Shaded** (today's look), **Flat** (unlit colour, like marker on paper),
+**Toon**, **Ink**, **Clay**, **Realistic**.
+
+#### Data: what strokes need
+
+- Today stroke meshes have positions and normals only: enough for Shaded, Flat, Toon, Ink
+  and Clay.
+- **UVs** for textures (hatching, paper grain, textured brushes, PBR maps): `u` = distance
+  along the stroke (`StrokePoint.dist` already exists), `v` = position around the tube or
+  across the ribbon (0..1). Added in each geometry stage and its stream, so live and rebuilt
+  strokes stay identical. `MeshBuffers` gains `uvs`; exporters write them (glTF, OBJ, FBX, USD
+  all support UVs).
+- **Tangents** for normal maps, derived from the stroke direction (the tube's frame already
+  has them).
+
+#### Model
+
+```
+Brush MaterialDesc (what):  colour, roughness, metallic, emission, shading      ← per stroke, unchanged
+Look (how):                 shader family + environment preset + passes          ← per sketch
+```
+
+- A Look is a small data file like a brush (`.look.toml`): shader name and parameters
+  (ramp bands, rim, outline width/colour, hatch density), environment preset (sky, sun angle,
+  shadow, AO, tone map, exposure) and post options. The built-in Looks ship as files;
+  user Looks come later.
+- `airdraw-godot` builds one Godot `ShaderMaterial` per (Look, brush snapshot), feeding the brush
+  values in as uniforms, so a red marker stays red in every Look. Toon and Ink add a second
+  material pass (`next_pass`) for the outline. The canvas swaps materials on every stroke
+  node when the Look changes; the live stroke uses the same material.
+- Shaders live in `app/looks/*.gdshader` and use Godot's `vertex()`, `fragment()` and
+  `light()` functions. The toon light function, for example:
+
+```glsl
+void light() {
+    float ndl = dot(NORMAL, LIGHT);
+    float band = smoothstep(0.0, 0.02, ndl - 0.1) * 0.6 + smoothstep(0.0, 0.02, ndl - 0.6) * 0.4;
+    DIFFUSE_LIGHT += ALBEDO * LIGHT_COLOR * ATTENUATION * band;
+}
+```
+
+- The Look is saved in the document (`.airdraw` metadata). It affects the screen, thumbnails
+  and PNG/turntable renders; 3D exports keep the brush's PBR material (+ UVs).
+
+#### Platforms
+
+- iPad uses Godot's **Mobile** renderer: custom `light()` functions, outlines, IBL and shadows
+  work; screen-space AO, SSIL and SDFGI don't exist there. So on iPad, Realistic = PBR + IBL +
+  shadows, and Clay fakes AO with a darker ambient and sky occlusion from the normal.
+- Desktop (**Forward+**) gets the full stack: SSAO, SSIL, optional SDFGI, better shadows.
+- Cost: outline passes draw each stroke twice (fine at today's sizes; batching finished
+  strokes later halves draw calls). Realistic on iPad stays within budget at default shadow
+  quality; it's measured with `live_stroke_bench` before shipping.
+
+#### Rollout
+
+| Step | Deliverable |
+|---|---|
+| 1 | UVs (+ tangents) in tube, ribbon and dots geometry and streams; exporters write them; split tests extended |
+| 2 | Look model + `.look.toml`; Shaded, Flat, Clay; Look picker in the ⋯ menu; saved in the document |
+| 3 | Toon and Ink: ramp light function + inverted-hull outline pass |
+| 4 | Realistic: PBR + sky lighting + shadows; desktop extras (SSAO, SSIL) |
+| 5 | Textured brushes (paper grain, hatching) using the UVs |
+
+#### Decisions needed
+
+1. Look scope: per sketch (proposed) or app-wide.
+2. Exports: always the brush's PBR material (proposed) or optionally bake the Look's colours.
+3. Realistic on iPad by default, or desktop-only until measured.
+
 ## 4. Export system (`airdraw-export`)
 
 ### 4a. Flow
@@ -1029,6 +1124,19 @@ has hidden shortcuts and no hover, tooltips or right-click.
   Straight on, only one face is visible, so arrows mark the hidden neighbours and a tap beside
   the cube turns to the face lying that way (faces turned < 15% toward the camera count as
   hidden).
+- **Visual polish (2026-10-27):** light round buttons float along the top (Gallery + sketch
+  name left, tools centered, undo/redo/export/menu right); a slim dark tray docked to the
+  hand-side edge holds collapse, the recent brushes as nib icons (pen, marker, flat, dots —
+  from the brush's geometry and width) with colour dots, and "…"; the brush list opens beside
+  it with a nib, name, colour and a live stroke preview per brush (`brush_previews.gd`
+  renders each brush's sample stroke offscreen once, cached per definition); the current
+  brush row is accent-filled. The context bar, toasts and menu share one slim dark style; the
+  view cube is light to match the buttons. `UiTheme` adds `RoundButton`, `TrayButton`,
+  `BrushRow`, `TrayLeft/Right`, `Bar`, `Title`, `Small`.
+- Bug found by the previews: `dict_to_def` read the filter/dynamics lists only as untyped
+  arrays, but `def_to_dict` produces typed ones, so they came back empty. Brush editor
+  previews and brushes saved from the editor lost all smoothing and width settings. It now
+  accepts both and errors on anything else; the smoke test checks a saved brush keeps them.
 - The ⋯ menu is an in-canvas panel with a full-screen scrim, not a `PopupMenu`: Godot popups
   are separate windows that close only on mouse clicks outside, so on iPad (no mouse
   emulation) one stayed open invisibly and blocked all GUI input.

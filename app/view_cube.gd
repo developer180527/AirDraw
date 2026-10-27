@@ -48,17 +48,19 @@ func _draw() -> void:
 	var font_size := roundi(11 * ui_scale)
 	for face in _visible_faces():
 		var poly: PackedVector2Array = face.poly
-		var lit: float = 0.55 + 0.45 * face.facing
-		var base := Color(0.33, 0.47, 0.98) if face.view == _hover else Color(0.22, 0.23, 0.27)
-		draw_colored_polygon(poly, base.lightened(0.25 * lit) if face.view != _hover else base)
+		# Light faces, shaded by how directly they face the camera (matches the round buttons).
+		var shade: float = 0.78 + 0.2 * face.facing
+		var fill := UiTheme.ACCENT if face.view == _hover else Color(shade, shade, shade * 0.99, 0.97)
+		draw_colored_polygon(poly, fill)
 		var outline := poly.duplicate()
 		outline.append(poly[0])
-		draw_polyline(outline, Color(1, 1, 1, 0.25), maxf(1.0, ui_scale))
+		draw_polyline(outline, Color(0, 0, 0, 0.18), maxf(1.0, ui_scale), true)
 		if face.facing > 0.35:
 			var w := font.get_string_size(face.label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
 			var c: Vector2 = face.center
+			var ink := Color.WHITE if face.view == _hover else UiTheme.INK
 			draw_string(font, c + Vector2(-w / 2, font_size * 0.35), face.label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size,
-				Color(1, 1, 1, clampf(face.facing * 1.4, 0.0, 1.0)))
+				Color(ink, clampf(face.facing * 1.4, 0.0, 1.0)))
 	# Arrows toward faces that are hidden or edge-on.
 	var center := size / 2
 	var a := 6.0 * ui_scale
@@ -68,7 +70,7 @@ func _draw() -> void:
 		var d: Vector2 = f.offset.normalized()
 		var tip: Vector2 = center + d * _radius() * 1.38
 		var side := Vector2(-d.y, d.x) * a * 0.8
-		var col := Color(0.33, 0.47, 0.98) if f.view == _hover else Color(0.3, 0.31, 0.36)
+		var col := UiTheme.ACCENT if f.view == _hover else Color(UiTheme.INK, 0.55)
 		draw_colored_polygon(PackedVector2Array([tip, tip - d * a + side, tip - d * a - side]), col)
 
 

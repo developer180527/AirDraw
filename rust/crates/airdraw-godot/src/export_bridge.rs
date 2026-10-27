@@ -125,9 +125,19 @@ pub fn dict_to_def(d: &VarDictionary, reg: &StageRegistry) -> Result<BrushDef, S
             .collect();
         Ok(StageRef { kind, params })
     };
+    // `def_to_dict` produces typed arrays (Array[Dictionary]); GDScript edits may hand back
+    // either kind. Anything else is an error: silently reading it as empty dropped every
+    // filter and dynamics stage (brush previews and editor saves lost their width settings).
     let list = |slot: Slot, key: &str| -> Result<Vec<StageRef>, String> {
-        let arr = d.get(key).and_then(|v| v.try_to::<VarArray>().ok()).unwrap_or_default();
-        arr.iter_shared().map(|v| stage(slot, v)).collect()
+        let Some(v) = d.get(key) else { return Ok(Vec::new()) };
+        let items: Vec<Variant> = if let Ok(a) = v.try_to::<Array<VarDictionary>>() {
+            a.iter_shared().map(|x| x.to_variant()).collect()
+        } else if let Ok(a) = v.try_to::<VarArray>() {
+            a.iter_shared().collect()
+        } else {
+            return Err(format!("'{key}' must be an array of stages"));
+        };
+        items.into_iter().map(|v| stage(slot, v)).collect()
     };
     Ok(BrushDef {
         schema: airdraw_brush::brush::SCHEMA_VERSION,

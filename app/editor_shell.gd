@@ -2,11 +2,12 @@ class_name EditorShell
 extends CanvasLayer
 ## The drawing screen's chrome, floating over a full-screen canvas (docs/ARCHITECTURE.md §5-3).
 ##
-## Pills in the top corners (Gallery + sketch name; undo, redo, export, menu). A tool rail
-## (Draw, Guide) with the recent-brush strip below it, on the hand side. A context bar at the
-## bottom with the current tool's options. A view cube in the other top corner. The brush
-## library is a sheet (side in landscape, bottom in portrait) that closes when you draw.
-## Left-handed mode mirrors the rail, strip and cube. Same layout on tablet and desktop.
+## Light round buttons float along the top: Gallery and the sketch name on the left, the tools
+## (Draw, Guide) in the middle, undo/redo/export/menu on the right, with the view cube below.
+## A slim dark tray docked to the hand-side edge holds the recent brushes as nibs; the brush
+## list opens next to it with a live stroke preview per brush and closes when you draw. A
+## slim bar at the bottom holds the current tool's options. Same layout on tablet and desktop;
+## left-handed mode mirrors the tray and cube.
 
 signal action(name: String)  ## gallery, export, undo, redo, edit_brush, import_brushes, clear, remove_guide
 signal tool_selected(tool: String)  ## draw, guide
@@ -27,28 +28,30 @@ var portrait := false
 var tool := "draw"
 var ui_hidden := false
 var sheet_open := false
-## Brush ids, most recent first (the strip; keys 1–9).
+var tray_collapsed := false
+## Brush ids, most recent first (the tray; keys 1–9).
 var recent_brushes: Array[String] = []
 
 var _s := 1.0
 var _theme: Theme
 var _root: Control
-var _nav: PanelContainer  ## top-left pill: Gallery + sketch name
-var _actions: PanelContainer  ## top-right pill: undo, redo, export, menu
+var _gallery: Button
 var _title: Label
+var _tools: HBoxContainer  ## top center: tool buttons
+var _tool_buttons := {}  ## tool → button
+var _actions: HBoxContainer  ## top right: undo, redo, export, menu
 var _undo: Button
 var _redo: Button
-var _rail: PanelContainer
-var _tool_buttons := {}  ## tool → rail button
-var _strip: PanelContainer
-var _strip_box: VBoxContainer
+var _rail: PanelContainer  ## the tray at the hand-side edge
+var _tray_box: VBoxContainer
 var _bar: PanelContainer
 var _bar_row: HBoxContainer
-var _sheet: PanelContainer
-var _brush_grid: GridContainer
+var _sheet: PanelContainer  ## the brush list
+var _brush_list: VBoxContainer
 var _brush_scroll: ScrollContainer
-var _brush_buttons := {}  ## brush id → button in the library sheet
+var _brush_buttons := {}  ## brush id → row in the brush list
 var _brush_group := ButtonGroup.new()
+var _previews: BrushPreviews
 var _cube: ViewCube
 var _toast: PanelContainer
 var _toast_label: Label
@@ -74,13 +77,14 @@ func setup(p_canvas: SketchCanvas, camera: Camera3D) -> void:
 	_root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_root)
+	_previews = BrushPreviews.new()
+	add_child(_previews)
+	_previews.setup(canvas)
+	_previews.preview_ready.connect(_show_preview)
 
-	_build_pills()
-	_build_rail()
-	_strip = _panel()
-	_strip_box = VBoxContainer.new()
-	_strip.add_child(_strip_box)
-	_bar = _panel()
+	_build_top()
+	_build_tray()
+	_bar = _panel("Bar")
 	_bar_row = HBoxContainer.new()
 	_bar.add_child(_bar_row)
 	_build_sheet()
@@ -117,9 +121,9 @@ func popup_theme() -> Theme:
 	return _theme
 
 
-## The band the top pills occupy (sheets and dialogs open below it).
+## The band the top buttons occupy (sheets and dialogs open below it).
 func bar_rect() -> Rect2:
-	return _nav.get_global_rect().merge(_actions.get_global_rect())
+	return _gallery.get_global_rect().merge(_actions.get_global_rect()).merge(_tools.get_global_rect())
 
 
 ## Screen areas covered by chrome; touches starting there must not draw.
@@ -130,7 +134,7 @@ func ui_rects() -> Array[Rect2]:
 	if _menu.visible:
 		# While the menu is open a touch anywhere just closes it.
 		rects.append(_scrim.get_global_rect())
-	for c: Control in [_nav, _actions, _rail, _strip, _bar, _cube, _sheet]:
+	for c: Control in [_gallery, _title, _tools, _actions, _rail, _bar, _cube, _sheet]:
 		if c.visible:
 			rects.append(c.get_global_rect())
 	return rects
@@ -174,6 +178,8 @@ func show_guide_path(points: PackedVector2Array) -> void:
 
 func open_sheet() -> void:
 	sheet_open = true
+	for id in canvas.brush_ids():
+		_previews.get_preview(id)
 	_layout()
 
 
@@ -196,7 +202,7 @@ func toggle_ui() -> void:
 		_layout()
 
 
-## The brush in strip slot `index` (0-based), or "".
+## The brush in tray slot `index` (0-based), or "".
 func recent_brush(index: int) -> String:
 	return recent_brushes[index] if index < recent_brushes.size() else ""
 
@@ -233,64 +239,74 @@ func first_run_hint() -> void:
 func find_button(key: String) -> Button:
 	if _brush_buttons.has(key):
 		return _brush_buttons[key]
-	var stack: Array[Node] = [_root]
-	while not stack.is_empty():
-		var n: Node = stack.pop_back()
-		if n is Button and (n.name == key or n.text == key):
-			return n
-		stack.append_array(n.get_children())
+	# Names first, then visible labels, so a label never shadows a button's name.
+	for by_name in [true, false]:
+		var stack: Array[Node] = [_root]
+		while not stack.is_empty():
+			var n: Node = stack.pop_back()
+			if n is Button and not n.is_queued_for_deletion() and (n.name == key if by_name else n.text == key):
+				return n
+			stack.append_array(n.get_children())
 	return null
+
+
+func close_menu() -> void:
+	if _menu and _menu.visible:
+		_menu.visible = false
+		_scrim.visible = false
+		layout_changed.emit.call_deferred()
 
 
 # ---- Building ----------------------------------------------------------------------------
 
-func _panel() -> PanelContainer:
+func _panel(variation := "") -> PanelContainer:
 	var p := PanelContainer.new()
+	p.theme_type_variation = variation
 	_root.add_child(p)
 	return p
 
 
-func _build_pills() -> void:
-	_nav = _panel()
-	var nav := HBoxContainer.new()
-	_nav.add_child(nav)
-	var gallery := _button("Gallery", "back", "", action.emit.bind("gallery"))
-	gallery.theme_type_variation = "ToolButton"
-	nav.add_child(gallery)
+func _round(name: String, icon: String, tooltip: String, on_press: Callable) -> Button:
+	var b := _button(name, icon, "", on_press)
+	b.theme_type_variation = "RoundButton"
+	b.tooltip_text = tooltip
+	return b
+
+
+func _build_top() -> void:
+	_gallery = _round("Gallery", "grid", "Gallery", action.emit.bind("gallery"))
+	_root.add_child(_gallery)
 	_title = Label.new()
+	_title.theme_type_variation = "Title"
 	_title.clip_text = true
 	_title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	nav.add_child(_title)
+	_root.add_child(_title)
 
-	_actions = _panel()
-	var row := HBoxContainer.new()
-	_actions.add_child(row)
-	_undo = _button("Undo", "undo", "", action.emit.bind("undo"))
-	_undo.tooltip_text = Shortcuts.tooltip("Undo", "undo")
-	_redo = _button("Redo", "redo", "", action.emit.bind("redo"))
-	_redo.tooltip_text = Shortcuts.tooltip("Redo", "redo")
-	var export := _button("Export", "export", "", action.emit.bind("export"))
-	export.tooltip_text = Shortcuts.tooltip("Export", "export")
-	for b in [_undo, _redo, export, _button("More", "more", "", func() -> void: _open_menu())]:
-		b.theme_type_variation = "ToolButton"
-		row.add_child(b)
-
-
-func _build_rail() -> void:
-	_rail = _panel()
-	var col := VBoxContainer.new()
-	_rail.add_child(col)
+	_tools = HBoxContainer.new()
+	_root.add_child(_tools)
 	var group := ButtonGroup.new()
 	for t in TOOLS:
-		var b := _button(t[1], t[2], "", func() -> void: tool_selected.emit(t[0]))
-		b.theme_type_variation = "ToolButton"
+		var b := _round(t[1], t[2], Shortcuts.tooltip(t[1], t[3]), func() -> void: tool_selected.emit(t[0]))
 		b.toggle_mode = true
 		b.button_group = group
 		b.button_pressed = t[0] == tool
-		b.tooltip_text = Shortcuts.tooltip(t[1], t[3])
 		_tool_buttons[t[0]] = b
-		col.add_child(b)
+		_tools.add_child(b)
+
+	_actions = HBoxContainer.new()
+	_root.add_child(_actions)
+	_undo = _round("Undo", "undo", Shortcuts.tooltip("Undo", "undo"), action.emit.bind("undo"))
+	_redo = _round("Redo", "redo", Shortcuts.tooltip("Redo", "redo"), action.emit.bind("redo"))
+	for b in [_undo, _redo, _round("Export", "export", Shortcuts.tooltip("Export", "export"), action.emit.bind("export")),
+			_round("More", "more", "More", func() -> void: _open_menu())]:
+		_actions.add_child(b)
+
+
+func _build_tray() -> void:
+	_rail = _panel("TrayLeft")
+	_tray_box = VBoxContainer.new()
+	_rail.add_child(_tray_box)
 
 
 func _build_sheet() -> void:
@@ -301,19 +317,22 @@ func _build_sheet() -> void:
 	var header := HBoxContainer.new()
 	var title := Label.new()
 	title.text = "Brushes"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(title)
 	var close := _button("Close brushes", "chevron_down", "", close_sheet)
 	close.theme_type_variation = "ToolButton"
 	header.add_child(close)
 	box.add_child(header)
+	box.add_child(HSeparator.new())
 	_brush_scroll = ScrollContainer.new()
 	_brush_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	_brush_grid = GridContainer.new()
-	_brush_grid.columns = 2
-	_brush_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_brush_scroll.add_child(_brush_grid)
+	_brush_list = VBoxContainer.new()
+	_brush_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_brush_list.add_theme_constant_override("separation", 0)
+	_brush_scroll.add_child(_brush_list)
 	box.add_child(_brush_scroll)
+	box.add_child(HSeparator.new())
 	var footer := HBoxContainer.new()
 	footer.add_child(_button("Edit Brush", "", "Edit Brush", action.emit.bind("edit_brush")))
 	footer.add_child(_button("Import", "", "Import", action.emit.bind("import_brushes")))
@@ -322,6 +341,7 @@ func _build_sheet() -> void:
 
 func _build_toast() -> void:
 	_toast = PanelContainer.new()
+	_toast.theme_type_variation = "Bar"
 	_toast.visible = false
 	_toast.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_toast_label = Label.new()
@@ -345,20 +365,20 @@ func _build_menu() -> void:
 	_menu.name = "Menu"
 	_menu.visible = false
 	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 0)
 	_menu.add_child(col)
 	var item := func(name: String, text: String, on_press: Callable) -> Button:
 		var b := _button(name, "", text, func() -> void:
 			close_menu()
 			on_press.call())
 		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		b.flat = true
+		b.theme_type_variation = "BrushRow"
 		col.add_child(b)
 		return b
 	_left_handed_item = item.call("Left-handed mode", "Left-handed mode", func() -> void:
 		left_handed = not left_handed
 		_save_settings()
 		_layout())
-	_left_handed_item.toggle_mode = true
 	var hide_item: Button = item.call("Hide interface", "Hide interface", toggle_ui)
 	hide_item.tooltip_text = Shortcuts.tooltip("Hide interface", "toggle_ui")
 	col.add_child(HSeparator.new())
@@ -370,22 +390,14 @@ func _open_menu() -> void:
 	if _menu.visible:
 		close_menu()
 		return
-	_left_handed_item.set_pressed_no_signal(left_handed)
 	_left_handed_item.text = ("✓  " if left_handed else "") + "Left-handed mode"
 	_apply_sizes()
 	_menu.reset_size()
 	var anchor := find_button("More").get_global_rect()
-	_menu.position = Vector2(anchor.end.x - _menu.size.x, anchor.end.y + 6 * _s)
+	_menu.position = Vector2(anchor.end.x - _menu.size.x, anchor.end.y + 8 * _s)
 	_scrim.visible = true
 	_menu.visible = true
 	layout_changed.emit.call_deferred()
-
-
-func close_menu() -> void:
-	if _menu and _menu.visible:
-		_menu.visible = false
-		_scrim.visible = false
-		layout_changed.emit.call_deferred()
 
 
 # ---- Context bar -------------------------------------------------------------------------
@@ -405,46 +417,51 @@ func _rebuild_bar() -> void:
 	_layout.call_deferred()
 
 
+func _bar_button(name: String, text: String, on_press: Callable) -> Button:
+	var b := _button(name, "", text, on_press)
+	b.theme_type_variation = "BrushRow"
+	_bar_row.add_child(b)
+	return b
+
+
 func _draw_bar() -> void:
 	var id := canvas.current_brush()
-	var brush := _button("Brushes", "", canvas.brush_name(id), func() -> void:
+	var brush := _bar_button("Brushes", canvas.brush_name(id), func() -> void:
 		if sheet_open:
 			close_sheet()
 		else:
 			open_sheet())
-	brush.icon = _swatch(canvas.brush_color(id))
-	brush.tooltip_text = "Brush library"
-	_bar_row.add_child(brush)
-	_bar_row.add_child(_button("Edit current brush", "", "Edit", action.emit.bind("edit_brush")))
+	brush.set_meta("icon_name", _nib(id))
+	brush.tooltip_text = "Brush list"
+	_bar_row.add_child(_dot_rect(canvas.brush_color(id)))
+	_bar_row.move_child(_bar_row.get_child(1), 0)
+	_bar_button("Edit current brush", "Edit", action.emit.bind("edit_brush"))
 	if _has_drawn_guide:
 		_bar_row.add_child(VSeparator.new())
 		var on := Label.new()
 		on.text = "On guide"
-		on.add_theme_color_override("font_color", UiTheme.TEXT_DIM)
+		on.theme_type_variation = "Small"
 		_bar_row.add_child(on)
-		var remove := _button("Remove guide", "", "Remove", action.emit.bind("remove_guide"))
-		remove.tooltip_text = "Remove the guide and draw on the preset plane"
-		_bar_row.add_child(remove)
+		_bar_button("Remove guide", "Remove", action.emit.bind("remove_guide")).tooltip_text = \
+			"Remove the guide and draw on the preset plane"
 
 
 func _guide_bar() -> void:
-	var draw := _button("Draw guide", "", "Draw", func() -> void: tool_selected.emit("guide"))
+	var draw := _bar_button("Draw guide", "Draw", func() -> void: tool_selected.emit("guide"))
 	draw.toggle_mode = true
 	draw.button_pressed = _guide_drawing
 	draw.tooltip_text = "Draw a line: it becomes a surface you can draw on"
-	_bar_row.add_child(draw)
 	_bar_row.add_child(VSeparator.new())
 	var group := ButtonGroup.new()
 	for i in GUIDE_PLANES.size():
-		var b := _button(GUIDE_PLANES[i], "", GUIDE_PLANES[i], plane_requested.emit.bind(i))
+		var b := _bar_button(GUIDE_PLANES[i], GUIDE_PLANES[i], plane_requested.emit.bind(i))
 		b.toggle_mode = true
 		b.button_group = group
 		b.button_pressed = not _has_drawn_guide and i == _plane
 		b.tooltip_text = "Draw on a flat %s plane" % GUIDE_PLANES[i].to_lower() if i < 3 else "Draw on a plane facing you"
-		_bar_row.add_child(b)
 	_bar_row.add_child(VSeparator.new())
 	if _has_drawn_guide:
-		_bar_row.add_child(_button("Remove guide", "", "Remove", action.emit.bind("remove_guide")))
+		_bar_button("Remove guide", "Remove", action.emit.bind("remove_guide"))
 	else:
 		var slider := HSlider.new()
 		slider.name = "Guide position"
@@ -453,11 +470,11 @@ func _guide_bar() -> void:
 		slider.step = 0.01
 		slider.value = _offset
 		slider.tooltip_text = "Move the plane along its normal (Alt + wheel)"
-		slider.custom_minimum_size.x = 140 * _s
+		slider.custom_minimum_size.x = 130 * _s
 		slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		slider.value_changed.connect(guide_offset_changed.emit)
 		_bar_row.add_child(slider)
-		_bar_row.add_child(_button("Reset position", "", "Reset", func() -> void: guide_offset_changed.emit(0.0)))
+		_bar_button("Reset position", "Reset", func() -> void: guide_offset_changed.emit(0.0))
 
 
 # ---- Brushes -----------------------------------------------------------------------------
@@ -467,15 +484,9 @@ func _rebuild_brushes() -> void:
 		b.queue_free()
 	_brush_buttons.clear()
 	for id in canvas.brush_ids():
-		var b := _button(id, "", canvas.brush_name(id), func() -> void: canvas.set_brush(id))
-		b.toggle_mode = true
-		b.button_group = _brush_group
-		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		b.clip_text = true
-		b.icon = _swatch(canvas.brush_color(id))
-		_brush_buttons[id] = b
-		_brush_grid.add_child(b)
+		var row := _brush_row(id)
+		_brush_buttons[id] = row
+		_brush_list.add_child(row)
 	var ids := canvas.brush_ids()
 	recent_brushes.assign(recent_brushes.filter(func(id: String) -> bool: return id in ids))
 	for id in ids:
@@ -485,6 +496,53 @@ func _rebuild_brushes() -> void:
 			recent_brushes.append(id)
 	_sync_brushes()
 	_apply_sizes()
+
+
+## A brush list row: nib, name with a colour dot, and the brush's own stroke as a preview.
+func _brush_row(id: String) -> Button:
+	var b := _button(id, "", "", func() -> void: canvas.set_brush(id))
+	b.theme_type_variation = "BrushRow"
+	b.toggle_mode = true
+	b.button_group = _brush_group
+	b.tooltip_text = canvas.brush_name(id)
+	b.set_meta("row", true)
+	var row := HBoxContainer.new()
+	row.set_anchors_preset(Control.PRESET_FULL_RECT)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	b.add_child(row)
+	var nib := TextureRect.new()
+	nib.name = "Nib"
+	nib.set_meta("icon_name", _nib(id))
+	nib.stretch_mode = TextureRect.STRETCH_KEEP_CENTERED
+	nib.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(nib)
+	var names := VBoxContainer.new()
+	names.alignment = BoxContainer.ALIGNMENT_CENTER
+	names.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var name_label := Label.new()
+	name_label.name = "Name"
+	name_label.text = canvas.brush_name(id)
+	name_label.clip_text = true
+	names.add_child(name_label)
+	var colour := HBoxContainer.new()
+	colour.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	colour.add_child(_dot_rect(canvas.brush_color(id)))
+	names.add_child(colour)
+	row.add_child(names)
+	var preview := TextureRect.new()
+	preview.name = "Preview"
+	preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	preview.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	preview.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	preview.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	preview.texture = _previews.get_preview(id)
+	row.add_child(preview)
+	return b
+
+
+func _show_preview(id: String, texture: Texture2D) -> void:
+	if _brush_buttons.has(id):
+		_brush_buttons[id].find_child("Preview", true, false).texture = texture
 
 
 func _remember_brush(id: String) -> void:
@@ -501,29 +559,57 @@ func _sync_brushes() -> void:
 	var current := canvas.current_brush()
 	for id in _brush_buttons:
 		_brush_buttons[id].set_pressed_no_signal(id == current)
-	# The strip: recent brushes as swatches, current one highlighted.
-	for c in _strip_box.get_children():
-		_strip_box.remove_child(c)
+	# The tray: collapse toggle, recent brushes as nibs (current one outlined), the list.
+	for c in _tray_box.get_children():
+		_tray_box.remove_child(c)
 		c.queue_free()
-	for i in recent_brushes.size():
-		var id := recent_brushes[i]
-		var b := _button("Recent " + id, "", "", func() -> void: canvas.set_brush(id))
-		b.theme_type_variation = "ToolButton"
-		b.toggle_mode = true
-		b.button_pressed = id == current
-		b.icon = _dot(canvas.brush_color(id))
-		b.tooltip_text = Shortcuts.tooltip(canvas.brush_name(id), "brush_%d" % (i + 1))
-		_strip_box.add_child(b)
-	var all := _button("All brushes", "more", "", open_sheet)
-	all.theme_type_variation = "ToolButton"
-	all.tooltip_text = "Brush library"
-	_strip_box.add_child(all)
+	var fold := _button("Collapse tray", "chevrons_right" if tray_collapsed != left_handed else "chevrons_left", "", func() -> void:
+		tray_collapsed = not tray_collapsed
+		_save_settings()
+		_sync_brushes())
+	fold.theme_type_variation = "TrayButton"
+	fold.tooltip_text = "Show brushes" if tray_collapsed else "Hide brushes"
+	_tray_box.add_child(fold)
+	if not tray_collapsed:
+		_tray_box.add_child(HSeparator.new())
+		for i in recent_brushes.size():
+			var id := recent_brushes[i]
+			var b := _button("Recent " + id, _nib(id), "", func() -> void: canvas.set_brush(id))
+			b.theme_type_variation = "TrayButton"
+			b.toggle_mode = true
+			b.button_pressed = id == current
+			b.tooltip_text = Shortcuts.tooltip(canvas.brush_name(id), "brush_%d" % (i + 1))
+			b.set_meta("dot", canvas.brush_color(id))
+			_tray_box.add_child(b)
+		_tray_box.add_child(HSeparator.new())
+		var all := _button("All brushes", "more", "", func() -> void:
+			if sheet_open:
+				close_sheet()
+			else:
+				open_sheet())
+		all.theme_type_variation = "TrayButton"
+		all.tooltip_text = "Brush list"
+		_tray_box.add_child(all)
 	_rebuild_bar()
 
 
 func _sync_history() -> void:
 	_undo.disabled = not canvas.can_undo()
 	_redo.disabled = not canvas.can_redo()
+
+
+## Nib icon for a brush, from its geometry: fine pen, marker, flat chisel or dots.
+func _nib(id: String) -> String:
+	var def: Dictionary = canvas.brush_definition(id)
+	match def.get("geometry", {}).get("type", ""):
+		"ribbon":
+			return "nib_flat"
+		"dots":
+			return "nib_dots"
+	for d in def.get("dynamics", []):
+		if d.get("type", "") == "width" and float(d.get("params", {}).get("base", 0.0)) >= 0.02:
+			return "nib_marker"
+	return "nib_pen"
 
 
 # ---- Layout --------------------------------------------------------------------------------
@@ -537,23 +623,23 @@ func _layout() -> void:
 	_root.theme = _theme
 	_cube.ui_scale = _s
 	portrait = screen.y > screen.x or screen.x / _s < 760
-	var m := 10 * _s
+	var m := 12 * _s
 	var hand_left := not left_handed
 	_apply_sizes()
 
-	# Pills in the top corners; everything else starts below them.
+	# Top row: Gallery + name on the left, tools centered, actions on the right.
+	_gallery.position = Vector2(m, m)
 	_actions.reset_size()
 	_actions.position = Vector2(screen.x - m - _actions.size.x, m)
+	_tools.reset_size()
+	_tools.position = Vector2((screen.x - _tools.size.x) / 2, m)
 	_fit_title()
-	_nav.position = Vector2(m, m)
-	var top := maxf(_nav.size.y, _actions.size.y) + 2 * m
+	var top := m + _gallery.size.y + m
 
-	# Rail and brush strip on the hand side, view cube in the other top corner.
+	# Tray docked to the hand-side edge; view cube on the other side.
+	_rail.theme_type_variation = "TrayLeft" if hand_left else "TrayRight"
 	_rail.reset_size()
-	_rail.position = Vector2(m if hand_left else screen.x - m - _rail.size.x, top)
-	_strip.custom_minimum_size.x = _rail.size.x
-	_strip.reset_size()
-	_strip.position = Vector2(_rail.position.x, _rail.position.y + _rail.size.y + m)
+	_rail.position = Vector2(0.0 if hand_left else screen.x - _rail.size.x, top + 6 * _s)
 	var cube_size := 104 * _s
 	_cube.size = Vector2(cube_size, cube_size)
 	_cube.position = Vector2(screen.x - m - cube_size if hand_left else m, top)
@@ -564,21 +650,15 @@ func _layout() -> void:
 	_bar.size.x = bar_w
 	_bar.position = Vector2((screen.x - bar_w) / 2, screen.y - m - _bar.size.y)
 
-	# Brush library sheet: the side opposite the rail in landscape, above the bar in portrait.
-	# It fits its brushes, scrolling past a cap.
+	# Brush list next to the tray, sized to its rows up to the room above the bar.
 	_sheet.visible = sheet_open
-	_cube.visible = not (sheet_open and not portrait)
-	var cap := minf(screen.y * 0.45, 420 * _s) if portrait else _bar.position.y - m - top - 120 * _s
-	_brush_scroll.custom_minimum_size.y = minf(_brush_grid.get_combined_minimum_size().y, cap)
-	if portrait:
-		_sheet.custom_minimum_size = Vector2(screen.x - 2 * m, 0)
-		_sheet.reset_size()
-		_sheet.position = Vector2(m, _bar.position.y - m - _sheet.size.y)
-	else:
-		var w := 300 * _s
-		_sheet.custom_minimum_size = Vector2(w, 0)
-		_sheet.reset_size()
-		_sheet.position = Vector2(screen.x - m - w if hand_left else m, top)
+	var w := minf(340 * _s, screen.x - _rail.size.x - 3 * m)
+	var room := _bar.position.y - m - _rail.position.y - 120 * _s
+	_brush_scroll.custom_minimum_size = Vector2(0, minf(_brush_list.get_combined_minimum_size().y, room))
+	_sheet.custom_minimum_size = Vector2(w, 0)
+	_sheet.reset_size()
+	var sheet_x := _rail.size.x + m if hand_left else screen.x - _rail.size.x - m - w
+	_sheet.position = Vector2(sheet_x, _rail.position.y)
 
 	_place_toast()
 	layout_changed.emit.call_deferred()
@@ -586,23 +666,21 @@ func _layout() -> void:
 
 func _place_toast() -> void:
 	var screen := get_viewport().get_visible_rect().size
-	var m := 10 * _s
-	_toast.custom_minimum_size = Vector2(minf(520 * _s, screen.x - 2 * m), 0)
+	var m := 12 * _s
+	_toast.custom_minimum_size = Vector2(minf(480 * _s, screen.x - 2 * m), 0)
 	_toast.reset_size()
 	var above := screen.y if ui_hidden else _bar.position.y
-	if sheet_open and portrait and not ui_hidden:
-		above = _sheet.position.y
 	_toast.position = Vector2((screen.x - _toast.size.x) / 2, above - m - _toast.size.y)
 
 
-## Sizes the sketch name to its text, up to the room left beside the right-hand pill.
+## Sizes the sketch name to its text, up to the room left before the tool buttons.
 func _fit_title() -> void:
 	var font := _title.get_theme_font("font")
 	var text_w := font.get_string_size(_title.text, HORIZONTAL_ALIGNMENT_LEFT, -1, _title.get_theme_font_size("font_size")).x
-	var screen := get_viewport().get_visible_rect().size
-	var room := screen.x - 4 * 10 * _s - _actions.size.x - 44 * _s
-	_title.custom_minimum_size.x = clampf(text_w + 12 * _s, 0.0, minf(280 * _s, room))
-	_nav.reset_size()
+	var x := _gallery.position.x + _gallery.size.x + 10 * _s
+	var room := _tools.position.x - x - 12 * _s
+	_title.size = Vector2(clampf(text_w + 4 * _s, 0.0, maxf(room, 0.0)), _gallery.size.y)
+	_title.position = Vector2(x, _gallery.position.y)
 
 
 ## Touch-friendly sizes and crisp icons at the current scale.
@@ -614,14 +692,29 @@ func _apply_sizes() -> void:
 		var n: Node = stack.pop_back()
 		stack.append_array(n.get_children())
 		if n is Button:
+			var v: String = n.theme_type_variation
 			n.custom_minimum_size.y = 44 * _s
-			if n.theme_type_variation == "ToolButton":
+			if v in ["ToolButton", "RoundButton", "TrayButton"]:
 				n.custom_minimum_size.x = 44 * _s
+			if n.has_meta("row"):
+				n.custom_minimum_size = Vector2(0, 62 * _s)
 			if n.has_meta("icon_name"):
 				n.icon = Icons.get_icon(n.get_meta("icon_name"), _s)
-				n.add_theme_constant_override("icon_max_width", roundi(24 * _s))
+				n.add_theme_constant_override("icon_max_width", roundi(22 * _s))
+			if n.has_meta("dot") and n.get_child_count() == 0:
+				# Colour dot in the button's bottom-right corner.
+				var dot := _dot_rect(n.get_meta("dot"), 9)
+				dot.position = Vector2(44 - 14, 44 - 14) * _s
+				n.add_child(dot)
+		elif n is TextureRect and n.has_meta("icon_name"):
+			n.texture = Icons.get_icon(n.get_meta("icon_name"), _s)
+			n.custom_minimum_size = Vector2(44 * _s, 44 * _s)
 		elif n is HSlider:
 			n.custom_minimum_size.y = 32 * _s
+	for row in _brush_buttons.values():
+		var label: Label = row.find_child("Name", true, false)
+		if label:
+			label.custom_minimum_size.x = 104 * _s
 
 
 func _button(name: String, icon: String, text: String, on_press: Callable) -> Button:
@@ -637,32 +730,27 @@ func _button(name: String, icon: String, text: String, on_press: Callable) -> Bu
 	return b
 
 
-func _swatch(color: Color) -> ImageTexture:
-	var img := Image.create(16, 16, false, Image.FORMAT_RGBA8)
-	img.fill(color)
-	return ImageTexture.create_from_image(img)
-
-
-## A round colour dot for the brush strip.
-func _dot(color: Color) -> ImageTexture:
-	var n := 48
-	var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
-	var r := n * 0.42
-	for y in n:
-		for x in n:
-			var d := Vector2(x + 0.5 - n / 2.0, y + 0.5 - n / 2.0).length()
-			var a := clampf(r - d + 0.5, 0.0, 1.0)
-			var ring := clampf(1.5 - absf(d - r + 1.0), 0.0, 1.0) * 0.35
-			img.set_pixel(x, y, Color(color.lerp(Color.WHITE, ring), a))
-	var tex := ImageTexture.create_from_image(img)
-	tex.set_size_override(Vector2i(roundi(24 * _s), roundi(24 * _s)))
-	return tex
+## A small round colour dot (brush colour), with a light ring so dark colours show on the tray.
+func _dot_rect(color: Color, size := 10) -> Panel:
+	var p := Panel.new()
+	var box := StyleBoxFlat.new()
+	box.bg_color = color
+	box.set_corner_radius_all(roundi(size * _s))
+	box.set_border_width_all(maxi(1, roundi(_s)))
+	box.border_color = Color(1, 1, 1, 0.35)
+	p.add_theme_stylebox_override("panel", box)
+	p.custom_minimum_size = Vector2(size, size) * _s
+	p.size = p.custom_minimum_size
+	p.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	p.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return p
 
 
 func _load_settings() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(SETTINGS) == OK:
 		left_handed = cfg.get_value("ui", "left_handed", false)
+		tray_collapsed = cfg.get_value("ui", "tray_collapsed", false)
 		recent_brushes.assign(cfg.get_value("ui", "recent_brushes", []))
 
 
@@ -670,5 +758,6 @@ func _save_settings() -> void:
 	var cfg := ConfigFile.new()
 	cfg.load(SETTINGS)
 	cfg.set_value("ui", "left_handed", left_handed)
+	cfg.set_value("ui", "tray_collapsed", tray_collapsed)
 	cfg.set_value("ui", "recent_brushes", recent_brushes)
 	cfg.save(SETTINGS)
