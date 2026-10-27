@@ -150,6 +150,12 @@ impl SketchSession {
     /// A guide stroke ended; `created` is false if it was too short to make a guide.
     #[signal]
     fn guide_drawn(created: bool);
+    /// The pen (or drawing mouse button) went down on the canvas: sheets close.
+    #[signal]
+    fn pen_down();
+    /// Hide or show all UI (4-finger tap).
+    #[signal]
+    fn ui_toggle_requested();
 
     /// Screen rectangles covered by UI (toolbar, open dialogs). Contacts starting there are
     /// ignored, since native backends see touches the GUI also handles.
@@ -191,6 +197,7 @@ impl SketchSession {
             Routed::Command(Command::Undo) => self.with_canvas(|c| c.undo()),
             Routed::Command(Command::Redo) => self.with_canvas(|c| c.redo()),
             Routed::Command(Command::NudgeGuide(n)) => self.signals().guide_nudged().emit(n),
+            Routed::Command(Command::ToggleUi) => self.signals().ui_toggle_requested().emit(),
             Routed::Command(Command::Pen(a)) => {
                 let name = GString::from(format!("{a:?}").to_lowercase().as_str());
                 self.signals().pen_action().emit(&name);
@@ -201,6 +208,9 @@ impl SketchSession {
     }
 
     fn stroke(&mut self, e: StrokeEvent) {
+        if matches!(e, StrokeEvent::Begin { .. }) {
+            self.signals().pen_down().emit();
+        }
         if self.guide_drawing {
             self.guide_stroke(e);
             return;

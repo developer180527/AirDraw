@@ -109,11 +109,16 @@ func _ready() -> void:
 	# Toolbar by touch: tap the Glow brush and Undo buttons.
 	var bar = main.get("toolbar")
 	print("SMOKE glow_button=", bar.find_button("test.glow") != null)
+	await _settle()
+	await _tap(bar.find_button("Brushes"))
+	await _settle()
+	print("SMOKE sheet_opened=", bar.sheet_open)
 	await _tap(bar.find_button("Dots"))
 	print("SMOKE tapped_dots=", canvas.current_brush())
 	await _tap(bar.find_button("test.glow"))
 	print("SMOKE tapped_glow=", canvas.current_brush())
 	await _stroke(center + Vector2(-200, 100), func(t: float) -> Vector2: return Vector2(t * 400.0, 0.0))
+	print("SMOKE sheet_closed_by_drawing=", not bar.sheet_open, " strip_has_glow=", bar.recent_brushes.has("test.glow"))
 	var before: int = canvas.stroke_count()
 	await _tap(bar.find_button("Undo"))
 	print("SMOKE tapped_undo=", before, "->", canvas.stroke_count())
@@ -158,7 +163,7 @@ func _ready() -> void:
 		print("SMOKE format ", fmt.extension, " error='", r.error, "' files=", r.files.size(), " warnings=", r.warnings)
 
 	# Brush editor: tweak the current brush, save as new, draw with it, share, import, delete.
-	await _tap(bar.find_button("Edit Brush"))
+	await _tap(bar.find_button("Edit current brush"))
 	var editor = main.get("brush_editor")
 	await get_tree().process_frame
 	print("SMOKE editor_visible=", editor.visible, " preview=", editor._preview.mesh != null, " error='", editor._error.text, "'")
@@ -187,15 +192,20 @@ func _ready() -> void:
 	var out := FileAccess.open(import_file, FileAccess.WRITE)
 	out.store_string(FileAccess.get_file_as_string(shared).replace(new_id, "friend.imported"))
 	out.close()
+	editor.delete()
+	print("SMOKE after_delete=", canvas.brush_ids().has(new_id), " editor_visible=", editor.visible)
+	await _settle()
+	await _tap(bar.find_button("Brushes"))
+	await _settle()
 	await _tap(bar.find_button("Import"))
 	print("SMOKE imported=", canvas.brush_ids().has("friend.imported"), " status=", main.get("status"))
 	DirAccess.remove_absolute(import_file)
 	canvas.delete_brush("friend.imported")
-	editor.delete()
-	print("SMOKE after_delete=", canvas.brush_ids().has(new_id), " editor_visible=", editor.visible)
+	bar.close_sheet()
 
 	# Leave the brush editor open for the screenshot so its layout can be reviewed.
-	await _tap(bar.find_button("Edit Brush"))
+	bar.close_sheet()
+	await _tap(bar.find_button("Edit current brush"))
 	await get_tree().process_frame
 	await get_tree().process_frame
 	get_viewport().get_texture().get_image().save_png("user://smoke.png")
@@ -217,11 +227,11 @@ func _ready() -> void:
 	# running away from the viewer; from the top, a stroke drawn across it lands at real depth.
 	var shell = main.get("toolbar")
 	var guide_before: int = canvas.stroke_count()
-	await _tap(shell.find_button("Draw guide"))
+	await _tap(shell.find_button("Guide"))
 	var mode_on: bool = main.get("session").guide_drawing
 	await _stroke(center, func(t: float) -> Vector2: return Vector2(-250.0 + 500.0 * t, 0.0))
 	print("SMOKE guide mode_on=", mode_on, " drawn=", canvas.has_drawn_guide(), " mode_after=", main.get("session").guide_drawing,
-		" button_after=", shell.find_button("Draw guide").button_pressed, " strokes_unchanged=", canvas.stroke_count() == guide_before)
+		" tool_after=", main.get("tool"), " draw_button=", shell.find_button("Draw").button_pressed, " strokes_unchanged=", canvas.stroke_count() == guide_before)
 	rig.set_view("top")
 	await get_tree().create_timer(0.5).timeout
 	await _stroke(center, func(t: float) -> Vector2: return Vector2(0.0, -150.0 + 300.0 * t))
@@ -247,17 +257,44 @@ func _ready() -> void:
 	var original_size := win.size
 	win.size = Vector2i(820, 1180)
 	await _shot("user://layout_portrait.png")
-	await _tap(shell.find_button("TabBrushes"))
+	await _tap(shell.find_button("Brushes"))
 	await _shot("user://layout_portrait_sheet.png")
-	print("SMOKE portrait=", shell.portrait, " sheet_open=", shell._sheet_open)
+	print("SMOKE portrait=", shell.portrait, " sheet_open=", shell.sheet_open)
+	shell.close_sheet()
 	win.size = original_size
 	shell.left_handed = true
 	shell._layout()
 	await _shot("user://layout_left_handed.png")
-	print("SMOKE left_handed rail_x=", shell._rail.position.x, " column_x=", shell._column.position.x)
+	print("SMOKE left_handed rail_x=", shell._rail.position.x, " cube_x=", shell._cube.position.x)
 	shell.left_handed = false
 	shell._layout()
 	print("SMOKE ui_rects=", shell.ui_rects().size())
+	# Desktop shortcuts: G arms the Guide tool, B goes back; Tab hides the interface.
+	_key(KEY_G)
+	var g_tool: String = main.get("tool")
+	_key(KEY_B)
+	print("SMOKE keys g=", g_tool, " b=", main.get("tool"), " guide_tooltip='", shell.find_button("Guide").tooltip_text, "'")
+	_key(KEY_TAB)
+	await get_tree().process_frame
+	await _shot("user://layout_hidden.png")
+	print("SMOKE hidden=", shell.ui_hidden, " rects=", shell.ui_rects().size())
+	_key(KEY_TAB)
+	# Four-finger tap (touch path) toggles it too.
+	for i in 4:
+		_touch(10 + i, center + Vector2(i * 60, 0), true)
+	for i in 4:
+		_touch(10 + i, center + Vector2(i * 60, 0), false)
+	await get_tree().process_frame
+	var four_hid: bool = shell.ui_hidden
+	shell.toggle_ui()
+	print("SMOKE four_finger_hides=", four_hid, " restored=", not shell.ui_hidden)
+	# View cube: tapping its top face (seen from the front view, the top face is hidden; from
+	# 3D it's above the center) switches views.
+	rig.set_view("3d")
+	await get_tree().create_timer(0.5).timeout
+	var cube = shell._cube
+	var top_face: String = cube._face_at(cube.size / 2 + Vector2(0, -cube.size.y * 0.25))
+	print("SMOKE cube_face_above_center=", top_face)
 
 	# Home screen: Gallery autosaves; both sketches are in Recents with thumbnails.
 	await _tap(bar.find_button("Gallery"))
@@ -300,6 +337,12 @@ func _shot(path: String) -> void:
 	for i in 4:
 		await get_tree().process_frame
 	get_viewport().get_texture().get_image().save_png(path)
+
+
+## Lets deferred layout run, so controls are where a user would see them.
+func _settle() -> void:
+	await get_tree().process_frame
+	await get_tree().process_frame
 
 
 func _tap(button: Button) -> void:

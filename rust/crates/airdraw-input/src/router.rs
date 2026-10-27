@@ -37,6 +37,8 @@ pub enum Command {
     /// Move the drawing guide along its normal, in wheel notches.
     NudgeGuide(f32),
     Pen(PenAction),
+    /// Hide or show all UI (4-finger tap).
+    ToggleUi,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -98,6 +100,9 @@ impl RouterConfig {
             MouseButton::Right => self.mouse_right,
             MouseButton::Middle => self.mouse_middle,
         };
+        if m.space && button == MouseButton::Left {
+            return DragAction::Pan;
+        }
         if action == DragAction::Orbit && m.shift && self.shift_orbit_pans { DragAction::Pan } else { action }
     }
 }
@@ -287,6 +292,7 @@ impl InputRouter {
                     match tap.max_fingers {
                         2 => out.push(Routed::Command(Command::Undo)),
                         3 => out.push(Routed::Command(Command::Redo)),
+                        4 => out.push(Routed::Command(Command::ToggleUi)),
                         _ => {}
                     }
                 }
@@ -403,6 +409,22 @@ mod tests {
         // Centroid moved 50px right, spread doubled → zoom in by half.
         assert!(out.contains(&Routed::View(ViewEvent::Pan(Vec2::new(50., 0.)))));
         assert!(out.iter().any(|e| matches!(e, Routed::View(ViewEvent::Zoom { factor, .. }) if *factor == 0.5)));
+    }
+
+    #[test]
+    fn four_finger_tap_toggles_ui() {
+        let mut r = InputRouter::new(RouterConfig::default());
+        let mut events: Vec<PenEvent> = (0..4).map(|i| down(i + 1, PointerTool::Finger, i as f32 * 40., 0., 0.)).collect();
+        events.extend((0..4).map(|i| up(i + 1, i as f32 * 40., 0., 0.1)));
+        assert_eq!(run(&mut r, events), vec![Routed::Command(Command::ToggleUi)]);
+    }
+
+    #[test]
+    fn space_left_drag_pans() {
+        let r = InputRouter::new(RouterConfig::default());
+        let space = Modifiers { space: true, ..Default::default() };
+        assert_eq!(r.config.mouse_action(MouseButton::Left, space), DragAction::Pan);
+        assert_eq!(r.config.mouse_action(MouseButton::Left, Modifiers::default()), DragAction::Draw);
     }
 
     #[test]

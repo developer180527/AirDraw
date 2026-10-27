@@ -879,7 +879,7 @@ iOS export allowed only one landscape orientation).
   start under chrome. On desktop, `SketchSession` takes motion of an already-pressed pointer
   in `_input`, so a stroke continues when it passes under a panel.
 
-### 5-3. Drawing screen v2: tools, context bar, sheets (proposed, awaiting sign-off)
+### 5-3. Drawing screen v2: tools, context bar, sheets (approved 2026-10-27; steps 1–4 implemented)
 
 **Problems with 5-2.** Controls are spread over five places (rail, right panels, view
 switcher, two pills), so one task often needs two (a guide is drawn from the rail but removed
@@ -996,19 +996,42 @@ has hidden shortcuts and no hover, tooltips or right-click.
 
 | Step | Deliverable |
 |---|---|
-| 1 | Context bar + 4-tool rail; Guide panel folded into the Guide context bar; placeholders hidden |
-| 2 | Brush quick strip + size slider; brush library and editor as sheets |
-| 3 | View cube replacing F/S/T/3D |
-| 4 | Desktop: shortcut table + tooltips, mouse map, right-click menus, hover states |
-| 5 | Tablet: Pencil double-tap and squeeze palette, 4-finger hide UI, hover preview, first-run hint |
+| 1 ✅ | Context bar + tool rail (Draw, Guide); Guide panel folded into the Guide context bar; placeholders hidden |
+| 2 ✅ | Brush quick strip; brush library as a sheet (size slider waits for per-stroke size; brush editor stays its own dialog) |
+| 3 ✅ | View cube replacing F/S/T/3D |
+| 4 ✅ | Desktop: shortcut table + tooltips, mouse map (+ Space-pan), Tab hides UI. Right-click menus wait for Select |
+| 5 | Tablet: Pencil double-tap Draw ⇄ Erase and squeeze palette, hover preview (4-finger hide UI and first-run hint done) |
 
-#### Decisions needed
+#### Decisions (2026-10-27)
 
-1. Pencil double-tap: Draw ⇄ Erase (proposed; Apple's default) or keep undo.
-2. Right-drag orbits on desktop (proposed) or left-drag with a modifier.
-3. Sheets close on pen-down (proposed) or stay until closed.
-4. Brush colour: a colour picker in the Draw bar that overrides the brush colour per stroke
-   (needs per-stroke colour in the document) or colour stays part of the brush (as now).
+1. Pencil double-tap → Draw ⇄ Erase once the eraser exists; until then it stays undo.
+2. Right-drag orbits on desktop.
+3. Sheets close on pen-down.
+4. Colour (and size) stay part of the brush for now; per-stroke colour/size needs a
+   document change and comes as its own step.
+
+#### As built (steps 1–4)
+
+- `editor_shell.gd` (rail, strip, context bars, sheet, toast, menu), `view_cube.gd`,
+  `shortcuts.gd`. The planned split of the shell into more files waits until the Select and
+  Erase bars exist; today the bars are two short builders.
+- Rail: **Draw** and **Guide** only (Erase/Select hidden until built). Guide arms one guide
+  stroke, then returns to Draw. Tool state lives in `main.gd` (`tool`), mirrored to
+  `session.guide_drawing` and the shell.
+- Draw bar: current brush (opens the library sheet) and Edit; while a drawn guide is active,
+  "On guide · Remove". Guide bar: Draw, Front/Side/Top/View, position slider + Reset (preset
+  planes) or Remove (drawn guide). The old panel column and Layers placeholder are gone.
+- Brush strip: 5 most recent brushes (kept in `settings.cfg`), keys 1–5, plus "…" for the
+  library. Library sheet fits its content, scrolls past a cap, closes on pen-down
+  (`SketchSession.pen_down`).
+- View cube: faces Front/Back/Right/Left/Top/Bottom (camera gained back, left and bottom
+  views and turns the short way); tap = view, drag = orbit, double-tap = 3D.
+- Desktop: `Shortcuts.KEYS` drives key handling and tooltips (e.g. "Guide (G)", "Undo (⌘Z)");
+  right-drag orbits, middle or Space + left drag pans (`Modifiers.space`), wheel zooms,
+  Alt + wheel slides the plane. Tab hides the interface.
+- Tablet: four-finger tap hides the interface (`Command::ToggleUi`); one-time first-run hint.
+- Not yet: right-click / long-press context menus (need stroke picking from Select), squeeze
+  palette, hover preview, per-stroke colour/size, a desktop-docked sheet.
 
 ### 5a. File thumbnails in the OS
 

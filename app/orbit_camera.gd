@@ -40,9 +40,14 @@ func zoom(factor: float, _at := Vector2.ZERO) -> void:
 	_apply()
 
 
-## Animates to a standard view: "front", "side", "top" or "3d".
+## Animates to a standard view: "front", "back", "side" (right), "left", "top", "bottom" or "3d".
 func set_view(view: String) -> void:
-	var target: Vector2 = {"front": Vector2(0, 0), "side": Vector2(PI / 2, 0), "top": Vector2(0, -1.55), "3d": Vector2(0.6, -0.45)}.get(view, Vector2(yaw, pitch))
+	var target: Vector2 = {
+		"front": Vector2(0, 0), "back": Vector2(PI, 0), "side": Vector2(PI / 2, 0), "left": Vector2(-PI / 2, 0),
+		"top": Vector2(0, -1.55), "bottom": Vector2(0, 1.55), "3d": Vector2(0.6, -0.45),
+	}.get(view, Vector2(yaw, pitch))
+	# Turn the short way round.
+	target.x = yaw + wrapf(target.x - yaw, -PI, PI)
 	var tween := create_tween().set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	tween.tween_method(func(v: Vector2) -> void:
 		yaw = v.x

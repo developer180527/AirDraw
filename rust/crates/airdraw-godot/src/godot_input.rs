@@ -227,6 +227,7 @@ fn modifiers(e: &Gd<InputEventWithModifiers>) -> Modifiers {
         ctrl: e.is_ctrl_pressed(),
         alt: e.is_alt_pressed(),
         meta: e.is_meta_pressed(),
+        space: godot::classes::Input::singleton().is_key_pressed(godot::global::Key::SPACE),
     }
 }
 

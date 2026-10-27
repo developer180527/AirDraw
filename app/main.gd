@@ -18,6 +18,8 @@ var brush_editor: BrushEditor
 var thumbnails: ThumbnailRenderer
 var home: HomeScreen
 var app_files: AppFiles
+## The pen's tool: "draw" (ink on the active guide) or "guide" (the next stroke draws a guide).
+var tool := "draw"
 
 ## Overridable before the node enters the tree (tests).
 var sketch_dir := ""
@@ -77,9 +79,7 @@ func _ready() -> void:
 	guides = GuideController.new(session)
 	guides.changed.connect(func() -> void:
 		if toolbar:
-			toolbar.show_plane(-1 if guides.has_drawn() else guides.preset)
-			toolbar.show_drawn_guide(guides.has_drawn())
-			toolbar.set_guide_offset(guides.offset())
+			toolbar.refresh_guide(guides.has_drawn(), guides.preset, guides.offset())
 		_update_hud())
 	add_child(guides)
 
@@ -100,14 +100,21 @@ func _ready() -> void:
 		else:
 			guides.set_preset(i))
 	toolbar.guide_offset_changed.connect(guides.set_offset)
-	toolbar.guide_draw_toggled.connect(_set_guide_drawing)
+	toolbar.tool_selected.connect(set_tool)
 	session.guide_path_changed.connect(toolbar.show_guide_path)
 	session.guide_drawn.connect(func(created: bool) -> void:
-		toolbar.set_guide_drawing(false)
-		_set_status("Guide ready. Orbit to see it, then draw on it." if created else "Draw a longer line to make a guide."))
+		if created:
+			set_tool("draw")
+			_set_status("Guide ready. Orbit to see it, then draw on it.")
+		else:
+			set_tool("guide")
+			_set_status("Draw a longer line to make a guide."))
+	session.pen_down.connect(func() -> void: toolbar.close_sheet())
+	session.ui_toggle_requested.connect(func() -> void: toolbar.toggle_ui())
 	toolbar.view_requested.connect(rig.set_view)
+	toolbar.orbit_requested.connect(rig.orbit)
 	toolbar.action.connect(_file_action)
-	toolbar.setup(canvas)
+	toolbar.setup(canvas, rig.camera)
 	guides.attach(canvas)
 	export_dialog = ExportDialog.new()
 	export_dialog.finished.connect(_set_status)
@@ -204,6 +211,7 @@ func _show_canvas() -> void:
 	status = ""
 	_update_ui_regions()
 	_update_hud()
+	toolbar.first_run_hint()
 
 
 func new_sketch() -> void:
@@ -224,43 +232,47 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _handle_key(event: InputEventKey) -> void:
-	var cmd := event.is_command_or_control_pressed()
-	match event.keycode:
-		KEY_Z when cmd and event.shift_pressed:
-			canvas.redo()
-		KEY_Z when cmd:
+	var action := Shortcuts.action_for(event)
+	match action:
+		"tool_draw":
+			set_tool("draw")
+		"tool_guide":
+			set_tool("draw" if tool == "guide" else "guide")
+		"undo":
 			canvas.undo()
-		KEY_BACKSPACE when cmd:
-			canvas.clear()
-		KEY_S when cmd:
+		"redo":
+			canvas.redo()
+		"save":
 			await documents.save_current()
 			_set_status("Saved")
-		KEY_E when cmd:
-			_file_action("export")
-		KEY_R:
+		"export", "clear":
+			_file_action(action)
+		"view_front":
+			rig.set_view("front")
+		"view_side":
+			rig.set_view("side")
+		"view_top":
+			rig.set_view("top")
+		"view_reset":
+			rig.set_view("3d")
+		"toggle_ui":
+			toolbar.toggle_ui()
+		"rebrush":
 			if canvas.rebrush_last():
 				_set_status("Re-brushed last stroke")
-		KEY_1, KEY_2, KEY_3:
-			guides.set_preset(event.keycode - KEY_1)
-		KEY_V:
-			guides.align_to_view(rig.camera)
-		KEY_BRACKETRIGHT:
-			guides.move(0.05)
-		KEY_BRACKETLEFT:
-			guides.move(-0.05)
-		KEY_0:
-			guides.reset_origin()
-		KEY_B:
-			_cycle_brush(-1 if event.shift_pressed else 1)
-		KEY_G:
-			_set_guide_drawing(not session.guide_drawing)
+		_ when action.begins_with("brush_"):
+			var id := toolbar.recent_brush(int(action.trim_prefix("brush_")) - 1)
+			if not id.is_empty():
+				canvas.set_brush(id)
 
 
-## Guide-draw mode: the next pen stroke becomes a 3D guide instead of ink.
-func _set_guide_drawing(on: bool) -> void:
-	session.guide_drawing = on
-	toolbar.set_guide_drawing(on)
-	if on:
+## Switches the pen's tool. The Guide tool draws one guide, then the app goes back to Draw.
+func set_tool(t: String) -> void:
+	tool = t
+	session.guide_drawing = t == "guide"
+	toolbar.set_tool(t)
+	toolbar.set_guide_drawing(t == "guide")
+	if t == "guide":
 		_set_status("Draw a line: it becomes a surface you can draw on.")
 
 

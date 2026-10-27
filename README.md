@@ -44,11 +44,11 @@ Rust crates:
 
 ### Works (tested)
 
-- **Drawing screen:** dark floating chrome over a full-screen light canvas — two pills in
-  the top corners (Gallery + sketch name; undo/redo, export, ⋯ menu), tool rail, fixed right column of collapsible panels (Brushes, Guide,
-  Layers) that becomes a tabbed bottom sheet in portrait, view switcher (front/side/top/3D),
-  toasts, and a left-handed mode that mirrors the layout. Tools not built yet (eraser,
-  select, sphere/cylinder guides, symmetry, snap) are in the rail, disabled.
+- **Drawing screen:** full-screen light canvas with dark floating chrome — pills in the top
+  corners (Gallery + sketch name; undo/redo, export, ⋯ menu), a tool rail (Draw, Guide) with
+  a recent-brush strip, a context bar for the current tool, a view cube, and a brush library
+  sheet that closes when you draw. Left-handed mode mirrors it; Tab or a four-finger tap
+  hides it. Desktop shortcuts are shown in tooltips.
 - **Drawing:** strokes projected onto a guide plane (front / side / top / view-aligned,
   movable), pressure-sensitive, smoothed; live preview of predicted Pencil points on iPad.
 - **iPad:** native UIKit input (Pencil vs finger by tool type, not guessing), toolbar,

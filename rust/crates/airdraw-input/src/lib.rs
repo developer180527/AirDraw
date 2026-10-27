@@ -34,6 +34,8 @@ pub struct Modifiers {
     pub ctrl: bool,
     pub alt: bool,
     pub meta: bool,
+    /// Space held: a left drag pans (as in most design apps).
+    pub space: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
