@@ -40,6 +40,11 @@ pub struct SketchCanvas {
     looks: LookLibrary,
     /// Compiled Look shaders by (shader name, double-sided).
     shaders: HashMap<(String, bool), Gd<Shader>>,
+    /// The current Look's outline pass by double-sided (ribbons are outlined differently).
+    outlines: HashMap<bool, Gd<Material>>,
+    /// Sub-pixel triangles drawn once per material variant to compile shaders ahead of the
+    /// first stroke, with the frames they still stay.
+    warm_up: Vec<(Gd<MeshInstance3D>, u32)>,
     nodes: HashMap<StrokeId, Gd<MeshInstance3D>>,
     current: Option<LiveStroke>,
     /// Per-update live-stroke costs, recorded only while benchmarking.
@@ -69,6 +74,8 @@ impl INode3D for SketchCanvas {
             materials: HashMap::new(),
             looks: LookLibrary::with_builtins(),
             shaders: HashMap::new(),
+            outlines: HashMap::new(),
+            warm_up: Vec::new(),
             nodes: HashMap::new(),
             current: None,
             timings: None,
@@ -77,6 +84,19 @@ impl INode3D for SketchCanvas {
 
     fn exit_tree(&mut self) {
         self.cancel_stroke();
+    }
+
+    /// Frees warm-up triangles once their shaders have been drawn.
+    fn process(&mut self, _delta: f64) {
+        if self.warm_up.is_empty() {
+            return;
+        }
+        for (_, frames) in &mut self.warm_up {
+            *frames = frames.saturating_sub(1);
+        }
+        for (mut node, _) in self.warm_up.extract_if(.., |(_, f)| *f == 0) {
+            node.queue_free();
+        }
     }
 }
 
@@ -129,6 +149,39 @@ impl SketchCanvas {
         self.refresh_materials();
         self.signals().look_changed().emit();
         true
+    }
+
+    /// Compiles the current Look's shaders now instead of on the first stroke that needs them
+    /// (on iPad a first draw can stall ~0.5–0.8 s): draws one sub-pixel triangle per material
+    /// variant (lit and unlit brushes, one- and two-sided, with their outline passes) in front
+    /// of `camera`, for a few frames. Call when a Look is applied.
+    #[func]
+    fn warm_up_look(&mut self, camera: Transform3D) {
+        for (node, _) in self.warm_up.drain(..) {
+            let mut node = node;
+            node.queue_free();
+        }
+        let tri = warm_up_mesh();
+        for (unshaded, double_sided) in [(false, false), (false, true), (true, false), (true, true)] {
+            let desc = MaterialDesc {
+                shading: if unshaded { Shading::Unshaded } else { Shading::Lit },
+                color: [1.0; 4],
+                roughness: 0.5,
+                metallic: 0.0,
+                emission: 0.0,
+                double_sided,
+            };
+            let material = self.build_material(&desc);
+            let mut node = MeshInstance3D::new_alloc();
+            node.set_mesh(&tri);
+            node.set_material_override(&material);
+            node.set_layer_mask(STROKE_LAYERS);
+            self.base_mut().add_child(&node);
+            // Half a metre ahead: past any near plane (a clipped triangle isn't drawn, so its
+            // shader wouldn't compile), and still sub-pixel.
+            node.set_global_transform(camera * Transform3D::new(Basis::IDENTITY, Vector3::new(0.0, 0.0, -0.5)));
+            self.warm_up.push((node, 3));
+        }
     }
 
     /// The Look's lighting: `{background, ambient: Color, ambient_energy, sun_energy: float,
@@ -663,9 +716,10 @@ impl SketchCanvas {
                     for (_, mut node) in self.nodes.drain() {
                         node.queue_free();
                     }
-                    // Snapshot indices belong to the old document.
+                    // Snapshot indices belong to the old document; its Look may differ.
                     self.compiled.clear();
                     self.materials.clear();
+                    self.outlines.clear();
                     for stroke in self.doc.strokes().to_vec() {
                         let node = self.make_node(&stroke);
                         self.nodes.insert(stroke.id, node);
@@ -712,17 +766,15 @@ impl SketchCanvas {
             return m.clone();
         }
         let d = self.brush_for(r).material().clone();
+        let m = self.build_material(&d);
+        self.materials.insert(r, m.clone());
+        m
+    }
+
+    fn build_material(&mut self, d: &MaterialDesc) -> Gd<Material> {
         let look = self.looks.get_or_default(self.doc.look()).clone();
         let key = (look.shader_for(d.shading == Shading::Unshaded).to_string(), d.double_sided);
-        let shader = self
-            .shaders
-            .entry(key.clone())
-            .or_insert_with(|| {
-                let mut s = Shader::new_gd();
-                s.set_code(&airdraw_look::shader_code(&key.0, key.1).expect("looks are validated"));
-                s
-            })
-            .clone();
+        let shader = self.shader(&key.0, key.1);
         let mut m = ShaderMaterial::new_gd();
         m.set_shader(&shader);
         let [cr, cg, cb, ca] = d.color;
@@ -733,14 +785,44 @@ impl SketchCanvas {
         for (name, value) in &look.params {
             m.set_shader_parameter(name.as_str(), &value.to_variant());
         }
+        if let Some(outline) = &look.outline {
+            m.set_next_pass(&self.outline_material(outline, d.double_sided));
+        }
+        m.upcast()
+    }
+
+    fn shader(&mut self, name: &str, double_sided: bool) -> Gd<Shader> {
+        self.shaders
+            .entry((name.to_string(), double_sided))
+            .or_insert_with(|| {
+                let mut s = Shader::new_gd();
+                s.set_code(&airdraw_look::shader_code(name, double_sided).expect("looks are validated"));
+                s
+            })
+            .clone()
+    }
+
+    /// The outline pass for the current Look: an inverted hull for tubes and dots, sideways
+    /// expansion for flat (double-sided) ribbons.
+    fn outline_material(&mut self, outline: &airdraw_look::Outline, double_sided: bool) -> Gd<Material> {
+        if let Some(m) = self.outlines.get(&double_sided) {
+            return m.clone();
+        }
+        let mut m = ShaderMaterial::new_gd();
+        m.set_shader(&self.shader(airdraw_look::OUTLINE_SHADER, double_sided));
+        let [r, g, b] = airdraw_look::parse_color(&outline.color).unwrap_or([0.0; 3]);
+        m.set_shader_parameter("outline_color", &Color::from_rgb(r, g, b).to_variant());
+        m.set_shader_parameter("outline_width", &outline.width.to_variant());
+        m.set_shader_parameter("flat_ribbon", &double_sided.to_variant());
         let m: Gd<Material> = m.upcast();
-        self.materials.insert(r, m.clone());
+        self.outlines.insert(double_sided, m.clone());
         m
     }
 
     /// Re-applies materials to every stroke (after the Look changed).
     fn refresh_materials(&mut self) {
         self.materials.clear();
+        self.outlines.clear();
         let nodes: Vec<(StrokeId, Gd<MeshInstance3D>)> = self.nodes.iter().map(|(k, v)| (*k, v.clone())).collect();
         for (id, mut node) in nodes {
             if let Some(brush) = self.doc.stroke(id).map(|s| s.brush) {
@@ -865,4 +947,19 @@ fn godot_material(d: &MaterialDesc) -> Gd<Material> {
         m.set_cull_mode(CullMode::DISABLED);
     }
     m.upcast()
+}
+
+/// A triangle far below a pixel in size, with every attribute strokes have (positions,
+/// normals, tangents, UVs, indices): shader pipelines depend on the vertex layout.
+fn warm_up_mesh() -> Gd<ArrayMesh> {
+    let mut m = MeshBuffers::default();
+    let n = glam::Vec3::Z;
+    let t = glam::Vec4::new(1.0, 0.0, 0.0, 1.0);
+    for p in [glam::Vec3::ZERO, glam::Vec3::new(1e-6, 0.0, 0.0), glam::Vec3::new(0.0, 1e-6, 0.0)] {
+        m.push(p, n, glam::Vec2::ZERO, t);
+    }
+    m.indices.extend_from_slice(&[0, 1, 2]);
+    let mut mesh = ArrayMesh::new_gd();
+    mesh.add_surface_from_arrays(PrimitiveType::TRIANGLES, &mesh_arrays(&m));
+    mesh
 }

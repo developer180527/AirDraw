@@ -1,0 +1,26 @@
+# Cartoon: two flat light bands with a hard step, a crisp highlight, a rim light, hard
+# shadows and dark outlines.
+schema = 1
+id = "com.airdraw.toon"
+name = "Toon"
+shader = "toon"
+unshaded_shader = "flat"
+
+[params]
+shadow_tone = 0.45
+threshold = 0.1
+highlight = 0.35
+highlight_size = 0.06
+rim = 0.25
+
+[outline]
+color = "#16161C"
+width = 2.5
+
+[environment]
+background = "#F2EFE8"
+ambient = "#FFFFFF"
+ambient_energy = 0.45
+sun_energy = 1.0
+shadows = true
+ssao = false

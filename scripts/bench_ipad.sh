@@ -3,7 +3,7 @@
 # Exports a debug build that includes tests/ (normal exports exclude it), installs it over the
 # dev app, launches it with the bench argument, waits for it and copies the CSV it writes
 # (Godot's print doesn't reach the devicectl console, and iOS apps can't quit themselves).
-# Usage: scripts/bench_ipad.sh [device-udid-or-name]   (default: first connected iPad)
+# Usage: [LOOK=com.airdraw.toon] scripts/bench_ipad.sh [device-udid-or-name]   (default: first connected iPad)
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GODOT="$ROOT/engine/godot/bin/godot.macos.editor.arm64"
@@ -23,7 +23,7 @@ rm -f "$ROOT/build/ios/AirDrawBench.ipa"
 [ -f "$ROOT/build/ios/AirDrawBench.ipa" ] || { echo "Export failed" >&2; exit 1; }
 xcrun devicectl device install app --device "$DEVICE" "$ROOT/build/ios/AirDrawBench.ipa" | tail -1
 xcrun devicectl device process launch --terminate-existing --device "$DEVICE" \
-  com.venugopal.airdraw ++ bench-live-stroke >/dev/null
+  com.venugopal.airdraw ++ bench-live-stroke ${LOOK:+look "$LOOK"} >/dev/null
 echo "Benchmark running on the iPad (keep it unlocked)..."
 sleep 90
 for f in live_stroke_bench.csv live_stroke_bench.txt; do

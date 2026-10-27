@@ -279,11 +279,27 @@ func _ready() -> void:
 	canvas.load_document(look_path)
 	print("SMOKE look new_sketch=", fresh_look, " reloaded=", canvas.look(), " env_reloaded=",
 		env.background_color.is_equal_approx(canvas.look_environment().background))
+	# Toon and Ink add an outline pass to every stroke; Shaded has none.
+	var outlined := func() -> Array:
+		var found := []
+		for c in canvas.get_children():
+			if c is MeshInstance3D and c.material_override is ShaderMaterial:
+				var next: Material = c.material_override.next_pass
+				found.append(next != null and "cull_" in next.shader.code and "outline_width" in next.shader.code)
+		return found
+	for look in ["Toon", "Ink"]:
+		await _tap(shell.find_button("More"))
+		await _settle()
+		await _tap(shell.find_button("Look " + look))
+		await _settle()
+		var o: Array = outlined.call()
+		print("SMOKE look ", look.to_lower(), "=", canvas.look() == "com.airdraw." + look.to_lower(), " outlined=", o.size() > 0 and o.all(func(x): return x))
+		await _shot("user://look_%s.png" % look.to_lower())
 	await _tap(shell.find_button("More"))
 	await _settle()
 	await _tap(shell.find_button("Look Shaded"))
 	await _settle()
-	print("SMOKE look back_to=", canvas.look())
+	print("SMOKE look back_to=", canvas.look(), " outlines_gone=", not (outlined.call() as Array).any(func(x): return x))
 
 	# Editor layouts: landscape, portrait (bottom sheet), left-handed.
 	await _shot("user://layout_landscape.png")

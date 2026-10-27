@@ -286,6 +286,8 @@ func _apply_look() -> void:
 	sun.visible = e.sun_energy > 0.0
 	sun.shadow_enabled = e.shadows
 	env.ssao_enabled = e.ssao and RenderingServer.get_current_rendering_method() == "forward_plus"
+	# Compile the Look's shaders now, not during the first stroke (a visible stall on iPad).
+	canvas.warm_up_look(rig.camera.global_transform)
 	if toolbar:
 		toolbar.show_look(canvas.look())
 

@@ -1,0 +1,17 @@
+# Line art: paper-white strokes drawn by their outlines, like a technical pen drawing.
+schema = 1
+id = "com.airdraw.ink"
+name = "Ink"
+shader = "fill"
+
+[outline]
+color = "#111114"
+width = 3.0
+
+[environment]
+background = "#FAFAF7"
+ambient = "#FFFFFF"
+ambient_energy = 1.0
+sun_energy = 0.0
+shadows = false
+ssao = false

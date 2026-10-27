@@ -43,6 +43,19 @@ func _ready() -> void:
 	csv.store_line("brush,update,points,vertices,uploaded_vertices,build_ms,convert_ms,upload_ms,frame_ms,render_cpu_ms,render_gpu_ms")
 	_out("BENCH os=%s renderer=%s gpu=%s" % [OS.get_name(), RenderingServer.get_current_rendering_driver_name(),
 		RenderingServer.get_video_adapter_name()])
+	# `++ look <id>` benchmarks with a Look (outline passes draw every stroke twice).
+	var user_args := OS.get_cmdline_user_args()
+	var look_at := user_args.find("look")
+	if look_at >= 0 and look_at + 1 < user_args.size():
+		canvas.set_look(user_args[look_at + 1])
+		_out("BENCH look=" + canvas.look())
+	# As the app does when a Look is applied: compile its shaders before any stroke. The time
+	# the next few frames take is the one-off pause that moves here from the first stroke.
+	var warm_start := Time.get_ticks_usec()
+	canvas.warm_up_look(cam.global_transform)
+	for i in 4:
+		await get_tree().process_frame
+	_out("BENCH warm_up_ms=%.1f" % ((Time.get_ticks_usec() - warm_start) / 1000.0))
 	if "long" in OS.get_cmdline_user_args():
 		await _long_run()
 		summary.close()
