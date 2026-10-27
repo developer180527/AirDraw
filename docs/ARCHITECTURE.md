@@ -1025,7 +1025,13 @@ has hidden shortcuts and no hover, tooltips or right-click.
   library. Library sheet fits its content, scrolls past a cap, closes on pen-down
   (`SketchSession.pen_down`).
 - View cube: faces Front/Back/Right/Left/Top/Bottom (camera gained back, left and bottom
-  views and turns the short way); tap = view, drag = orbit, double-tap = 3D.
+  views and turns the short way); tap = view, drag = orbit, double-tap on the same face = 3D.
+  Straight on, only one face is visible, so arrows mark the hidden neighbours and a tap beside
+  the cube turns to the face lying that way (faces turned < 15% toward the camera count as
+  hidden).
+- The ⋯ menu is an in-canvas panel with a full-screen scrim, not a `PopupMenu`: Godot popups
+  are separate windows that close only on mouse clicks outside, so on iPad (no mouse
+  emulation) one stayed open invisibly and blocked all GUI input.
 - Desktop: `Shortcuts.KEYS` drives key handling and tooltips (e.g. "Guide (G)", "Undo (⌘Z)");
   right-drag orbits, middle or Space + left drag pans (`Modifiers.space`), wheel zooms,
   Alt + wheel slides the plane. Tab hides the interface.

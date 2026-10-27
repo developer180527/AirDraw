@@ -53,7 +53,12 @@ var _cube: ViewCube
 var _toast: PanelContainer
 var _toast_label: Label
 var _toast_serial := 0
-var _menu: PopupMenu
+## The ⋯ menu: an in-canvas panel, not a PopupMenu. Godot popups are separate windows that
+## close on mouse clicks outside; on iPad (no mouse emulation) they never closed and kept
+## capturing all GUI input. The scrim behind it closes it on any tap or click elsewhere.
+var _menu: PanelContainer
+var _scrim: Control
+var _left_handed_item: Button
 var _guide_path: Line2D
 ## Guide state shown in the context bars.
 var _has_drawn_guide := false
@@ -122,6 +127,9 @@ func ui_rects() -> Array[Rect2]:
 	var rects: Array[Rect2] = []
 	if ui_hidden:
 		return rects
+	if _menu.visible:
+		# While the menu is open a touch anywhere just closes it.
+		rects.append(_scrim.get_global_rect())
 	for c: Control in [_nav, _actions, _rail, _strip, _bar, _cube, _sheet]:
 		if c.visible:
 			rects.append(c.get_global_rect())
@@ -178,8 +186,9 @@ func close_sheet() -> void:
 func toggle_ui() -> void:
 	ui_hidden = not ui_hidden
 	for c in _root.get_children():
-		if c != _toast and c != _guide_path and c != _menu:
+		if c != _toast and c != _guide_path and c != _menu and c != _scrim:
 			c.visible = not ui_hidden
+	close_menu()
 	if ui_hidden:
 		layout_changed.emit.call_deferred()
 		toast("Interface hidden: %s to show it" % ("four-finger tap or Tab" if DisplayServer.is_touchscreen_available() else "Tab"))
@@ -323,35 +332,60 @@ func _build_toast() -> void:
 
 
 func _build_menu() -> void:
-	_menu = PopupMenu.new()
-	_root.add_child(_menu)
-	_menu.id_pressed.connect(func(id: int) -> void:
-		match id:
-			10:
-				left_handed = not left_handed
-				_layout()
-			11:
-				toggle_ui()
-			20:
-				action.emit("import_brushes")
-			21:
-				action.emit("clear")
-		_save_settings())
+	_scrim = Control.new()
+	_scrim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_scrim.mouse_filter = Control.MOUSE_FILTER_STOP
+	_scrim.visible = false
+	_scrim.gui_input.connect(func(e: InputEvent) -> void:
+		if (e is InputEventMouseButton or e is InputEventScreenTouch) and e.pressed:
+			close_menu()
+			_scrim.accept_event())
+	_root.add_child(_scrim)
+	_menu = _panel()
+	_menu.name = "Menu"
+	_menu.visible = false
+	var col := VBoxContainer.new()
+	_menu.add_child(col)
+	var item := func(name: String, text: String, on_press: Callable) -> Button:
+		var b := _button(name, "", text, func() -> void:
+			close_menu()
+			on_press.call())
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.flat = true
+		col.add_child(b)
+		return b
+	_left_handed_item = item.call("Left-handed mode", "Left-handed mode", func() -> void:
+		left_handed = not left_handed
+		_save_settings()
+		_layout())
+	_left_handed_item.toggle_mode = true
+	var hide_item: Button = item.call("Hide interface", "Hide interface", toggle_ui)
+	hide_item.tooltip_text = Shortcuts.tooltip("Hide interface", "toggle_ui")
+	col.add_child(HSeparator.new())
+	item.call("Import brushes", "Import brushes", action.emit.bind("import_brushes"))
+	item.call("Clear sketch", "Clear sketch", action.emit.bind("clear"))
 
 
 func _open_menu() -> void:
-	_menu.clear()
-	_menu.add_check_item("Left-handed mode", 10)
-	_menu.set_item_checked(_menu.get_item_index(10), left_handed)
-	_menu.add_item(Shortcuts.tooltip("Hide interface", "toggle_ui"), 11)
-	_menu.add_separator()
-	_menu.add_item("Import brushes", 20)
-	_menu.add_item("Clear sketch", 21)
-	_menu.theme = _theme
+	if _menu.visible:
+		close_menu()
+		return
+	_left_handed_item.set_pressed_no_signal(left_handed)
+	_left_handed_item.text = ("✓  " if left_handed else "") + "Left-handed mode"
+	_apply_sizes()
 	_menu.reset_size()
 	var anchor := find_button("More").get_global_rect()
-	_menu.position = Vector2i(anchor.end.x - _menu.size.x, anchor.end.y + 6 * _s) + get_viewport().get_window().position
-	_menu.popup()
+	_menu.position = Vector2(anchor.end.x - _menu.size.x, anchor.end.y + 6 * _s)
+	_scrim.visible = true
+	_menu.visible = true
+	layout_changed.emit.call_deferred()
+
+
+func close_menu() -> void:
+	if _menu and _menu.visible:
+		_menu.visible = false
+		_scrim.visible = false
+		layout_changed.emit.call_deferred()
 
 
 # ---- Context bar -------------------------------------------------------------------------

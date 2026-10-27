@@ -1,7 +1,9 @@
 class_name ViewCube
 extends Control
 ## A small cube that turns with the camera, so you always see which way you face. Tap a face
-## to look straight at it, drag to orbit, double-tap to go back to the 3D view.
+## to look straight at it, drag to orbit, double-tap a face to go back to the 3D view.
+## Looking straight at a face hides its neighbours, so arrows around the cube show where they
+## are; tapping beside the cube in a direction turns to the face that lies that way.
 
 signal view_requested(view: String)  ## front, back, side, left, top, bottom, 3d
 signal orbit_requested(delta: Vector2)
@@ -13,6 +15,8 @@ const FACES := [
 	[Vector3.UP, "Top", "top"], [Vector3.DOWN, "Bottom", "bottom"],
 ]
 const DRAG_THRESHOLD := 6.0
+## Faces turned less than this toward the camera are too thin to tap; arrows stand in for them.
+const SLIVER := 0.15
 
 var camera: Camera3D
 var ui_scale := 1.0
@@ -22,6 +26,7 @@ var _press_pos := Vector2.ZERO
 var _pressed := false
 var _dragging := false
 var _last_tap_ms := 0
+var _last_tap_face := ""
 var _hover := ""
 
 
@@ -54,6 +59,17 @@ func _draw() -> void:
 			var c: Vector2 = face.center
 			draw_string(font, c + Vector2(-w / 2, font_size * 0.35), face.label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size,
 				Color(1, 1, 1, clampf(face.facing * 1.4, 0.0, 1.0)))
+	# Arrows toward faces that are hidden or edge-on.
+	var center := size / 2
+	var a := 6.0 * ui_scale
+	for f in _all_faces():
+		if f.facing > SLIVER or f.offset.length() < _radius() * 0.3:
+			continue
+		var d: Vector2 = f.offset.normalized()
+		var tip: Vector2 = center + d * _radius() * 1.38
+		var side := Vector2(-d.y, d.x) * a * 0.8
+		var col := Color(0.33, 0.47, 0.98) if f.view == _hover else Color(0.3, 0.31, 0.36)
+		draw_colored_polygon(PackedVector2Array([tip, tip - d * a + side, tip - d * a - side]), col)
 
 
 func _gui_input(event: InputEvent) -> void:
@@ -82,32 +98,63 @@ func _gui_input(event: InputEvent) -> void:
 
 
 func _tap(pos: Vector2) -> void:
+	var face := _face_at(pos)
 	var now := Time.get_ticks_msec()
-	if now - _last_tap_ms < 350:
+	# A second quick tap on the same face is a double-tap; a tap on another face is just a tap.
+	if now - _last_tap_ms < 350 and face == _last_tap_face:
 		_last_tap_ms = 0
 		view_requested.emit("3d")
 		return
 	_last_tap_ms = now
-	var face := _face_at(pos)
+	_last_tap_face = face
 	if not face.is_empty():
 		view_requested.emit(face)
 
 
-## The front-most visible face under `pos`, as a view name.
+## The view a tap at `pos` asks for: the front-most face under it if that face is turned
+## toward the camera enough to aim at, else the face that lies in the tap's direction (so
+## from straight on, tapping right of the cube turns to the right face).
 func _face_at(pos: Vector2) -> String:
 	var faces := _visible_faces()
 	faces.reverse()
 	for face in faces:
-		if Geometry2D.is_point_in_polygon(pos, face.poly):
+		if face.facing > SLIVER and Geometry2D.is_point_in_polygon(pos, face.poly):
 			return face.view
-	return ""
+	var toward := pos - size / 2
+	if toward.length() < _radius() * 0.25:
+		return ""
+	var best := ""
+	var best_dot := 0.5
+	for f in _all_faces():
+		if f.facing < -0.3 or f.offset.length() < _radius() * 0.3:
+			continue
+		var dot: float = f.offset.normalized().dot(toward.normalized())
+		if dot > best_dot:
+			best_dot = dot
+			best = f.view
+	return best
+
+
+func _radius() -> float:
+	return minf(size.x, size.y) * 0.34
+
+
+## Every face with how much it faces the camera and where its center projects, relative to
+## the widget's center (zero for the face looked at straight on and the one behind it).
+func _all_faces() -> Array:
+	var inv := _basis.inverse()
+	var out := []
+	for f in FACES:
+		var c: Vector3 = inv * (f[0] as Vector3)
+		out.append({"view": f[2], "facing": c.z, "offset": Vector2(c.x, -c.y) * _radius()})
+	return out
 
 
 ## Faces turned toward the camera, back to front, with their screen polygons.
 func _visible_faces() -> Array:
 	var inv := _basis.inverse()
 	var center := size / 2
-	var r := minf(size.x, size.y) * 0.34
+	var r := _radius()
 	var out := []
 	for f in FACES:
 		var n: Vector3 = f[0]

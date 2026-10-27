@@ -295,6 +295,42 @@ func _ready() -> void:
 	var cube = shell._cube
 	var top_face: String = cube._face_at(cube.size / 2 + Vector2(0, -cube.size.y * 0.25))
 	print("SMOKE cube_face_above_center=", top_face)
+	# From straight on, tapping right of the cube turns to the right face (touch, as on iPad).
+	rig.set_view("front")
+	await get_tree().create_timer(0.5).timeout
+	await _shot("user://cube_front.png")
+	var beside: Vector2 = cube.get_global_rect().get_center() + Vector2(cube._radius() * 1.3, 0)
+	_touch(6, beside, true)
+	_touch(6, beside, false)
+	await get_tree().create_timer(0.5).timeout
+	print("SMOKE cube_tap_right_turns=", is_equal_approx(rig.yaw, PI / 2), " now_facing=", cube._face_at(cube.size / 2))
+	rig.set_view("3d")
+	await get_tree().create_timer(0.5).timeout
+
+	# The ⋯ menu by touch: it opens, a tap elsewhere closes it without drawing, its items work,
+	# and the rest of the interface keeps working afterwards (it used to block all input on iPad).
+	var strokes_before_menu: int = canvas.stroke_count()
+	await _tap(shell.find_button("More"))
+	var menu_opened: bool = shell._menu.visible
+	await _shot("user://menu_open.png")
+	_touch(7, center + Vector2(0, 80), true)
+	_touch(7, center + Vector2(0, 80), false)
+	await _settle()
+	print("SMOKE menu opened=", menu_opened, " outside_tap_closes=", not shell._menu.visible,
+		" no_stroke=", canvas.stroke_count() == strokes_before_menu)
+	await _tap(shell.find_button("More"))
+	await _settle()
+	await _tap(shell.find_button("Left-handed mode"))
+	await _settle()
+	var lh: bool = shell.left_handed
+	await _tap(shell.find_button("More"))
+	await _settle()
+	await _tap(shell.find_button("Left-handed mode"))
+	await _settle()
+	await _tap(shell.find_button("Guide"))
+	print("SMOKE menu item_toggles=", lh, " item_closes=", not shell._menu.visible, " back=", not shell.left_handed,
+		" ui_works_after=", main.get("tool") == "guide")
+	await _tap(shell.find_button("Draw"))
 
 	# Home screen: Gallery autosaves; both sketches are in Recents with thumbnails.
 	await _tap(bar.find_button("Gallery"))
