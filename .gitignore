@@ -1,0 +1,6 @@
+engine/
+rust/target/
+app/.godot/
+.DS_Store
+build/
+app/bin/

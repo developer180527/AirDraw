@@ -1,0 +1,15 @@
+[configuration]
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = 4.7
+reloadable = true
+
+[libraries]
+; TEMP: debug points at release lib for latency testing; revert to target/debug when done.
+macos.debug = "res://../rust/target/release/libairdraw_godot.dylib"
+macos.release = "res://../rust/target/release/libairdraw_godot.dylib"
+windows.debug.x86_64 = "res://../rust/target/debug/airdraw_godot.dll"
+windows.release.x86_64 = "res://../rust/target/release/airdraw_godot.dll"
+linux.debug.x86_64 = "res://../rust/target/debug/libairdraw_godot.so"
+linux.release.x86_64 = "res://../rust/target/release/libairdraw_godot.so"
+ios.debug = "res://bin/ios/AirDrawCore.framework"
+ios.release = "res://bin/ios/AirDrawCore.framework"

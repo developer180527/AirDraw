@@ -1,0 +1,37 @@
+# Flat strip lying on the drawing surface; reads like a brush stroke from the front.
+schema = 1
+id = "com.airdraw.ribbon"
+name = "Ribbon"
+
+[[filters]]
+type = "resample"
+spacing = 0.004
+
+[[filters]]
+type = "one_euro"
+min_cutoff = 3.0
+beta = 20.0
+
+[[filters]]
+type = "spline"
+steps = 3
+
+[[dynamics]]
+type = "width"
+base = 0.05
+pressure_curve = [[0.0, 0.2], [0.7, 0.85], [1.0, 1.0]]
+
+[[dynamics]]
+type = "taper"
+start = 0.05
+end = 0.12
+min = 0.05
+
+[geometry]
+type = "ribbon"
+
+[material]
+type = "solid"
+color = "#2F6FDE"
+roughness = 0.7
+double_sided = true

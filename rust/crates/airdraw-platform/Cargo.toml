@@ -1,0 +1,8 @@
+[package]
+name = "airdraw-platform"
+description = "The platform contract: traits each OS backend implements, plus null and mock implementations."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+airdraw-input.workspace = true

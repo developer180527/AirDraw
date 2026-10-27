@@ -1,0 +1,18 @@
+[package]
+name = "airdraw-ios"
+description = "iOS/iPadOS input backend: UIKit touches (Pencil + fingers) → unified stylus events."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+airdraw-input.workspace = true
+airdraw-platform.workspace = true
+glam.workspace = true
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6.5"
+objc2-foundation = "0.3.2"
+objc2-ui-kit = { version = "0.3.2", features = ["objc2-uniform-type-identifiers"] }
+objc2-uniform-type-identifiers = "0.3.2"
+block2 = "0.6"
+objc2-core-foundation = "0.3.2"

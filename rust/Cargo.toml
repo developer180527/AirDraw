@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+# Keep glam on the same version godot-rust uses, so only one copy is built.
+glam = "0.32"
+godot = { version = "0.5.5", features = ["api-4-7"] }
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.8"
+serde_json = "1.0.154"
+airdraw-input = { path = "crates/airdraw-input" }
+airdraw-platform = { path = "crates/airdraw-platform" }
+airdraw-brush = { path = "crates/airdraw-brush" }
+airdraw-doc = { path = "crates/airdraw-doc" }
+airdraw-export = { path = "crates/airdraw-export" }
+airdraw-ios = { path = "crates/airdraw-ios" }
+airdraw-ffi = { path = "crates/airdraw-ffi" }

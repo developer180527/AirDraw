@@ -1,0 +1,62 @@
+diff --git a/drivers/apple_embedded/godot_app_delegate.h b/drivers/apple_embedded/godot_app_delegate.h
+index 09c0b78..a04a502 100644
+--- a/drivers/apple_embedded/godot_app_delegate.h
++++ b/drivers/apple_embedded/godot_app_delegate.h
+@@ -40,4 +40,9 @@ typedef NSObject<UIApplicationDelegate, UIWindowSceneDelegate> GDTAppDelegateSer
+ 
+ + (void)addService:(GDTAppDelegateServiceProtocol *)service;
+ 
++/// AirDraw: URLs the app was launched with (e.g. a document tapped in Files), kept until a
++/// service registered after launch takes them.
++@property(class, readonly, strong) NSSet<UIOpenURLContext *> *launchURLContexts API_AVAILABLE(ios(13.0));
+++ (void)clearLaunchURLContexts;
++
+ @end
+diff --git a/drivers/apple_embedded/godot_app_delegate.mm b/drivers/apple_embedded/godot_app_delegate.mm
+index 0db9304..49ceee4 100644
+--- a/drivers/apple_embedded/godot_app_delegate.mm
++++ b/drivers/apple_embedded/godot_app_delegate.mm
+@@ -46,6 +46,16 @@ static NSMutableArray<GDTAppDelegateServiceProtocol *> *services = nil;
+ 	[services addObject:[GDTAppDelegateService new]];
+ }
+ 
++static NSSet *launch_url_contexts = nil;
++
+++ (NSSet *)launchURLContexts {
++	return launch_url_contexts;
++}
++
+++ (void)clearLaunchURLContexts {
++	launch_url_contexts = nil;
++}
++
+ + (void)addService:(GDTAppDelegateServiceProtocol *)service {
+ 	if (!services || !service) {
+ 		return;
+@@ -121,6 +131,9 @@ static NSMutableArray<GDTAppDelegateServiceProtocol *> *services = nil;
+ }
+ 
+ - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions API_AVAILABLE(ios(13.0), tvos(13.0), visionos(1.0)) {
++	if (connectionOptions.URLContexts.count > 0) {
++		launch_url_contexts = connectionOptions.URLContexts;
++	}
+ 	for (GDTAppDelegateServiceProtocol *service in services) {
+ 		if (![service respondsToSelector:_cmd]) {
+ 			continue;
+diff --git a/drivers/apple_embedded/os_apple_embedded.mm b/drivers/apple_embedded/os_apple_embedded.mm
+index 84e4821..a6d249d 100644
+--- a/drivers/apple_embedded/os_apple_embedded.mm
++++ b/drivers/apple_embedded/os_apple_embedded.mm
+@@ -396,8 +396,11 @@ Error OS_AppleEmbedded::shell_open(const String &p_uri) {
+ String OS_AppleEmbedded::get_user_data_dir(const String &p_user_dir) const {
+ 	static String ret;
+ 	if (ret.is_empty()) {
+-		NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
++		// AirDraw: keep engine data (shader/pipeline caches, settings) out of Documents, which the
++		// Files app shows to users. The app puts user-facing folders in Documents itself.
++		NSArray *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
+ 		if (paths && [paths count] >= 1) {
++			[[NSFileManager defaultManager] createDirectoryAtPath:[paths firstObject] withIntermediateDirectories:YES attributes:nil error:nil];
+ 			ret.append_utf8([[paths firstObject] UTF8String]);
+ 		}
+ 	}

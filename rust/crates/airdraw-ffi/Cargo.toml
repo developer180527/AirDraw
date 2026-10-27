@@ -1,0 +1,15 @@
+[package]
+name = "airdraw-ffi"
+description = "C ABI for exporter plugins (include/airdraw_export.h) and the host-side loader."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+airdraw-brush.workspace = true
+airdraw-export.workspace = true
+glam.workspace = true
+serde_json.workspace = true
+
+# Mobile builds link plugins statically; only desktop loads libraries at runtime.
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+libloading = "0.9.0"

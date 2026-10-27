@@ -1,0 +1,31 @@
+# Thick, even marker. Pressure barely matters, no taper.
+schema = 1
+id = "com.airdraw.marker"
+name = "Marker"
+
+[[filters]]
+type = "resample"
+spacing = 0.005
+
+[[filters]]
+type = "one_euro"
+min_cutoff = 2.0
+beta = 10.0
+
+[[filters]]
+type = "spline"
+steps = 2
+
+[[dynamics]]
+type = "width"
+base = 0.03
+pressure_curve = [[0.0, 0.85], [1.0, 1.0]]
+
+[geometry]
+type = "tube"
+sides = 10
+
+[material]
+type = "solid"
+color = "#E4572E"
+roughness = 0.9

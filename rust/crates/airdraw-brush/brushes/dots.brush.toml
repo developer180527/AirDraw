@@ -1,0 +1,24 @@
+# Evenly spaced beads; pressure sets bead size.
+schema = 1
+id = "com.airdraw.dots"
+name = "Dots"
+
+[[filters]]
+type = "one_euro"
+min_cutoff = 2.0
+beta = 10.0
+
+[[dynamics]]
+type = "width"
+base = 0.02
+pressure_curve = [[0.0, 0.3], [1.0, 1.0]]
+
+[geometry]
+type = "dots"
+spacing = 0.03
+detail = 8
+
+[material]
+type = "solid"
+color = "#2A9D8F"
+roughness = 0.4

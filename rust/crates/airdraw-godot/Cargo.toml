@@ -1,0 +1,19 @@
+[package]
+name = "airdraw-godot"
+description = "GDExtension glue: the only crate that depends on Godot."
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+godot.workspace = true
+glam.workspace = true
+airdraw-brush.workspace = true
+airdraw-doc.workspace = true
+airdraw-export.workspace = true
+airdraw-ffi.workspace = true
+airdraw-input.workspace = true
+airdraw-platform.workspace = true
+airdraw-ios.workspace = true

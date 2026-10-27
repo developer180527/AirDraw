@@ -1,0 +1,11 @@
+[package]
+name = "airdraw-doc"
+description = "Document model: layers, strokes (raw input + brush snapshot), undo/redo, .airdraw files."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+airdraw-brush.workspace = true
+glam.workspace = true
+serde.workspace = true
+toml.workspace = true

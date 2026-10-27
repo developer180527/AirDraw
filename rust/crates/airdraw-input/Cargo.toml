@@ -1,0 +1,8 @@
+[package]
+name = "airdraw-input"
+description = "Platform-independent stylus/pointer model shared by every input backend."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+glam.workspace = true

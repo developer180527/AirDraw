@@ -1,0 +1,44 @@
+diff --git a/platform/macos/godot_application_delegate.mm b/platform/macos/godot_application_delegate.mm
+index 1ccf119..124dbd7 100644
+--- a/platform/macos/godot_application_delegate.mm
++++ b/platform/macos/godot_application_delegate.mm
+@@ -36,6 +36,7 @@
+ #import "native_menu_macos.h"
+ #import "os_macos.h"
+ 
++#import "core/config/project_settings.h"
+ #import "core/input/input.h"
+ #import "core/input/input_event.h"
+ #import "core/os/main_loop.h"
+@@ -192,8 +193,13 @@ static const char *godot_ac_ctx = "gd_accessibility_observer_ctx";
+ 	}
+ 	if (!args.is_empty()) {
+ 		if (os_mac->get_main_loop()) {
+-			// Application is already running, open a new instance with the URL/files as command line arguments.
+-			os_mac->create_instance(args);
++			// AirDraw: hand files to the running app instead of starting a second instance. The app
++			// takes them from ProjectSettings metadata "airdraw_open_files" (an Array of paths).
++			Array pending = ProjectSettings::get_singleton()->get_meta("airdraw_open_files", Array());
++			for (const String &arg : args) {
++				pending.push_back(arg);
++			}
++			ProjectSettings::get_singleton()->set_meta("airdraw_open_files", pending);
+ 		} else if (os_mac->get_cmd_argc() == 0) {
+ 			// Application is just started, add to the list of command line arguments and continue.
+ 			os_mac->set_cmdline_platform_args(args);
+@@ -209,8 +215,13 @@ static const char *godot_ac_ctx = "gd_accessibility_observer_ctx";
+ 	}
+ 	if (!args.is_empty()) {
+ 		if (os_mac->get_main_loop()) {
+-			// Application is already running, open a new instance with the URL/files as command line arguments.
+-			os_mac->create_instance(args);
++			// AirDraw: hand files to the running app instead of starting a second instance. The app
++			// takes them from ProjectSettings metadata "airdraw_open_files" (an Array of paths).
++			Array pending = ProjectSettings::get_singleton()->get_meta("airdraw_open_files", Array());
++			for (const String &arg : args) {
++				pending.push_back(arg);
++			}
++			ProjectSettings::get_singleton()->set_meta("airdraw_open_files", pending);
+ 		} else if (os_mac->get_cmd_argc() == 0) {
+ 			// Application is just started, add to the list of command line arguments and continue.
+ 			os_mac->set_cmdline_platform_args(args);

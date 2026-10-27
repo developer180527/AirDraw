@@ -1,0 +1,37 @@
+# Fine pressure-sensitive ink line. Round tube, tapered ends.
+schema = 1
+id = "com.airdraw.ink"
+name = "Ink"
+
+[[filters]]
+type = "resample"
+spacing = 0.003
+
+[[filters]]
+type = "one_euro"
+min_cutoff = 3.0
+beta = 20.0
+
+[[filters]]
+type = "spline"
+steps = 3
+
+[[dynamics]]
+type = "width"
+base = 0.012
+pressure_curve = [[0.0, 0.25], [1.0, 1.0]]
+speed_thinning = 0.2
+
+[[dynamics]]
+type = "taper"
+start = 0.03
+end = 0.06
+
+[geometry]
+type = "tube"
+sides = 8
+
+[material]
+type = "solid"
+color = "#1E1E24"
+roughness = 0.6

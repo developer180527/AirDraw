@@ -1,0 +1,11 @@
+[package]
+name = "airdraw-export"
+description = "Export system: neutral ExportScene IR, Exporter trait + registry, built-in formats."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+airdraw-brush.workspace = true
+airdraw-doc.workspace = true
+glam.workspace = true
+serde_json.workspace = true
