@@ -879,6 +879,137 @@ iOS export allowed only one landscape orientation).
   start under chrome. On desktop, `SketchSession` takes motion of an already-pressed pointer
   in `_input`, so a stroke continues when it passes under a panel.
 
+### 5-3. Drawing screen v2: tools, context bar, sheets (proposed, awaiting sign-off)
+
+**Problems with 5-2.** Controls are spread over five places (rail, right panels, view
+switcher, two pills), so one task often needs two (a guide is drawn from the rail but removed
+in the Guide panel). Six of the rail's buttons are disabled placeholders. The panel column
+covers ~20% of the canvas while drawing. F/S/T/3D doesn't show which way you face. Desktop
+has hidden shortcuts and no hover, tooltips or right-click.
+
+**Principles.**
+1. The canvas is the app: chrome is small, floating, and gets out of the way while drawing.
+2. One tool, one place: each tool's options live in one context bar that follows the tool.
+3. Same layout on tablet and desktop; input differs (touch + Pencil vs. mouse, keys, hover).
+4. Show only what works: unbuilt tools are hidden, not disabled.
+
+#### Layout (all platforms)
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│ [‹ Sketch 4]                             [↶ ↷  ⤴  ⋯]         │  pills
+│                                                     [ cube ]  │  view cube
+│ ┌──┐                                                          │
+│ │✎ │ Draw     B                                               │
+│ │◌ │ Erase    E                                               │
+│ │⬚ │ Select   V                                               │
+│ │◇ │ Guide    G                                               │
+│ └──┘                                                          │
+│ ┃ size                                                        │
+│ ●●●● recent brushes          ┌──────────────────────────┐     │
+│                              │ context bar (tool options)│     │
+│                              └──────────────────────────┘     │
+└───────────────────────────────────────────────────────────────┘
+```
+
+- **Tool rail, four tools:** Draw, Erase, Select, Guide. Erase and Select appear when they're
+  built. Left-handed mode mirrors the rail, brush strip and context bar.
+- **Context bar** (bottom center, one row, scrolls if narrow):
+
+| Tool | Context bar |
+|---|---|
+| Draw | current brush (tap: library sheet), colour, size, opacity; later Symmetry, Snap toggles |
+| Guide | **Draw · Bend · Shapes · Loft** · presets (Front, Side, Top, View) · opacity · Remove · Save |
+| Select | Move / Rotate / Scale (joystick), Duplicate, Delete, Recolour |
+| Erase | Whole stroke / Partial, size |
+
+  The Guide card and the plane buttons move here; the Guide panel goes away. A drawn guide
+  stays active when you switch back to Draw (you draw on it), and its row stays reachable from
+  the Guide tool.
+- **Brush quick strip:** the last 4–6 brushes as swatches above the context bar, on the hand
+  side, with a vertical size slider. Tap to switch; long-press or right-click to edit or
+  duplicate.
+- **View cube** (top right, under the action pill), replacing F/S/T/3D. Tap a face or edge
+  to snap to that view; drag to orbit; shows orientation at all times. Double-tap = reset view.
+- **Sheets instead of fixed panels:** brush library, brush editor, layers, export open as a
+  sheet: from the side in landscape (≥ 760 logical px wide), from the bottom in portrait. A
+  sheet closes on the next pen-down on the canvas. Desktop windows ≥ 1400 px may pin a sheet
+  as a docked column.
+- **Toasts** stay where they are, above the context bar.
+
+#### Tablet (touch + Pencil)
+
+| Input | Action |
+|---|---|
+| Pencil | Use the current tool |
+| 1 finger drag | Orbit |
+| 2 finger drag / pinch | Pan / zoom |
+| 2 finger tap / 3 finger tap | Undo / redo (existing) |
+| 4 finger tap | Hide / show all UI |
+| Pencil double-tap | Draw ⇄ Erase (Apple's convention; configurable) |
+| Pencil squeeze (Pro) | Radial palette at the pen tip: recent brushes, Guide, Erase, Undo |
+| Long-press (finger) on stroke / brush / guide | Context menu (select, recolour, edit, remove) |
+| Pencil hover (M-series iPad Pro) | Preview dot where the stroke will land on the guide |
+
+- 44 pt minimum targets (existing); context bar and brush strip within thumb reach on the hand side.
+- First launch: a short dismissible hint ("Pencil draws, fingers move the view").
+
+#### Desktop (mouse, trackpad, keyboard, pen tablet)
+
+| Input | Action |
+|---|---|
+| Left drag | Use the current tool |
+| Right drag | Orbit |
+| Middle drag, or Space + left drag | Pan |
+| Wheel / trackpad pinch | Zoom at cursor |
+| Alt + wheel | Slide the guide along its normal |
+| Right click (no drag) on stroke / guide / canvas | Context menu |
+| Pen tablet | Same as Pencil (already routed as a pen) |
+
+| Shortcut | Action |
+|---|---|
+| B / E / V / G | Draw / Erase / Select / Guide |
+| [ / ] | Brush size |
+| 1–9 | Recent brushes |
+| Cmd/Ctrl + Z, Shift + Cmd/Ctrl + Z | Undo / redo |
+| F, S, T, 0 | Front / side / top / reset view |
+| Tab | Hide / show UI |
+| Cmd/Ctrl + E, Cmd/Ctrl + S | Export / save |
+
+- Every button shows a tooltip with its shortcut ("Guide (G)"). Hover highlights on all
+  controls; the cursor reflects the tool. Existing keys that conflict move: guide presets
+  leave 1/2/3 (now in the Guide context bar), guide nudge moves from [ ] to Alt + wheel.
+
+#### Implementation notes
+
+- `editor_shell.gd` splits into small pieces: `tool_rail.gd`, `context_bar.gd` (one builder
+  per tool), `brush_strip.gd`, `view_cube.gd`, `sheet.gd`. The shell keeps layout and
+  `ui_rects()`.
+- Tool state moves to one place (`current_tool` in main/session) instead of the rail's button
+  group plus `session.guide_drawing`; the context bar and rail both read it.
+- Shortcuts and gestures live in one table (`shortcuts.gd`) that also feeds tooltips, so they
+  can't drift apart.
+- The smoke test finds controls by name, so names stay stable; layout screenshots cover
+  landscape, portrait, left-handed and a 1920 px desktop window.
+
+#### Rollout
+
+| Step | Deliverable |
+|---|---|
+| 1 | Context bar + 4-tool rail; Guide panel folded into the Guide context bar; placeholders hidden |
+| 2 | Brush quick strip + size slider; brush library and editor as sheets |
+| 3 | View cube replacing F/S/T/3D |
+| 4 | Desktop: shortcut table + tooltips, mouse map, right-click menus, hover states |
+| 5 | Tablet: Pencil double-tap and squeeze palette, 4-finger hide UI, hover preview, first-run hint |
+
+#### Decisions needed
+
+1. Pencil double-tap: Draw ⇄ Erase (proposed; Apple's default) or keep undo.
+2. Right-drag orbits on desktop (proposed) or left-drag with a modifier.
+3. Sheets close on pen-down (proposed) or stay until closed.
+4. Brush colour: a colour picker in the Draw bar that overrides the brush colour per stroke
+   (needs per-stroke colour in the document) or colour stays part of the brush (as now).
+
 ### 5a. File thumbnails in the OS
 
 | OS | Mechanism | Status |
