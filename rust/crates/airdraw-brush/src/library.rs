@@ -292,4 +292,41 @@ mod perf {
             }
         }
     }
+
+    /// Not an assertion test: a 20 s stroke streamed 2 points per update (Pencil at 120 Hz),
+    /// timing push + preview per update and the preview size, per 5 s of stroke.
+    #[test]
+    #[ignore]
+    fn live_stream_cost() {
+        let lib = BrushLibrary::new(StageRegistry::with_builtins());
+        let pts: Vec<InputPoint> = (0..4800)
+            .map(|i| {
+                let t = i as f32 / 240.0;
+                let pos = Vec3::new(t.cos() * t * 0.1, t.sin() * t * 0.1, 0.0);
+                InputPoint { pos, normal: Vec3::Z, pressure: 0.7, tilt: None, t: t as f64 }
+            })
+            .collect();
+        for brush in lib.iter() {
+            let mut s = brush.stream();
+            let (mut worst_ms, mut sum_ms, mut worst_preview) = (0.0f64, 0.0f64, 0);
+            for (u, chunk) in pts.chunks(2).enumerate() {
+                let start = std::time::Instant::now();
+                s.push(chunk);
+                let preview = s.preview(&[]);
+                let ms = start.elapsed().as_secs_f64() * 1000.0;
+                (worst_ms, sum_ms) = (worst_ms.max(ms), sum_ms + ms);
+                worst_preview = worst_preview.max(preview.positions.len());
+                if (u + 1) % 600 == 0 {
+                    println!(
+                        "PERF {} at={:>2}s committed_vertices={:>6} preview_vertices<={worst_preview:>4} update_ms mean={:.4} max={worst_ms:.4}",
+                        brush.id(),
+                        (u + 1) / 120,
+                        s.committed_mesh().positions.len(),
+                        sum_ms / 600.0
+                    );
+                    (worst_ms, sum_ms, worst_preview) = (0.0, 0.0, 0);
+                }
+            }
+        }
+    }
 }

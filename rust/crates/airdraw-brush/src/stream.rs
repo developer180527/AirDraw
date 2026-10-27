@@ -88,15 +88,16 @@ impl BrushStream {
 
     /// The whole mesh if the stroke ended after `tail`: committed geometry plus [`preview`](Self::preview).
     pub fn mesh(&self, tail: &[InputPoint]) -> MeshBuffers {
-        let preview = self.preview(tail);
-        if self.committed_mesh.positions.is_empty() {
-            return preview;
-        }
         let mut out = self.committed_mesh.clone();
-        out.positions.extend_from_slice(&preview.positions);
-        out.normals.extend_from_slice(&preview.normals);
-        out.indices.extend_from_slice(&preview.indices);
+        append(&mut out, self.preview(tail));
         out
+    }
+
+    /// [`mesh`](Self::mesh) for a stroke that's done, without copying the committed geometry.
+    pub fn into_mesh(mut self, tail: &[InputPoint]) -> MeshBuffers {
+        let preview = self.preview(tail);
+        append(&mut self.committed_mesh, preview);
+        self.committed_mesh
     }
 
     /// The whole processed centerline if the stroke ended after `tail`.
@@ -104,6 +105,13 @@ impl BrushStream {
         let mut out = self.committed_points.clone();
         out.extend(self.provisional_points(tail));
         out
+    }
+
+    /// [`centerline`](Self::centerline) for a stroke that's done, without copying.
+    pub fn into_centerline(mut self, tail: &[InputPoint]) -> Vec<StrokePoint> {
+        let rest = self.provisional_points(tail);
+        self.committed_points.extend(rest);
+        self.committed_points
     }
 
     /// Runs `tail` and every stage's held-back input through the stages' finish.
@@ -222,6 +230,13 @@ impl MeshStream for BatchGeometry {
     }
 }
 
+/// Appends `rest`, whose indices already count `m`'s vertices.
+fn append(m: &mut MeshBuffers, rest: MeshBuffers) {
+    m.positions.extend(rest.positions);
+    m.normals.extend(rest.normals);
+    m.indices.extend(rest.indices);
+}
+
 fn held_and(held: &[StrokePoint], tail: &[StrokePoint]) -> Vec<StrokePoint> {
     let mut all = Vec::with_capacity(held.len() + tail.len());
     all.extend_from_slice(held);
@@ -232,66 +247,146 @@ fn held_and(held: &[StrokePoint], tail: &[StrokePoint]) -> Vec<StrokePoint> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BrushLibrary, StageRegistry};
+    use crate::{Brush, BrushDef, BrushLibrary, StageRegistry};
 
     fn stroke(n: usize) -> Vec<InputPoint> {
         (0..n)
             .map(|i| {
                 let t = i as f32 / 240.0;
                 InputPoint {
-                    pos: Vec3::new(t.cos() * t * 0.3, t.sin() * t * 0.3, 0.0),
+                    pos: Vec3::new(t.cos() * t * 0.3, t.sin() * t * 0.3, (t * 3.0).sin() * 0.05),
                     normal: Vec3::Z,
                     pressure: 0.5 + 0.5 * (t * 7.0).sin(),
-                    tilt: None,
-                    t: t as f64,
+                    tilt: if i % 3 == 0 { None } else { Some(0.8) },
+                    // Pairs share a timestamp, as batched events do.
+                    t: (i / 2) as f64 / 120.0,
                 }
             })
             .collect()
     }
 
-    /// Deterministic split sizes from 1 to 40, so commits land at many different points.
-    fn splits(n: usize) -> Vec<usize> {
-        let (mut out, mut x, mut left) = (Vec::new(), 12345u32, n);
+    /// Split sizes from 1 to `max`, deterministic per seed.
+    fn splits(n: usize, max: usize, seed: u32) -> Vec<usize> {
+        let (mut out, mut x, mut left) = (Vec::new(), seed, n);
         while left > 0 {
             x = x.wrapping_mul(1_103_515_245).wrapping_add(12345);
-            let k = ((x >> 16) as usize % 40 + 1).min(left);
+            let k = ((x >> 16) as usize % max + 1).min(left);
             out.push(k);
             left -= k;
         }
         out
     }
 
+    /// Built-in brushes plus brushes using every stage, with defaults and edge parameters.
+    fn brushes() -> Vec<Arc<Brush>> {
+        const FILTERS: [&str; 2] = [
+            "[[filters]]\ntype = \"resample\"\nspacing = 0.002\n[[filters]]\ntype = \"exponential\"\namount = 0.3\n\
+             [[filters]]\ntype = \"one_euro\"\n[[filters]]\ntype = \"spline\"\nsteps = 4",
+            "[[filters]]\ntype = \"resample\"\nspacing = 0.0\n[[filters]]\ntype = \"exponential\"\nsnap_end = false\n\
+             [[filters]]\ntype = \"one_euro\"\nsnap_end = false\n[[filters]]\ntype = \"spline\"\nsteps = 1",
+        ];
+        const DYNAMICS: [&str; 2] = [
+            "[[dynamics]]\ntype = \"width\"\nspeed_thinning = 0.5\n[[dynamics]]\ntype = \"taper\"",
+            "[[dynamics]]\ntype = \"width\"\n[[dynamics]]\ntype = \"taper\"\nstart = 0.0\nend = 0.0\n\
+             [[dynamics]]\ntype = \"taper\"\nstart = 2.0\nend = 3.0",
+        ];
+        const GEOMETRY: [&str; 5] = [
+            "type = \"tube\"",
+            "type = \"tube\"\ncaps = false\nsides = 3",
+            "type = \"ribbon\"",
+            "type = \"dots\"",
+            "type = \"dots\"\nspacing = 0.001",
+        ];
+        let reg = StageRegistry::with_builtins();
+        let mut out: Vec<Arc<Brush>> = BrushLibrary::new(reg.clone()).iter().cloned().collect();
+        for (i, (f, d)) in [(FILTERS[0], DYNAMICS[0]), (FILTERS[1], DYNAMICS[1])].into_iter().enumerate() {
+            for (j, g) in GEOMETRY.iter().enumerate() {
+                let toml = format!(
+                    "schema = 1\nid = \"test.{i}.{j}\"\nname = \"t\"\n{f}\n{d}\n[geometry]\n{g}\n[material]\ntype = \"solid\"\n"
+                );
+                out.push(Arc::new(Brush::compile(BrushDef::from_toml(&toml).unwrap(), &reg).unwrap()));
+            }
+        }
+        out
+    }
+
+    /// The pipeline run directly through each stage's batch `apply`/`build`.
+    fn reference(b: &Brush, input: &[InputPoint]) -> (MeshBuffers, Vec<StrokePoint>) {
+        let mut pts: Vec<StrokePoint> = input.iter().map(StrokePoint::from).collect();
+        for (f, p) in &b.filters {
+            f.apply(&mut pts, p);
+        }
+        let mut dist = 0.0;
+        for i in 0..pts.len() {
+            if i > 0 {
+                dist += pts[i].pos.distance(pts[i - 1].pos);
+            }
+            pts[i].dist = dist;
+        }
+        for (d, p) in &b.dynamics {
+            d.apply(&mut pts, p);
+        }
+        let mut m = MeshBuffers::default();
+        b.geometry.0.build(&pts, &b.geometry.1, &mut m);
+        (m, pts)
+    }
+
+    fn is_prefix(a: &MeshBuffers, b: &MeshBuffers) -> bool {
+        b.positions.starts_with(&a.positions) && b.normals.starts_with(&a.normals) && b.indices.starts_with(&a.indices)
+    }
+
     #[test]
-    fn pushing_in_pieces_matches_build() {
-        let lib = BrushLibrary::new(StageRegistry::with_builtins());
-        for brush in lib.iter() {
-            for n in [0, 1, 2, 3, 50, 600] {
+    fn pushing_in_pieces_matches_the_batch_stages() {
+        for brush in brushes() {
+            for n in [0, 1, 2, 3, 4, 5, 9, 60, 400] {
                 let input = stroke(n);
-                let expected = brush.build(&input);
-                let mut s = brush.stream();
-                let mut at = 0;
-                for k in splits(n) {
-                    s.push(&input[at..at + k]);
-                    at += k;
-                    // The live view of the stroke so far is the stroke built from it.
-                    assert_eq!(s.mesh(&[]), brush.build(&input[..at]), "{} at {at}/{n}", brush.id());
+                let (expected, line) = reference(&brush, &input);
+                for (seed, max) in [(1, 1), (7, 4), (12345, 40)] {
+                    let mut s = brush.stream();
+                    let mut at = 0;
+                    for k in splits(n, max, seed) {
+                        let before = s.committed_mesh().clone();
+                        s.push(&input[at..at + k]);
+                        at += k;
+                        let id = format!("{} n={n} seed={seed} at={at}", brush.id());
+                        assert!(is_prefix(&before, s.committed_mesh()), "committed geometry changed: {id}");
+                        if max > 1 || at % 25 == 0 {
+                            assert_eq!(s.mesh(&[]), reference(&brush, &input[..at]).0, "{id}");
+                        }
+                    }
+                    assert_eq!(s.mesh(&[]), expected, "{} n={n} seed={seed}", brush.id());
+                    assert_eq!(s.centerline(&[]), line, "{} n={n} seed={seed}", brush.id());
                 }
-                assert_eq!(s.mesh(&[]), expected, "{} n={n}", brush.id());
-                assert_eq!(s.centerline(&[]), brush.centerline(&input), "{} n={n}", brush.id());
             }
         }
     }
 
     #[test]
-    fn preview_matches_build_with_tail() {
-        let lib = BrushLibrary::new(StageRegistry::with_builtins());
+    fn preview_matches_the_batch_stages_with_tail() {
         let input = stroke(300);
-        for brush in lib.iter() {
+        for brush in brushes() {
             let mut s = brush.stream();
             s.push(&input[..280]);
-            assert_eq!(s.mesh(&input[280..]), brush.build(&input), "{}", brush.id());
+            assert_eq!(s.mesh(&input[280..]), reference(&brush, &input).0, "{}", brush.id());
             // Previewing doesn't change the stream.
-            assert_eq!(s.mesh(&[]), brush.build(&input[..280]), "{}", brush.id());
+            assert_eq!(s.mesh(&[]), reference(&brush, &input[..280]).0, "{}", brush.id());
+        }
+    }
+
+    /// The point of streaming: what's rebuilt per update stays small however long the stroke.
+    #[test]
+    fn provisional_tail_stays_small() {
+        let lib = BrushLibrary::new(StageRegistry::with_builtins());
+        let input = stroke(4800);
+        for brush in lib.iter() {
+            let mut s = brush.stream();
+            let mut worst = 0;
+            for chunk in input.chunks(2) {
+                s.push(chunk);
+                worst = worst.max(s.preview(&[]).positions.len());
+            }
+            let total = s.mesh(&[]).positions.len();
+            assert!(worst <= 2000 && worst * 20 <= total, "{}: preview up to {worst} of {total} vertices", brush.id());
         }
     }
 }

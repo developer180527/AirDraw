@@ -1,5 +1,6 @@
-use crate::params::{ParamSpec, Params, ParamsExt};
+use crate::params::{Curve, ParamSpec, Params, ParamsExt};
 use crate::stage::{Dynamics, Stage, StrokePoint};
+use crate::stream::PointStream;
 
 /// Width from pressure (through a curve), thinned by speed.
 pub struct Width;
@@ -17,21 +18,74 @@ impl Stage for Width {
 
 impl Dynamics for Width {
     fn apply(&self, pts: &mut [StrokePoint], p: &Params) {
-        let (base, curve) = (p.float("base"), p.curve("pressure_curve"));
-        let (thin, speed_ref) = (p.float("speed_thinning"), p.float("speed_ref"));
-        let mut speed = 0.0f32;
+        let mut state = WidthStream::new(p);
         for i in 0..pts.len() {
-            if thin > 0.0 && i > 0 {
-                let (a, b) = (pts[i - 1], pts[i]);
-                let dt = (b.t - a.t) as f32;
-                if dt > 1e-4 {
-                    // Light smoothing so one fast sample doesn't pinch the stroke.
-                    speed = speed * 0.7 + (b.dist - a.dist) / dt * 0.3;
-                }
-            }
-            let thinning = 1.0 - thin * (speed / speed_ref).min(1.0);
-            pts[i].width = base * curve.eval(pts[i].pressure.clamp(0.0, 1.0)) * thinning;
+            let prev = i.checked_sub(1).map(|j| pts[j]);
+            state.width(&mut pts[i], prev);
         }
+    }
+
+    fn stream(&self, p: &Params) -> Option<Box<dyn PointStream>> {
+        Some(Box::new(WidthStream::new(p)))
+    }
+}
+
+/// [`Width`] state; causal, so the stream emits every point immediately.
+#[derive(Clone)]
+struct WidthStream {
+    base: f32,
+    curve: Vec<[f32; 2]>,
+    thin: f32,
+    speed_ref: f32,
+    speed: f32,
+    prev: Option<StrokePoint>,
+}
+
+impl WidthStream {
+    fn new(p: &Params) -> Self {
+        Self {
+            base: p.float("base"),
+            curve: p.curve("pressure_curve").0.to_vec(),
+            thin: p.float("speed_thinning"),
+            speed_ref: p.float("speed_ref"),
+            speed: 0.0,
+            prev: None,
+        }
+    }
+
+    /// Sets `pt.width`; `prev` is the point before it, if any.
+    fn width(&mut self, pt: &mut StrokePoint, prev: Option<StrokePoint>) {
+        if self.thin > 0.0
+            && let Some(a) = prev
+        {
+            let dt = (pt.t - a.t) as f32;
+            if dt > 1e-4 {
+                // Light smoothing so one fast sample doesn't pinch the stroke.
+                self.speed = self.speed * 0.7 + (pt.dist - a.dist) / dt * 0.3;
+            }
+        }
+        let thinning = 1.0 - self.thin * (self.speed / self.speed_ref).min(1.0);
+        pt.width = self.base * Curve(&self.curve).eval(pt.pressure.clamp(0.0, 1.0)) * thinning;
+    }
+
+    fn feed(&mut self, input: &[StrokePoint], out: &mut Vec<StrokePoint>) {
+        for pt in input {
+            let mut cur = *pt;
+            let prev = self.prev;
+            self.width(&mut cur, prev);
+            self.prev = Some(cur);
+            out.push(cur);
+        }
+    }
+}
+
+impl PointStream for WidthStream {
+    fn commit(&mut self, input: &[StrokePoint], out: &mut Vec<StrokePoint>) {
+        self.feed(input, out);
+    }
+
+    fn finish(&self, tail: &[StrokePoint], out: &mut Vec<StrokePoint>) {
+        self.clone().feed(tail, out);
     }
 }
 
@@ -51,13 +105,71 @@ impl Stage for Taper {
 impl Dynamics for Taper {
     fn apply(&self, pts: &mut [StrokePoint], p: &Params) {
         let Some(total) = pts.last().map(|l| l.dist) else { return };
-        let (start, end, min) = (p.float("start"), p.float("end"), p.float("min"));
-        // Short strokes taper proportionally so both ends still fit.
-        let fit = if start + end > total && start + end > 0.0 { total / (start + end) } else { 1.0 };
-        let ramp = |d: f32, len: f32| if len <= 0.0 { 1.0 } else { smoothstep((d / len).clamp(0.0, 1.0)) };
+        let t = TaperStream::new(p);
+        let fit = t.fit(total);
         for pt in pts.iter_mut() {
-            let k = ramp(pt.dist, start * fit) * ramp(total - pt.dist, end * fit);
-            pt.width *= min + (1.0 - min) * k;
+            t.taper(pt, total, fit);
+        }
+    }
+
+    fn stream(&self, p: &Params) -> Option<Box<dyn PointStream>> {
+        Some(Box::new(TaperStream::new(p)))
+    }
+}
+
+/// [`Taper`] streamed. A point is final once the stroke is long enough that `fit` can't
+/// change and the point is at least `end` from the tip (its end ramp is exactly 1 for good).
+struct TaperStream {
+    start: f32,
+    end: f32,
+    min: f32,
+    /// Points not emitted yet, oldest first.
+    held: Vec<StrokePoint>,
+}
+
+impl TaperStream {
+    fn new(p: &Params) -> Self {
+        Self { start: p.float("start"), end: p.float("end"), min: p.float("min"), held: Vec::new() }
+    }
+
+    /// Short strokes taper proportionally so both ends still fit.
+    fn fit(&self, total: f32) -> f32 {
+        let (start, end) = (self.start, self.end);
+        if start + end > total && start + end > 0.0 { total / (start + end) } else { 1.0 }
+    }
+
+    fn taper(&self, pt: &mut StrokePoint, total: f32, fit: f32) {
+        let ramp = |d: f32, len: f32| if len <= 0.0 { 1.0 } else { smoothstep((d / len).clamp(0.0, 1.0)) };
+        let k = ramp(pt.dist, self.start * fit) * ramp(total - pt.dist, self.end * fit);
+        pt.width *= self.min + (1.0 - self.min) * k;
+    }
+}
+
+impl PointStream for TaperStream {
+    fn commit(&mut self, input: &[StrokePoint], out: &mut Vec<StrokePoint>) {
+        self.held.extend_from_slice(input);
+        let Some(total) = self.held.last().map(|l| l.dist) else { return };
+        // `dist` only grows, so once fit is 1 it stays 1.
+        if self.fit(total) != 1.0 {
+            return;
+        }
+        let done = self.held.iter().take_while(|p| self.end <= 0.0 || total - p.dist >= self.end).count();
+        let mut held = std::mem::take(&mut self.held);
+        for pt in &mut held[..done] {
+            // The end ramp is 1 at this total and every later one, so this is the final width.
+            self.taper(pt, total, 1.0);
+        }
+        out.extend(held.drain(..done));
+        self.held = held;
+    }
+
+    fn finish(&self, tail: &[StrokePoint], out: &mut Vec<StrokePoint>) {
+        let Some(total) = tail.last().or(self.held.last()).map(|l| l.dist) else { return };
+        let fit = self.fit(total);
+        for pt in self.held.iter().chain(tail) {
+            let mut pt = *pt;
+            self.taper(&mut pt, total, fit);
+            out.push(pt);
         }
     }
 }

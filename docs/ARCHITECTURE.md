@@ -419,6 +419,26 @@ One visible side effect: tube output moves the start-cap center vertex next to r
 instead of after the last ring. Vertex order in exports changes once. Files are unaffected,
 since meshes are never stored.
 
+**As implemented (step 2):**
+
+- Every built-in stage has a native stream next to its batch `apply`/`build`, and the
+  batch code stays as the reference implementation. The exception is `Tube::build`, which
+  runs through `TubeStream` because of the vertex reorder. Shared math (`EuroState`,
+  `catmull_rom`, `WidthStream::width`, `TaperStream::taper`, `dot`) keeps the two paths
+  bit-identical.
+- `dots` commits dot *k* only when the committed length already counts it (the count formula
+  only grows) **and** a committed point lies past it, so its segment and interpolation can't change.
+- Geometry streams keep only a small window of committed points (tube/ribbon: from point
+  *i − 1*; dots: from the current segment), so memory and copying don't grow with the stroke.
+- Measured (`live_stream_cost`, Mac, 20 s stroke, 2 points per update): a streamed update
+  costs 0.003–0.015 ms on average (Ink: 0.007 ms against 0.66 ms for a full rebuild), and the
+  provisional tail stays at or below 800 vertices (Ink), 81 (Marker), 272 (Ribbon) and 40 (Dots).
+- A full `build` costs the same as before for Ink and about 1.8× for Ribbon (0.19 → 0.35 ms
+  for a 20 s stroke). Each stream stage writes into a fresh buffer where the batch stages
+  worked in place, which shows on brushes with few vertices per point. That only affects
+  load, re-brush and export, since live strokes stop calling `build` in step 3. If it ever
+  matters, causal stages can get an in-place fast path for whole-input commits.
+
 #### Godot side (`LiveStroke` in `canvas.rs`)
 
 Godot 4 can append surfaces to an `ArrayMesh` but can't grow or edit a surface's index
@@ -446,7 +466,7 @@ copies and uploads at most one chunk plus the tail (about 200 KB) instead of the
 |---|---|---|
 | 0 ✅ | Measure today's cost per update on Mac and iPad (`live_stroke_bench`, results above) | none |
 | 1 ✅ | `PointStream`/`MeshStream` traits, batch fallback for every stage, `BrushStream`; `Brush::build` and `centerline` = push + finish | none: build and centerline output bit-identical before/after (64 fingerprints over every stage), all tests and the smoke test pass. Build phase ~10% slower until step 2 (batch fallbacks copy held points) |
-| 2 | Native streams for the built-in stages in the table, one at a time | tube vertex order only |
+| 2 ✅ | Native streams for the built-in stages in the table, one at a time | tube vertex order only: against the pre-stream code, 98 of 126 fingerprints are bit-identical and the other 28 (capped tubes) have identical triangles, vertices and centerlines. Split tests compare streams pushed in pieces (1 point at a time, up to 4, up to 40) against the batch stages, and fail on planted bugs |
 | 3 | `LiveStroke` uses `BrushStream` + sealed/live chunks; pen-up consolidation | none visible |
 | 4 | Re-measure (step 0 again) on Mac and iPad | faster |
 

@@ -92,9 +92,9 @@ impl std::error::Error for BrushError {}
 /// A validated brush: stage implementations paired with complete parameter sets.
 pub struct Brush {
     pub def: BrushDef,
-    filters: Vec<(Arc<dyn Filter>, Params)>,
-    dynamics: Vec<(Arc<dyn Dynamics>, Params)>,
-    geometry: (Arc<dyn Geometry>, Params),
+    pub(crate) filters: Vec<(Arc<dyn Filter>, Params)>,
+    pub(crate) dynamics: Vec<(Arc<dyn Dynamics>, Params)>,
+    pub(crate) geometry: (Arc<dyn Geometry>, Params),
     material: MaterialDesc,
 }
 
@@ -147,7 +147,7 @@ impl Brush {
     pub fn build(&self, input: &[InputPoint]) -> MeshBuffers {
         let mut s = self.stream();
         s.push(input);
-        s.mesh(&[])
+        s.into_mesh(&[])
     }
 
     /// The processed stroke path (after filters and dynamics) with per-point width.
@@ -155,7 +155,7 @@ impl Brush {
     pub fn centerline(&self, input: &[InputPoint]) -> Vec<StrokePoint> {
         let mut s = self.stream();
         s.push(input);
-        s.centerline(&[])
+        s.into_centerline(&[])
     }
 
     /// Starts an incremental build, for a stroke that grows while it's drawn.
