@@ -35,6 +35,9 @@ Rust crates:
   built-in Ink / Marker / Ribbon / Dots, user brushes, validation.
 - `airdraw-doc` — document model (raw input + brush snapshot per stroke), undo/redo,
   `.airdraw` file format (v3: embedded PNG preview, Look, drawn guide), Recents list.
+- `airdraw-pack` — section container for the coming `.airdraw` format 4: required/optional
+  sections, CRC-32, a swappable `Codec` interface (no compression library of its own).
+- `airdraw-codec-zstd` — the zstd codec for `airdraw-pack`.
 - `airdraw-export` — export scene + exporter registry; GLB, glTF, FBX (binary 7.4, own
   writer), OBJ, USDZ, USDA, STL, PLY, SVG.
 - `airdraw-ffi` — exporter plugin ABI and loader (desktop dynamic, iOS static).

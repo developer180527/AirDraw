@@ -1,0 +1,8 @@
+[package]
+name = "airdraw-pack"
+description = "Section container for .airdraw files with swappable compression codecs."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+crc32fast.workspace = true

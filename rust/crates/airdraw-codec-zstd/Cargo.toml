@@ -1,0 +1,9 @@
+[package]
+name = "airdraw-codec-zstd"
+description = "Zstandard codec for airdraw-pack (wraps libzstd via the zstd crate)."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+airdraw-pack.workspace = true
+zstd = { workspace = true }

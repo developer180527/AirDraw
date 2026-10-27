@@ -824,6 +824,12 @@ pub struct WriteOptions { pub codec: CodecId, pub level: Level }
   error ("needs codec N, update the app").
 - `Level::Fast` for autosave, `Level::Max` for "Save a copy". Levels change only the size,
   never the decoded bytes.
+- **Implemented (step 1):** `write`/`read` in `airdraw-pack`; a section that doesn't shrink is
+  stored instead. Reads are bounded (`ReadLimits`: 2 GiB per section, 1024 sections), so a
+  damaged header can't trigger huge allocations, and a codec must produce exactly the
+  header's length. zstd levels: Fast 3, Default 9, Max 19; default features off (no legacy
+  decoders). Built for macOS, iOS and Android (NDK clang via `CC_aarch64_linux_android`);
+  Windows and Linux builds unverified until those toolchains are set up.
 - Tests run the container against the stored codec and a test codec, so the container is
   proven independent of zstd; the zstd crate has its own round-trip and corruption tests.
 - **Point encoding before compression (lossless; exact round-trip stays a rule):**
@@ -907,7 +913,7 @@ history, thumbnail or codec differ.
 | Step | Deliverable |
 |---|---|
 | 0 ✅ | Fix today's bug: save only when dirty (open-another, + New, home, quit), so no thumbnail re-render without a content change; guide opacity moved to device settings |
-| 1 | `airdraw-pack`: section container, `Codec` trait + registry, stored codec, CRC-32, required/optional sections; `airdraw-codec-zstd`; tests for round-trip, unknown sections and codecs, corruption, truncation, determinism |
+| 1 ✅ | `airdraw-pack`: section container, `Codec` trait + registry, stored codec, CRC-32, required/optional sections; `airdraw-codec-zstd`; tests for round-trip, unknown sections and codecs, corruption, truncation, determinism |
 | 2 | Format 4 in `airdraw-doc` on top of it: point encoding (XOR + byte planes); formats 1–3 still read; large-sketch fixture + size/time benchmark (Mac and iPad); Quick Look still works |
 | 3 | Look snapshot and content id in `META`; content hash; guide opacity moved to device settings; fixed-angle thumbnail; smoke test: open, orbit, close leaves the file byte-identical |
 | 4 | `HIST`: history encoding with a shared stroke pool, size cap, damaged history → open without it; smoke test (draw, delete, save, reopen, undo, redo) |

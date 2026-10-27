@@ -13,6 +13,9 @@ godot = { version = "0.5.5", features = ["api-4-7"] }
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.8"
 serde_json = "1.0.154"
+crc32fast = "1.5.3"
+# No default features: drops legacy-format decoders and the dictionary builder (unused).
+zstd = { version = "0.14.3", default-features = false }
 airdraw-input = { path = "crates/airdraw-input" }
 airdraw-platform = { path = "crates/airdraw-platform" }
 airdraw-brush = { path = "crates/airdraw-brush" }
@@ -22,3 +25,5 @@ airdraw-look = { path = "crates/airdraw-look" }
 airdraw-export = { path = "crates/airdraw-export" }
 airdraw-ios = { path = "crates/airdraw-ios" }
 airdraw-ffi = { path = "crates/airdraw-ffi" }
+airdraw-pack = { path = "crates/airdraw-pack" }
+airdraw-codec-zstd = { path = "crates/airdraw-codec-zstd" }
