@@ -86,7 +86,7 @@ struct Buffers {
 
 impl Buffers {
     fn view(&mut self, bytes: &[u8], target: u32) -> usize {
-        while self.bin.len() % 4 != 0 {
+        while !self.bin.len().is_multiple_of(4) {
             self.bin.push(0);
         }
         self.views.push(json!({"buffer": 0, "byteOffset": self.bin.len(), "byteLength": bytes.len(), "target": target}));
@@ -226,7 +226,7 @@ fn build(scene: &ExportScene, opts: &Params, bin_uri: Option<&str>) -> (Value, V
     put("accessors", buf.accessors);
     put("bufferViews", buf.views);
     if !buf.bin.is_empty() {
-        while buf.bin.len() % 4 != 0 {
+        while !buf.bin.len().is_multiple_of(4) {
             buf.bin.push(0);
         }
         let mut b = json!({"byteLength": buf.bin.len()});
@@ -245,7 +245,7 @@ fn build(scene: &ExportScene, opts: &Params, bin_uri: Option<&str>) -> (Value, V
 
 fn glb(json: &Value, bin: &[u8]) -> Vec<u8> {
     let mut json_bytes = serde_json::to_vec(json).unwrap();
-    while json_bytes.len() % 4 != 0 {
+    while !json_bytes.len().is_multiple_of(4) {
         json_bytes.push(b' ');
     }
     let total = 12 + 8 + json_bytes.len() + if bin.is_empty() { 0 } else { 8 + bin.len() };

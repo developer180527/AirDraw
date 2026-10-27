@@ -71,7 +71,7 @@ impl Exporter for Ply {
         }
         let mut base = 0u32;
         for m in &scene.meshes {
-            for t in m.indices.chunks_exact(3) {
+            for t in m.indices.as_chunks::<3>().0 {
                 let [x, y, z] = [t[0] + base, t[1] + base, t[2] + base];
                 if ascii {
                     b.extend_from_slice(format!("3 {x} {y} {z}\n").as_bytes());

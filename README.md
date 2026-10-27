@@ -34,7 +34,7 @@ Rust crates:
 - `airdraw-brush` — brushes as data (`.brush.toml`): filters → dynamics → geometry → material,
   built-in Ink / Marker / Ribbon / Dots, user brushes, validation.
 - `airdraw-doc` — document model (raw input + brush snapshot per stroke), undo/redo,
-  `.airdraw` file format (v2, embedded PNG preview), Recents list.
+  `.airdraw` file format (v3: embedded PNG preview, Look, drawn guide), Recents list.
 - `airdraw-export` — export scene + exporter registry; GLB, glTF, FBX (binary 7.4, own
   writer), OBJ, USDZ, USDA, STL, PLY, SVG.
 - `airdraw-ffi` — exporter plugin ABI and loader (desktop dynamic, iOS static).
@@ -50,7 +50,7 @@ Rust crates:
   sheet that closes when you draw. Left-handed mode mirrors it; Tab or a four-finger tap
   hides it. Desktop shortcuts are shown in tooltips.
 - **Drawing:** strokes projected onto a guide plane (front / side / top / view-aligned,
-  movable), pressure-sensitive, smoothed; live preview of predicted Pencil points on iPad.
+  movable) or a drawn 3D guide (saved with the sketch), pressure-sensitive, smoothed; live preview of predicted Pencil points on iPad.
 - **iPad:** native UIKit input (Pencil vs finger by tool type, not guessing), toolbar,
   home screen, system file picker, open sketches from the Files app, Files thumbnails.
 - **Brushes:** 4 built-ins, brush editor with live preview and pressure-curve editor,
@@ -162,8 +162,8 @@ verified by hand on device.
 
 `.airdraw` files are versioned binary: `ADRW`, format version, an embedded PNG preview right
 after the header (so OS thumbnailers read only the first bytes), TOML metadata (layers,
-brush snapshots), then per-stroke binary point data and a checksum. Format 1 files still
-open. Details in `rust/crates/airdraw-doc/src/file.rs`.
+brush snapshots, Look, the drawn guide), then per-stroke binary point data and a checksum.
+Format 1 and 2 files still open (they have no guide, so they open with the default plane). Details in `rust/crates/airdraw-doc/src/file.rs`.
 
 ## License
 

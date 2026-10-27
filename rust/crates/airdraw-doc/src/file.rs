@@ -3,7 +3,8 @@
 //! ```text
 //! "ADRW"  u16 format version  u16 flags (0)
 //! u32 thumbnail length (0 = none), PNG bytes           (format 2+)
-//! u32 meta length, meta: UTF-8 TOML (app version, layers, brush snapshots)
+//! u32 meta length, meta: UTF-8 TOML (app version, layers, brush snapshots, Look,
+//!   drawn guide (format 3+))
 //! u32 stroke count, then per stroke:
 //!   u64 id  u32 layer  u32 brush  u32 point count n  u8 flags (1 = one shared normal, 2 = tilt)
 //!   positions n×3 f32 | normals (1 or n)×3 f32 | pressure n f32 | [tilt n f32, NaN = none] | time n f64
@@ -16,7 +17,8 @@
 //! The thumbnail sits at a fixed place right after the 8-byte header so OS thumbnail
 //! extensions (Quick Look, Windows shell, freedesktop) can read just the first bytes of a
 //! file: check "ADRW" and version >= 2, read the u32 at offset 8, then that many PNG bytes.
-//! Format 1 files (no thumbnail) are still read.
+//! Format 1 files (no thumbnail) and format 2 files (no guide) are still read; they open with
+//! the default plane.
 
 use std::fmt;
 use std::io::Write;
@@ -24,6 +26,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use airdraw_brush::{BrushDef, InputPoint};
+use airdraw_guide::{Guide, Sweep};
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
@@ -32,7 +35,7 @@ use crate::document::{BrushRef, Document, Layer, LayerId, Stroke, StrokeId};
 pub const EXTENSION: &str = "airdraw";
 const MAGIC: &[u8; 4] = b"ADRW";
 /// Newest file format this build reads and the one it writes.
-pub const FORMAT_VERSION: u16 = 2;
+pub const FORMAT_VERSION: u16 = 3;
 /// First format with an embedded thumbnail.
 const THUMBNAIL_SINCE: u16 = 2;
 /// Sanity cap; a 512×512 preview is ~50–150 KB.
@@ -76,6 +79,51 @@ struct Meta {
     /// Look id. Optional, so older apps (which ignore unknown keys) still open these files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     look: Option<String>,
+    /// The drawn guide. Format 3 (a format 2 app would drop it and save the file guide-less).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    guide: Option<GuideDef>,
+}
+
+/// A [`Guide`] as stored in the metadata (`[guide] kind = "sweep"`, …). Kept here so the
+/// guide crate stays free of file-format concerns.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum GuideDef {
+    Plane { origin: [f32; 3], normal: [f32; 3] },
+    Sweep { near: f32, far: f32, profile: Vec<[f32; 3]>, dirs: Vec<[f32; 3]> },
+}
+
+impl GuideDef {
+    fn new(guide: &Guide) -> Self {
+        let arr = |v: &[Vec3]| v.iter().map(|p| p.to_array()).collect();
+        match guide {
+            Guide::Plane { origin, normal } => GuideDef::Plane { origin: origin.to_array(), normal: normal.to_array() },
+            Guide::Sweep(s) => GuideDef::Sweep { near: s.near, far: s.far, profile: arr(&s.profile), dirs: arr(&s.dirs) },
+        }
+    }
+
+    fn into_guide(self) -> Result<Guide, DocError> {
+        let bad = |why: &str| DocError::Corrupt(format!("guide: {why}"));
+        let finite = |v: &[[f32; 3]]| v.iter().flatten().all(|x| x.is_finite());
+        match self {
+            GuideDef::Plane { origin, normal } => {
+                if !finite(&[origin, normal]) || Vec3::from(normal).length_squared() < 1e-12 {
+                    return Err(bad("invalid plane"));
+                }
+                Ok(Guide::Plane { origin: origin.into(), normal: normal.into() })
+            }
+            GuideDef::Sweep { near, far, profile, dirs } => {
+                if profile.len() < 2 || profile.len() != dirs.len() {
+                    return Err(bad(&format!("{} profile points, {} directions", profile.len(), dirs.len())));
+                }
+                if !finite(&profile) || !finite(&dirs) || !near.is_finite() || !far.is_finite() {
+                    return Err(bad("non-finite values"));
+                }
+                let v = |a: Vec<[f32; 3]>| a.into_iter().map(Vec3::from).collect();
+                Ok(Guide::Sweep(Sweep { profile: v(profile), dirs: v(dirs), near, far }))
+            }
+        }
+    }
 }
 
 impl Document {
@@ -90,7 +138,13 @@ impl Document {
                 brushes.push(self.brushes[s.brush.0 as usize].clone());
             }
         }
-        let meta = Meta { app_version: env!("CARGO_PKG_VERSION").into(), layers: self.layers.clone(), brushes, look: self.look.clone() };
+        let meta = Meta {
+            app_version: env!("CARGO_PKG_VERSION").into(),
+            layers: self.layers.clone(),
+            brushes,
+            look: self.look.clone(),
+            guide: self.guide().map(|g| GuideDef::new(g)),
+        };
         let meta = toml::to_string(&meta).expect("document metadata always serializes");
 
         let mut w = Vec::new();
@@ -157,7 +211,8 @@ impl Document {
         if meta.layers.is_empty() {
             return Err(DocError::Corrupt("no layers".into()));
         }
-        Ok(Document::from_parts(meta.layers, strokes, meta.brushes, thumbnail, meta.look))
+        let guide = meta.guide.map(GuideDef::into_guide).transpose()?;
+        Ok(Document::from_parts(meta.layers, strokes, meta.brushes, thumbnail, meta.look, guide))
     }
 
     /// Writes to a temporary file first and renames it over `path`, so a crash or full disk
@@ -446,7 +501,7 @@ mod tests {
         let mut d = sample_doc();
         d.set_thumbnail(Some(png())).unwrap();
         let b = d.to_bytes();
-        assert_eq!(u16::from_le_bytes([b[4], b[5]]), 2);
+        assert_eq!(u16::from_le_bytes([b[4], b[5]]), FORMAT_VERSION);
         assert_eq!(u32::from_le_bytes(b[8..12].try_into().unwrap()) as usize, png().len());
         assert_eq!(&b[12..12 + png().len()], &png()[..]);
     }
@@ -499,6 +554,61 @@ mod tests {
         // Metadata from before Looks (no key) still parses.
         let meta: Meta = toml::from_str("app_version = \"0.1.0\"\nlayers = []\n").unwrap();
         assert_eq!(meta.look, None);
+    }
+
+    fn sweep() -> Guide {
+        let profile = (0..5).map(|i| Vec3::new(i as f32 * 0.1, (i as f32).sin() * 0.3, 0.7)).collect();
+        let dirs = (0..5).map(|i| Vec3::new(0.1 * i as f32, 0.0, -1.0).normalize()).collect();
+        Guide::Sweep(Sweep { profile, dirs, near: 1.5, far: 3.0 })
+    }
+
+    #[test]
+    fn guide_round_trips_exactly() {
+        for guide in [sweep(), Guide::Plane { origin: Vec3::new(0.1, 0.2, 0.3), normal: Vec3::Y }] {
+            let mut d = sample_doc();
+            d.set_guide(Some(guide.clone()));
+            let back = Document::from_bytes(&d.to_bytes()).unwrap();
+            assert_eq!(back.guide().map(|g| &**g), Some(&guide));
+            assert_eq!(back.strokes(), d.strokes());
+            assert!(!back.can_undo(), "loading the guide is not an edit");
+        }
+        assert!(Document::from_bytes(&sample_doc().to_bytes()).unwrap().guide().is_none());
+    }
+
+    #[test]
+    fn guide_is_readable_toml() {
+        let mut d = Document::new();
+        d.set_guide(Some(sweep()));
+        let bytes = d.to_bytes();
+        let meta_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let meta = std::str::from_utf8(&bytes[16..16 + meta_len]).unwrap();
+        assert!(meta.contains("[guide]\nkind = \"sweep\""), "{meta}");
+    }
+
+    #[test]
+    fn format2_file_opens_with_the_default_plane() {
+        let mut bytes = sample_doc().to_bytes();
+        bytes[4..6].copy_from_slice(&2u16.to_le_bytes());
+        let n = bytes.len() - 4;
+        let sum = adler32(&bytes[..n]);
+        bytes[n..].copy_from_slice(&sum.to_le_bytes());
+        let d = Document::from_bytes(&bytes).unwrap();
+        assert!(d.guide().is_none());
+        assert_eq!(d.strokes(), sample_doc().strokes());
+    }
+
+    #[test]
+    fn damaged_guide_is_reported() {
+        let parse = |toml: &str| -> Result<Guide, DocError> {
+            let meta: Meta = toml::from_str(&format!("app_version = \"0.1.0\"\nlayers = []\n{toml}")).unwrap();
+            meta.guide.unwrap().into_guide()
+        };
+        let mismatched = "[guide]\nkind = \"sweep\"\nnear = 1.0\nfar = 1.0\nprofile = [[0,0,0],[1,0,0]]\ndirs = [[0,0,1]]";
+        assert!(matches!(parse(mismatched), Err(DocError::Corrupt(_))));
+        let flat = "[guide]\nkind = \"plane\"\norigin = [0,0,0]\nnormal = [0,0,0]";
+        assert!(matches!(parse(flat), Err(DocError::Corrupt(_))));
+        let nan = "[guide]\nkind = \"plane\"\norigin = [nan,0,0]\nnormal = [0,1,0]";
+        assert!(matches!(parse(nan), Err(DocError::Corrupt(_))));
     }
 
     #[test]

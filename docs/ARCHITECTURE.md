@@ -282,12 +282,18 @@ re-brushing strokes, re-meshing for export/LOD, and deterministic replay.
 - **Safe saves:** write to `<file>.airdraw.tmp`, fsync, rename over the original.
 - Unusable snapshots (e.g. from a newer app with extra stages) fall back to the default
   brush with a warning instead of failing the load.
-- **Format 2 (current): embedded thumbnail.** Right after the 8-byte header:
+- **Format 2: embedded thumbnail.** Right after the 8-byte header:
   `u32 length (0 = none)` + PNG bytes, before the metadata. OS thumbnail extensions read only
   the first bytes of a file (check `ADRW`, version ≥ 2, u32 at offset 8, PNG). Format 1
   files still open (fixture `airdraw-doc/tests/fixtures/format1_smoke.airdraw`) and are
   upgraded on save. `Document::set_thumbnail` isn't an edit (no dirty flag, no undo);
   `read_thumbnail(path)` reads just the preview for Recents and thumbnailers.
+- **Format 3 (current): drawn guide.** An optional `[guide]` table in the metadata
+  (`kind = "plane"` with `origin`/`normal`, or `kind = "sweep"` with `near`, `far`,
+  `profile`, `dirs`), mapped in `airdraw-doc` so `airdraw-guide` stays serde-free. The
+  version is bumped (unlike the optional `look` key) because a format 2 app would silently
+  drop the guide and re-save without it. A mismatched or non-finite guide is reported as a
+  damaged file. Format 1–2 files open with no drawn guide. Loading isn't an edit.
 
 ### 3e. Incremental live strokes (implemented)
 
@@ -617,8 +623,8 @@ struct Guide { shape: GuideShape, opacity: f32 }
 | Step | Deliverable |
 |---|---|
 | 1 ✅ | `airdraw-guide`: `Guide` (plane, sweep), `Sweep::from_view`, ray tests (hits, normals, both sides, edge-on from the drawing view, depth from the side, nearest layer, degenerate input) |
-| 2 ✅ | Session projects onto the active guide (a stroke keeps the guide it started on; misses draw nothing; hit normals go into the stroke); rail **Draw guide** button (one-shot, `G` on desktop) with a live orange path; drawn guide shown with section lines and an orange start edge; Remove in the Guide panel; choosing a preset plane replaces the drawn guide; undo/redo via `SetGuide`. The smoke test drives it end to end. Not yet saved in `.airdraw` (step 3) |
-| 3 | Guide display (translucent, section lines, orange start line, opacity); `.airdraw` format 3 |
+| 2 ✅ | Session projects onto the active guide (a stroke keeps the guide it started on; misses draw nothing; hit normals go into the stroke); rail **Draw guide** button (one-shot, `G` on desktop) with a live orange path; drawn guide shown with section lines and an orange start edge; Remove in the Guide panel; choosing a preset plane replaces the drawn guide; undo/redo via `SetGuide`. The smoke test drives it end to end. |
+| 3 (part) | ✅ `.airdraw` format 3 saves the drawn guide; it's shown again on open (smoke test: save, new, reopen). Display (translucent, section lines, orange start line) shipped in step 2. **Left:** guide opacity (needs an `opacity` field and the active-guide pill) |
 | 4 | **Bend** |
 | 5 | **Shapes** (cube, pyramid, sphere, tube + segments) with the joystick gizmo |
 | 6 | **Loft** (needs curve selection), saved guides + Resources panel |

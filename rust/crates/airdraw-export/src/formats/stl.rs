@@ -33,7 +33,7 @@ impl Exporter for Stl {
         let tris: Vec<[Vec3; 3]> = scene
             .meshes
             .iter()
-            .flat_map(|m| m.indices.chunks_exact(3).map(move |t| [0, 1, 2].map(|k| m.positions[t[k] as usize] * unit)))
+            .flat_map(|m| m.indices.as_chunks::<3>().0.iter().map(move |t| [0, 1, 2].map(|k| m.positions[t[k] as usize] * unit)))
             .collect();
         let normal = |t: &[Vec3; 3]| (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
         let name = format!("{}.stl", out.stem());

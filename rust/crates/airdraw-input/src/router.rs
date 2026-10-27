@@ -284,8 +284,8 @@ impl InputRouter {
             if let Some(tap) = &mut self.tap {
                 tap.travel += (sample.pos - pos).length();
             }
-            if self.fingers.is_empty() {
-                if let Some(tap) = self.tap.take()
+            if self.fingers.is_empty()
+                && let Some(tap) = self.tap.take()
                     && sample.t - tap.start_t <= self.config.tap_max_duration
                     && tap.travel <= self.config.tap_max_travel
                 {
@@ -296,7 +296,6 @@ impl InputRouter {
                         _ => {}
                     }
                 }
-            }
             self.pinch_ref = self.pinch();
         }
     }

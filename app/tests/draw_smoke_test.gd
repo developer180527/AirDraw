@@ -253,6 +253,15 @@ func _ready() -> void:
 	var undone: bool = not canvas.has_drawn_guide()
 	_key(KEY_Z, true, true)
 	print("SMOKE guide undo_removes=", undone, " redo_restores=", canvas.has_drawn_guide())
+	# The drawn guide is saved with the sketch (format 3) and shown again on open.
+	var guide_path := ProjectSettings.globalize_path("user://test_documents/guide.airdraw")
+	var guide_line: PackedVector3Array = canvas.guide_start_line()
+	canvas.save_document(guide_path)
+	canvas.new_document()
+	var cleared: bool = not canvas.has_drawn_guide() and not main.get("guides")._drawn.visible
+	canvas.load_document(guide_path)
+	print("SMOKE guide new_clears=", cleared, " reloaded=", canvas.has_drawn_guide(), " shown=", main.get("guides")._drawn.visible,
+		" same_shape=", canvas.guide_start_line() == guide_line, " not_undoable=", not canvas.can_undo())
 	main.get("guides").set_preset(0)
 	print("SMOKE guide preset_replaces=", not canvas.has_drawn_guide())
 	rig.set_view("front")

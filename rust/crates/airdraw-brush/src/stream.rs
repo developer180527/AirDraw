@@ -325,7 +325,11 @@ mod tests {
     }
 
     fn is_prefix(a: &MeshBuffers, b: &MeshBuffers) -> bool {
-        b.positions.starts_with(&a.positions) && b.normals.starts_with(&a.normals) && b.indices.starts_with(&a.indices)
+        b.positions.starts_with(&a.positions)
+            && b.normals.starts_with(&a.normals)
+            && b.uvs.starts_with(&a.uvs)
+            && b.tangents.starts_with(&a.tangents)
+            && b.indices.starts_with(&a.indices)
     }
 
     #[test]

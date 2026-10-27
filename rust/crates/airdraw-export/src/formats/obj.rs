@@ -56,7 +56,7 @@ impl Exporter for Obj {
                         let _ = writeln!(obj, "vt {:.5} {:.5}", t.x, t.y);
                     }
                 }
-                for tri in m.indices.chunks_exact(3) {
+                for tri in m.indices.as_chunks::<3>().0 {
                     let [a, b, c] = [tri[0] + v_base, tri[1] + v_base, tri[2] + v_base];
                     let [na, nb, nc] = [tri[0] + vn_base, tri[1] + vn_base, tri[2] + vn_base];
                     if with_uv {

@@ -111,6 +111,7 @@ impl Document {
         brushes: Vec<BrushDef>,
         thumbnail: Option<Arc<[u8]>>,
         look: Option<String>,
+        guide: Option<Guide>,
     ) -> Self {
         let next_stroke = strokes.iter().map(|s| s.id.0 + 1).max().unwrap_or(1);
         let active_layer = layers.first().map_or(LayerId(1), |l| l.id);
@@ -124,7 +125,7 @@ impl Document {
             redo: Vec::new(),
             dirty: false,
             thumbnail,
-            guide: None,
+            guide: guide.map(Arc::new),
             look,
         }
     }

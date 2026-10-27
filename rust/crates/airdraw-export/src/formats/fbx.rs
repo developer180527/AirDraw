@@ -278,7 +278,7 @@ pub fn write_fbx(scene: &ExportScene) -> Vec<u8> {
             // The last index of each polygon is stored as -(index + 1).
             let polygons: Vec<i32> = m
                 .indices
-                .chunks_exact(3)
+                .as_chunks::<3>().0.iter()
                 .flat_map(|t| [t[0] as i32, t[1] as i32, -(t[2] as i32) - 1])
                 .collect();
             let normals: Vec<f64> = m

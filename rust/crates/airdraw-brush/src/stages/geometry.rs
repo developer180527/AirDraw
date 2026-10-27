@@ -448,7 +448,7 @@ mod tests {
     /// Meshes are counter-clockwise with outward normals (glTF/USD/FBX convention): each
     /// triangle's geometric normal must agree with its vertex normals.
     fn assert_ccw_outward(m: &MeshBuffers) {
-        for tri in m.indices.chunks_exact(3) {
+        for tri in m.indices.as_chunks::<3>().0 {
             let [a, b, c] = [tri[0], tri[1], tri[2]].map(|i| m.positions[i as usize]);
             let face = (b - a).cross(c - a);
             if face.length() < 1e-9 {
