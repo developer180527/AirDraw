@@ -305,11 +305,36 @@ Measured (2026-10-27, `live_rebuild_cost`, release build, Apple Silicon Mac):
 | Ink    | 4800 (20 s)            | 89 530   | 0.66 ms      |
 | Ribbon | 4800 (20 s)            | 20 108   | 0.19 ms      |
 
-The Rust side is cheap on a Mac (an iPad is slower, and thermals throttle it). The larger
-cost is the Godot side. At 90k vertices each update copies about 2 MB of positions and normals
-plus about 2 MB of indices into new arrays, allocates a mesh and uploads it all. At 120 Hz
-that is close to 1 GB/s of copying and uploading, just to append a few points. That cost
-hasn't been timed yet; step 0 of the rollout measures it.
+The Rust side is cheap. The larger cost is the Godot side: at 90k vertices, each update
+copies about 2 MB of positions and normals plus about 2 MB of indices into new arrays,
+allocates a mesh and uploads it all. At 120 Hz that is close to 1 GB/s of copying and
+uploading, just to append a few points.
+
+**Step 0 results (2026-10-27).** These come from `app/tests/live_stroke_bench.tscn`: a 20 s
+spiral fed at 240 Hz, 2 samples per update, through `SketchCanvas.add_points`, with per-phase
+timing from `set_record_live_timings`. The iPad numbers come from `scripts/bench_ipad.sh`.
+Times are medians per update over that second of stroke, in ms:
+
+| Device | Brush | At | Vertices | build | convert | upload | **total** (max) |
+|---|---|---|---|---|---|---|---|
+| Mac M4 Pro | Ink | 1 s | 850 | 0.01 | 0.01 | 0.26 | **0.28** (0.50) |
+| Mac M4 Pro | Ink | 10 s | 31 954 | 0.24 | 0.32 | 0.98 | **1.58** (3.99) |
+| Mac M4 Pro | Ink | 20 s | 89 554 | 0.68 | 0.89 | 2.80 | **4.36** (5.08) |
+| iPad Pro M5 | Ink | 1 s | 850 | 0.05 | 0.03 | 0.26 | **0.34** (0.50) |
+| iPad Pro M5 | Ink | 10 s | 31 954 | 0.75 | 0.75 | 2.07 | **3.62** (4.14) |
+| iPad Pro M5 | Ink | 20 s | 89 554 | 0.71 | 0.82 | 3.19 | **4.71** (5.16) |
+| iPad Pro M5 | Ribbon | 20 s | 20 114 | 1.35 | 0.41 | 1.70 | **3.48** (4.13) |
+
+- On the iPad at 20 s, one stroke update takes **57% of the 8.33 ms frame** (120 Hz), and
+  the cost keeps growing with length. The app still held 120 Hz in the bench, but that is
+  with an empty scene, nothing else on the main thread, and a fresh, cool device.
+- About **85% of that cost is Godot-side** (convert + upload), so chunked upload is the
+  bigger half of the fix. Making the brush pipeline incremental is still needed, because it
+  is what produces a committed prefix that never has to be re-uploaded.
+- `end_stroke` (final rebuild + adopting the node) took 4.3 ms on the Mac.
+- Not measured: GPU time (Godot's Metal driver reports 0) and thermal throttling over a
+  long session. Frame times are display-paced on both devices (vsync can't be turned off
+  on Metal here), so they show dropped frames, not headroom.
 
 **Goal.** Per-update cost bounded by *new points + a short tail*, independent of stroke
 length, with the finished stroke **identical** to `Brush::build` on the stored raw points
@@ -331,25 +356,35 @@ the tail through the clone and drops the clone. "Pretend the stroke ends now" an
 stroke really ends" are the same operation, so the live preview at pen-up is exactly the
 final stroke.
 
+As implemented in `airdraw-brush/src/stream.rs`:
+
 ```rust
-/// Streaming form of a stage. Created per stroke by Filter/Dynamics/Geometry::stream().
-trait StageStream: Send {
+/// Streaming form of a filter or dynamics stage. Created per stroke by Filter/Dynamics::stream().
+trait PointStream: Send {
     /// Consumes input that will never change; appends output that will never change.
     /// Must be split-invariant: commit(a); commit(b) ≡ commit(a ++ b).
     fn commit(&mut self, input: &[StrokePoint], out: &mut Vec<StrokePoint>);
     /// Output for "the stroke ends after `tail`", from a clone of the state. `&self`: no effect.
     fn finish(&self, tail: &[StrokePoint], out: &mut Vec<StrokePoint>);
 }
-// Geometry streams have the same shape, appending to MeshBuffers instead.
+/// Geometry::stream(): the same shape, appending to MeshBuffers. finish() writes into an empty
+/// mesh whose indices count the committed vertices first, then its own.
+trait MeshStream: Send { /* commit(&mut self, .., &mut MeshBuffers); finish(&self, .., &mut MeshBuffers) */ }
 
-/// Chains the brush's stage streams; owned by the live stroke.
+/// Chains the brush's stage streams (filters → distance pass → dynamics → geometry).
+/// Created by Brush::stream(); owned by the live stroke.
 struct BrushStream { /* stage streams, committed points, committed MeshBuffers */ }
 impl BrushStream {
     fn push(&mut self, real: &[InputPoint]);                         // committed input
-    fn preview(&self, predicted: &[InputPoint]) -> MeshBuffers;      // provisional mesh
     fn committed_mesh(&self) -> &MeshBuffers;                        // append-only
+    fn preview(&self, predicted: &[InputPoint]) -> MeshBuffers;      // provisional mesh
+    fn mesh(&self, tail: &[InputPoint]) -> MeshBuffers;              // committed + preview
+    fn centerline(&self, tail: &[InputPoint]) -> Vec<StrokePoint>;   // for exporters
 }
 ```
+
+The distance pass (`dist` along the stroke, between filters and dynamics) is an internal
+stream that is causal from the start.
 
 A stage's provisional output becomes the provisional input of the next stage, which runs it
 through its own cloned state. **`Brush::build` itself is rewritten as
@@ -409,8 +444,8 @@ copies and uploads at most one chunk plus the tail (about 200 KB) instead of the
 
 | Step | Change | Behavior change |
 |---|---|---|
-| 0 | Measure the Godot side today: time `set_mesh` per update in the smoke test and on iPad with a 20 s stroke | none |
-| 1 | `StageStream` traits, batch fallback for every stage, `BrushStream`; `Brush::build` = push + finish | none (all existing tests must pass unchanged) |
+| 0 ✅ | Measure today's cost per update on Mac and iPad (`live_stroke_bench`, results above) | none |
+| 1 ✅ | `PointStream`/`MeshStream` traits, batch fallback for every stage, `BrushStream`; `Brush::build` and `centerline` = push + finish | none: build and centerline output bit-identical before/after (64 fingerprints over every stage), all tests and the smoke test pass. Build phase ~10% slower until step 2 (batch fallbacks copy held points) |
 | 2 | Native streams for the built-in stages in the table, one at a time | tube vertex order only |
 | 3 | `LiveStroke` uses `BrushStream` + sealed/live chunks; pen-up consolidation | none visible |
 | 4 | Re-measure (step 0 again) on Mac and iPad | faster |

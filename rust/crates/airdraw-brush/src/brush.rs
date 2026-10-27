@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::params::{ParamSpec, Params};
 use crate::registry::StageRegistry;
 use crate::stage::{Dynamics, Filter, Geometry, InputPoint, MaterialDesc, MeshBuffers, StrokePoint};
+use crate::stream::BrushStream;
 
 /// Newest brush file schema this build understands.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -141,32 +142,25 @@ impl Brush {
     }
 
     /// Runs the full pipeline. Pure function of the input, so strokes can be rebuilt from
-    /// their raw points at any time (re-brushing, export quality, replay).
+    /// their raw points at any time (re-brushing, export quality, replay). Goes through
+    /// [`stream`](Self::stream), so a stroke drawn live ends exactly as it rebuilds.
     pub fn build(&self, input: &[InputPoint]) -> MeshBuffers {
-        let pts = self.centerline(input);
-        let mut out = MeshBuffers::default();
-        self.geometry.0.build(&pts, &self.geometry.1, &mut out);
-        out
+        let mut s = self.stream();
+        s.push(input);
+        s.mesh(&[])
     }
 
     /// The processed stroke path (after filters and dynamics) with per-point width.
     /// Exporters use it to write strokes as curves.
     pub fn centerline(&self, input: &[InputPoint]) -> Vec<StrokePoint> {
-        let mut pts: Vec<StrokePoint> = input.iter().map(StrokePoint::from).collect();
-        for (f, p) in &self.filters {
-            f.apply(&mut pts, p);
-        }
-        let mut dist = 0.0;
-        for i in 0..pts.len() {
-            if i > 0 {
-                dist += pts[i].pos.distance(pts[i - 1].pos);
-            }
-            pts[i].dist = dist;
-        }
-        for (d, p) in &self.dynamics {
-            d.apply(&mut pts, p);
-        }
-        pts
+        let mut s = self.stream();
+        s.push(input);
+        s.centerline(&[])
+    }
+
+    /// Starts an incremental build, for a stroke that grows while it's drawn.
+    pub fn stream(&self) -> BrushStream {
+        BrushStream::new(&self.filters, &self.dynamics, &self.geometry)
     }
 }
 

@@ -4,6 +4,7 @@
 use glam::Vec3;
 
 use crate::params::{ParamSpec, Params};
+use crate::stream::{MeshStream, PointStream};
 
 /// One raw input point in world space, after projection onto the drawing surface.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -81,16 +82,29 @@ pub trait Stage: Send + Sync {
 /// Reshapes the point list: smoothing, resampling, subdivision.
 pub trait Filter: Stage {
     fn apply(&self, points: &mut Vec<StrokePoint>, params: &Params);
+    /// Incremental form for live strokes. `None` (the default) runs `apply` on the whole
+    /// stroke at every update.
+    fn stream(&self, _params: &Params) -> Option<Box<dyn PointStream>> {
+        None
+    }
 }
 
 /// Sets per-point attributes such as width.
 pub trait Dynamics: Stage {
     fn apply(&self, points: &mut [StrokePoint], params: &Params);
+    /// Incremental form for live strokes; see [`Filter::stream`].
+    fn stream(&self, _params: &Params) -> Option<Box<dyn PointStream>> {
+        None
+    }
 }
 
 /// Turns points into triangles.
 pub trait Geometry: Stage {
     fn build(&self, points: &[StrokePoint], params: &Params, out: &mut MeshBuffers);
+    /// Incremental form for live strokes; see [`Filter::stream`].
+    fn stream(&self, _params: &Params) -> Option<Box<dyn MeshStream>> {
+        None
+    }
 }
 
 /// Describes how the stroke is shaded.

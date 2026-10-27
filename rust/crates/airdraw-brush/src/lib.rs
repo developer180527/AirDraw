@@ -8,9 +8,11 @@ pub mod params;
 pub mod registry;
 pub mod stage;
 pub mod stages;
+pub mod stream;
 
 pub use brush::{Brush, BrushDef, BrushError, StageRef};
 pub use library::{BrushLibrary, BrushSource};
 pub use params::{ParamSpec, ParamValue, Params};
 pub use registry::{Slot, StageRegistry};
 pub use stage::{InputPoint, MaterialDesc, MeshBuffers, Shading, StrokePoint};
+pub use stream::{BrushStream, MeshStream, PointStream};
