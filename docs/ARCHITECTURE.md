@@ -745,29 +745,28 @@ pixel-identical). A cold switch to a new Look therefore still pauses once, at th
 2. Exports always use the brush's PBR material (+ UVs).
 3. Realistic is desktop-only until measured on iPad.
 
-### 3h. The sketch file as a complete workspace: history, state, compression (proposed 2026-10-27)
+### 3h. The sketch file: history, compression, nothing view-dependent (proposed 2026-10-27, partly decided)
 
-**Goal.** A `.airdraw` file opens into *exactly* the session that saved it, on any device:
-an artist draws on an iPad, pushes the file to the team repo, and a teammate on an Android
-tablet, a Windows ARM laptop or a Linux x86 box opens it to the same strokes, guide, Look,
-camera, brush tray and undo history. The file stays small enough to autosave every 15 s
-and to keep in git.
+**Goal.** A `.airdraw` file opens to the same artwork on any device: an artist draws on an
+iPad, pushes the file to the team repo, and a teammate on an Android tablet, a Windows ARM
+laptop or a Linux x86 box opens the same strokes, guide, Look and undo history. Viewing a
+file never changes it. The file stays small enough to autosave every 15 s and to keep in git.
 
-#### What a file holds today (format 3) and what's missing
+#### What a file holds today (format 3) and what changes
 
-| Kept today | Missing |
+| Kept today | Change |
 |---|---|
-| Strokes: raw input + layer + brush snapshot (full `BrushDef`, so brushes travel with the file) | Undo/redo history (lost on close) |
-| Layers (name, visible, locked) | Camera (orbit target, yaw, pitch, distance, FOV) |
-| Look **id** | Look **contents** (a custom Look missing on the other device falls back to Shaded) |
-| Drawn guide, guide opacity | Preset plane (which one, its offset): lives only in GDScript |
-| Embedded PNG thumbnail | Current brush, brush tray, current tool |
-| | Last export format + its settings (per exporter id) |
+| Strokes: raw input + layer + brush snapshot (full `BrushDef`, so brushes travel with the file) | keep |
+| Layers (name, visible, locked) | keep |
+| Look **id** | add the Look's definition, so a device without that Look still renders it |
+| Drawn guide | keep |
+| Guide opacity | move to device settings (a view preference) |
+| Embedded PNG thumbnail | fixed angle, only re-rendered when content changes |
+| (none) | add undo/redo history |
 
-Device preferences stay **out** of the file: left-handed mode, UI scale, pen and gesture
-settings, first-run hints. They belong to the person and the device, not the artwork. The
-file never holds absolute paths, screen pixels or DPI; everything is in world units, so a
-different screen just shows the same view at its own aspect ratio (fit by vertical FOV).
+Not in the file: camera, preset plane, current tool/brush/tray, export settings, and device
+preferences (left-handed mode, UI scale, pen and gesture settings, hints). The file never
+holds absolute paths, screen pixels or DPI.
 
 #### Container (format 4): sections
 
@@ -785,10 +784,9 @@ u32 Adler-32 of everything above
 
 | Id | Required | Contents |
 |---|---|---|
-| `META` | yes | TOML: app version, layers, brush snapshots (including ones only history uses), Look snapshot, guide |
+| `META` | yes | TOML: app version, content id, layers, brush snapshots (including ones only history uses), Look snapshot, guide |
 | `STRK` | yes | live strokes, point data (encoding below) |
 | `HIST` | no | undo + redo history (below) |
-| `WORK` | no | TOML workspace state (below) |
 
 - A reader **skips unknown optional sections** and refuses unknown required ones ("saved by a
   newer AirDraw"). Like PNG's critical/ancillary chunks.
@@ -797,15 +795,38 @@ u32 Adler-32 of everything above
 - Formats 1–3 are still read; saving writes format 4. Quick Look and Files thumbnails don't
   change, since the PNG stays at offset 8.
 
-#### Compression: `airdraw-pack` crate
+#### Compression: swappable codecs (`airdraw-pack` + one crate per codec)
 
-A new crate, independent of the document model, owns the container: section framing,
-codecs, checksums. `airdraw-doc` only says *what* goes in each section.
+`airdraw-pack` owns the container (section framing, checksums) and a **codec interface**; it
+depends on no compression library. Each codec is its own crate. `airdraw-doc` only says
+*what* goes in each section.
 
-- **Codec: zstd** (`zstd` crate, libzstd via `cc`; builds for iOS, Android, Windows ARM,
-  Linux and macOS). Level 3 for autosave (fast), 19 for "Save a copy". The codec byte allows
-  swapping later. Alternative if C is unwanted: pure-Rust `lz4_flex` (faster, ~1.5–2× worse
-  ratio) or `ruzstd`. **Recommendation: zstd.**
+```rust
+// airdraw-pack
+pub trait Codec: Send + Sync {
+    /// Stable id written in each section header. Never reused for a different algorithm.
+    fn id(&self) -> CodecId;
+    fn name(&self) -> &str;
+    fn compress(&self, raw: &[u8], level: Level) -> Result<Vec<u8>, PackError>;
+    /// `raw_len` comes from the section header; output longer than it is an error.
+    fn decompress(&self, stored: &[u8], raw_len: usize) -> Result<Vec<u8>, PackError>;
+}
+pub enum Level { Fast, Default, Max }          // each codec maps these to its own settings
+pub struct Codecs { /* registry by CodecId */ } // the app registers what it links in
+pub struct WriteOptions { pub codec: CodecId, pub level: Level }
+```
+
+- **Codec ids:** `0` stored (built into `airdraw-pack`), `1` zstd (`airdraw-codec-zstd`,
+  wrapping the `zstd` crate / libzstd). New codecs get new ids and crates; nothing else
+  changes.
+- **Reading never depends on the writer's choice:** every section names its codec, so a file
+  can mix codecs, and switching the default codec later keeps every old file readable as long
+  as the old codec crate stays linked. A file using a codec this build lacks gives a clear
+  error ("needs codec N, update the app").
+- `Level::Fast` for autosave, `Level::Max` for "Save a copy". Levels change only the size,
+  never the decoded bytes.
+- Tests run the container against the stored codec and a test codec, so the container is
+  proven independent of zstd; the zstd crate has its own round-trip and corruption tests.
 - **Point encoding before compression (lossless; exact round-trip stays a rule):**
   - Per stroke, store each channel as its own stream: x, y, z, pressure, tilt, time.
   - Floats: XOR each value with the previous one in its stream, then split the bytes into
@@ -830,46 +851,46 @@ codecs, checksums. `airdraw-doc` only says *what* goes in each section.
 - Loading history isn't an edit: the file opens clean, Undo enabled.
 - Brush snapshots used only by history are kept in `META` (saving now drops unused ones).
 
-#### Workspace state (`WORK`)
+#### Viewing must never change the file (audit 2026-10-27)
 
-TOML, readable and diffable:
+**Rule:** the file holds the artwork and the choices made about it, never how someone looked
+at it. No camera is saved (no home view either). A file that is only viewed is never
+rewritten.
 
-```toml
-[camera]      # orbit rig, world units
-target = [0.0, 0.2, 0.0]
-yaw = 0.6
-pitch = -0.45
-distance = 3.0
-fov = 50.0
-[guide]       # preset plane, when no drawn guide
-preset = "front"   # front | side | top | view
-origin = [0.0, 0.0, 0.0]
-normal = [0.0, 0.0, -1.0]
-[tools]
-tool = "draw"
-brush = 2            # brush snapshot index
-tray = [2, 0, 1, 3]  # brush snapshot indices, most recent first
-[export.last]
-format = "com.airdraw.glb"
-[export.settings."com.airdraw.glb"]
-scale = 1.0
-```
+Audit of everything a file holds or was planned to hold:
 
-- Brushes in the tray are **snapshots in the file**, so the tray works on a device that
-  doesn't have those brushes installed. The other device can "Add to my brushes".
-- **Look snapshot:** `META` embeds the Look's definition (as brushes are embedded), not just
-  its id. A device without that Look still renders it (built-in shader names; custom shader
-  code is post-v1).
-- Workspace changes (orbiting, picking a brush) **don't count as unsaved edits**: no "dirty"
-  prompt and no undo step. They are written whenever the file is saved or autosaved.
+| Item | Kind | Verdict |
+|---|---|---|
+| Strokes, layers (name, visible, locked), brush snapshots | content | keep |
+| Undo/redo history | content | keep (format 4) |
+| Drawn guide | content (construction geometry, undoable) | keep |
+| Look (+ planned snapshot of its definition) | authored appearance, changed on purpose | keep |
+| `app_version` | written only with a content save | keep |
+| Thumbnail | **rendered from the viewer's camera today**, on every save | keep, but render from a fixed angle (front-left-above, framing all strokes), only when content changed; excluded from the content hash (GPUs differ in a PNG's last bits) |
+| Guide opacity | **a view preference that dirties the file today** | move out: per-device setting |
+| Preset plane + offset | tool state | per-device, not in the file |
+| Camera, tool, brush, tray | view / tool state | not in the file (planned earlier; dropped) |
+| Last export settings | pipeline config | per-device for now; revisit with the export work (a team may want shared engine export settings, as an explicit choice) |
+
+**Bug found by the audit (today's app):** `save_current()` runs on open-another, + New, going
+home and quit **without checking dirty**, and re-renders the thumbnail from the current
+camera. So opening a file, orbiting and closing it rewrites it. Fix: save only when dirty;
+the thumbnail changes only with content.
+
+**Deterministic writer:** the same content always produces the same bytes: no timestamps,
+stable key and section order, fixed codec settings per level.
+
+**Content id and hash:** `META` holds a random id created with the sketch; per-device state
+(last camera, tool) can be keyed by it, outside the file. A content hash (BLAKE3 of the
+decompressed `META` + `STRK`, excluding thumbnail and history) tells "same model" even when
+history, thumbnail or codec differ.
 
 #### "Save a copy without history"
 
 - ⋯ menu → **Save a Copy Without History…** → system save/share sheet. Writes the same file
-  without `HIST`, so deleted strokes are gone for good. Workspace state is kept (it's what
-  makes the file useful to a teammate).
+  without `HIST`, so deleted strokes are gone for good.
 - `Document::to_bytes_with(SaveOptions { history: bool, level })`.
-- **Exports never carry history or workspace state:** OBJ, FBX, STL, GLB… are final outputs
+- **Exports never carry history:** OBJ, FBX, STL, GLB… are final outputs
   built from the live strokes only.
 
 #### Cross-device sameness
@@ -885,16 +906,16 @@ scale = 1.0
 
 | Step | Deliverable |
 |---|---|
-| 1 | `airdraw-pack`: section container, zstd codec, CRC-32, required/optional sections; tests for round-trip, unknown sections, corruption, truncation |
+| 0 | Fix today's bug: save only when dirty (open-another, + New, home, quit); no re-render of the thumbnail without a content change |
+| 1 | `airdraw-pack`: section container, `Codec` trait + registry, stored codec, CRC-32, required/optional sections; `airdraw-codec-zstd`; tests for round-trip, unknown sections and codecs, corruption, truncation, determinism |
 | 2 | Format 4 in `airdraw-doc` on top of it: point encoding (XOR + byte planes); formats 1–3 still read; large-sketch fixture + size/time benchmark (Mac and iPad); Quick Look still works |
-| 3 | `WORK`: camera, preset plane, tool, brush + tray, last export settings; Look snapshot in `META`; GDScript save/restore; not dirtying |
+| 3 | Look snapshot and content id in `META`; content hash; guide opacity moved to device settings; fixed-angle thumbnail; smoke test: open, orbit, close leaves the file byte-identical |
 | 4 | `HIST`: history encoding with a shared stroke pool, size cap, damaged history → open without it; smoke test (draw, delete, save, reopen, undo, redo) |
 | 5 | Save a Copy Without History (⋯ menu, system save/share) |
 
-**Open questions:**
-1. Is zstd (a C library) fine, or pure Rust only?
-2. History cap: larger of live size or 1 MB, at most 1000 steps?
-3. Should camera state open the same way for everyone, or only on the device that saved it? Proposed: everyone, since that's the point.
+**Decided (2026-10-27):** zstd, behind a swappable codec interface. No camera in the file at
+all, and viewing never rewrites a file.
+**Open:** history cap (larger of live size or 1 MB, at most 1000 steps?).
 
 ---
 
@@ -1373,7 +1394,7 @@ budget. Deferred until stage composition proves insufficient.
 | 3 | FBX                        | Own minimal binary FBX 7.4 writer (portable, no Autodesk SDK).      |
 | 4 | Engine cooker integration  | Direct C++ adapter over `AdExportScene`; FBX/GLB bytes path remains available as fallback. |
 | 5 | Exporter structure (2026-10-27) | Every exporter is its own crate (`airdraw-export-obj`, `-gltf`, `-fbx`, `-stl`, `-ply`, `-usd`, `-svg`; shared helpers such as the zip writer also separate), wrapping an existing library or handwritten. `airdraw-export` keeps only the scene IR, the `Exporter` trait and the registry. Today's formats are modules in one crate and get split when export work resumes. |
-| 6 | Exports and history (2026-10-27) | Exported files (OBJ, FBX, STL, GLB…) are final builds: no undo history, no workspace state. Only `.airdraw` carries them. |
+| 6 | Exports and history (2026-10-27) | Exported files (OBJ, FBX, STL, GLB…) are final builds: no undo history. Only `.airdraw` carries it. |
 
 ## 8. Current state (prototype)
 
