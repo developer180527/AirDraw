@@ -197,8 +197,13 @@ fn surface_arrays(a: &MeshBuffers, range: Range<usize>, b: Option<&MeshBuffers>,
     let v3 = |v: &glam::Vec3| Vector3::new(v.x, v.y, v.z);
     let extra = b.map_or(&[][..], |b| &b.positions[..]);
     let extra_normals = b.map_or(&[][..], |b| &b.normals[..]);
+    let extra_uvs = b.map_or(&[][..], |b| &b.uvs[..]);
+    let extra_tangents = b.map_or(&[][..], |b| &b.tangents[..]);
     let positions: PackedVector3Array = a.positions[range.clone()].iter().chain(extra).map(v3).collect();
     let normals: PackedVector3Array = a.normals[range.clone()].iter().chain(extra_normals).map(v3).collect();
+    let uvs: PackedVector2Array = a.uvs[range.clone()].iter().chain(extra_uvs).map(|u| Vector2::new(u.x, u.y)).collect();
+    // Godot packs a tangent as 4 floats: direction, then the bitangent sign (as glTF does).
+    let tangents: PackedFloat32Array = a.tangents[range.clone()].iter().chain(extra_tangents).flat_map(|t| t.to_array()).collect();
     let base = range.start as i32;
     // Brush meshes are counter-clockwise (the convention of every export format); Godot
     // treats clockwise as front-facing, so flip each triangle for display.
@@ -209,6 +214,8 @@ fn surface_arrays(a: &MeshBuffers, range: Range<usize>, b: Option<&MeshBuffers>,
     arrays.resize(ArrayType::MAX.ord() as usize, &Variant::nil());
     arrays.set(ArrayType::VERTEX.ord() as usize, &positions.to_variant());
     arrays.set(ArrayType::NORMAL.ord() as usize, &normals.to_variant());
+    arrays.set(ArrayType::TANGENT.ord() as usize, &tangents.to_variant());
+    arrays.set(ArrayType::TEX_UV.ord() as usize, &uvs.to_variant());
     arrays.set(ArrayType::INDEX.ord() as usize, &indices.to_variant());
     arrays
 }

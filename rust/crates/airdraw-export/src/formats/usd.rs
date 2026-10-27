@@ -135,6 +135,10 @@ pub fn usda(scene: &ExportScene) -> String {
             if m.normals.len() == m.positions.len() {
                 let _ = writeln!(s, "{pad}    normal3f[] normals = {} (\n{pad}        interpolation = \"vertex\"\n{pad}    )", vec3s(&m.normals));
             }
+            if m.uvs.len() == m.positions.len() {
+                let st: Vec<String> = m.uvs.iter().map(|u| format!("({}, {})", u.x, u.y)).collect();
+                let _ = writeln!(s, "{pad}    texCoord2f[] primvars:st = [{}] (\n{pad}        interpolation = \"vertex\"\n{pad}    )", st.join(", "));
+            }
             let _ = writeln!(s, "{pad}    uniform token subdivisionScheme = \"none\"");
             let _ = writeln!(s, "{pad}    rel material:binding = </Root/Materials/{}>", mats[m.material]);
         } else if let Some(ci) = n.curve {

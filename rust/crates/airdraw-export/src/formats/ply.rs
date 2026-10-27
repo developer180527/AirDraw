@@ -28,6 +28,8 @@ impl Exporter for Ply {
         let vertex_count: usize = scene.meshes.iter().map(|m| m.positions.len()).sum();
         let face_count: usize = scene.meshes.iter().map(|m| m.indices.len() / 3).sum();
         let ascii = opts.flag("ascii");
+        // Texture coordinates only when every mesh has them (one vertex layout per file).
+        let with_uv = scene.meshes.iter().all(|m| m.uvs.len() == m.positions.len());
         let mut header = String::from("ply\n");
         header += if ascii { "format ascii 1.0\n" } else { "format binary_little_endian 1.0\n" };
         let _ = writeln!(header, "comment {}", scene.meta.generator);
@@ -35,6 +37,9 @@ impl Exporter for Ply {
         header += "property float x\nproperty float y\nproperty float z\n";
         header += "property float nx\nproperty float ny\nproperty float nz\n";
         header += "property uchar red\nproperty uchar green\nproperty uchar blue\nproperty uchar alpha\n";
+        if with_uv {
+            header += "property float s\nproperty float t\n";
+        }
         let _ = writeln!(header, "element face {face_count}");
         header += "property list uchar uint vertex_indices\nend_header\n";
 
@@ -44,14 +49,23 @@ impl Exporter for Ply {
             let rgba = scene.materials[m.material].base_color.map(byte);
             for (i, p) in m.positions.iter().enumerate() {
                 let n = m.normals.get(i).copied().unwrap_or_default();
+                let uv = m.uvs.get(i).copied().unwrap_or_default();
                 if ascii {
-                    let line = format!("{} {} {} {} {} {} {} {} {} {}\n", p.x, p.y, p.z, n.x, n.y, n.z, rgba[0], rgba[1], rgba[2], rgba[3]);
+                    let mut line = format!("{} {} {} {} {} {} {} {} {} {}", p.x, p.y, p.z, n.x, n.y, n.z, rgba[0], rgba[1], rgba[2], rgba[3]);
+                    if with_uv {
+                        line += &format!(" {} {}", uv.x, uv.y);
+                    }
+                    line.push('\n');
                     b.extend_from_slice(line.as_bytes());
                 } else {
                     for c in [p.x, p.y, p.z, n.x, n.y, n.z] {
                         b.extend_from_slice(&c.to_le_bytes());
                     }
                     b.extend_from_slice(&rgba);
+                    if with_uv {
+                        b.extend_from_slice(&uv.x.to_le_bytes());
+                        b.extend_from_slice(&uv.y.to_le_bytes());
+                    }
                 }
             }
         }
@@ -102,7 +116,8 @@ mod tests {
         let header = std::str::from_utf8(&b[..end]).unwrap();
         assert!(header.contains(&format!("element vertex {verts}\n")));
         assert!(header.contains(&format!("element face {faces}\n")));
-        assert_eq!(b.len() - end, verts * (24 + 4) + faces * 13);
+        // Per vertex: position + normal (6 floats), RGBA, s + t (2 floats).
+        assert_eq!(b.len() - end, verts * (24 + 4 + 8) + faces * 13);
     }
 
     #[test]
@@ -112,7 +127,8 @@ mod tests {
         let body: Vec<&str> = text.split("end_header\n").nth(1).unwrap().lines().collect();
         let verts: usize = scene.meshes.iter().map(|m| m.positions.len()).sum();
         // Ink color #1E1E24 on the first vertex.
-        assert!(body[0].ends_with(" 30 30 36 255"), "{}", body[0]);
+        assert!(body[0].contains(" 30 30 36 255 "), "{}", body[0]);
+        assert_eq!(body[0].split(' ').count(), 12, "x y z nx ny nz r g b a s t");
         let max_index = body[verts..].iter().flat_map(|l| l.split(' ').skip(1).map(|v| v.parse::<usize>().unwrap())).max().unwrap();
         assert_eq!(max_index, verts - 1);
     }

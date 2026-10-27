@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use airdraw_brush::{Brush, MaterialDesc, ParamSpec, Params, Shading, params::ParamsExt};
 use airdraw_doc::{BrushRef, Document};
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec2, Vec3, Vec4};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UpAxis {
@@ -41,6 +41,11 @@ pub struct ExportMesh {
     pub name: String,
     pub positions: Vec<Vec3>,
     pub normals: Vec<Vec3>,
+    /// Per vertex; empty if the source has none. Strokes: `u` = distance along the stroke in
+    /// sketch units, `v` = 0..1 around the tube or across the ribbon.
+    pub uvs: Vec<Vec2>,
+    /// Per vertex, glTF convention (xyz along `u`, w = bitangent sign); empty if none.
+    pub tangents: Vec<Vec4>,
     pub indices: Vec<u32>,
     pub material: usize,
 }
@@ -184,6 +189,9 @@ pub fn build_scene(
                     name: stroke_name.clone(),
                     positions: built.positions.iter().map(|&p| opts.point(p)).collect(),
                     normals: built.normals.iter().map(|&n| opts.dir(n)).collect(),
+                    uvs: built.uvs.clone(),
+                    // The axis change is a rotation, so the handedness sign carries over.
+                    tangents: built.tangents.iter().map(|t| opts.dir(t.truncate()).extend(t.w)).collect(),
                     indices: built.indices.iter().map(|&i| i as u32).collect(),
                     material,
                 };
@@ -234,6 +242,8 @@ fn append(into: &mut ExportMesh, from: ExportMesh) {
     let offset = into.positions.len() as u32;
     into.positions.extend(from.positions);
     into.normals.extend(from.normals);
+    into.uvs.extend(from.uvs);
+    into.tangents.extend(from.tangents);
     into.indices.extend(from.indices.into_iter().map(|i| i + offset));
 }
 
@@ -312,6 +322,21 @@ pub(crate) mod tests {
         let single = build(&doc, &lib, &SceneOptions::default());
         assert_eq!(ink.positions.len(), single.meshes[0].positions.len() * 2);
         assert!(ink.indices.iter().all(|&i| (i as usize) < ink.positions.len()));
+    }
+
+    #[test]
+    fn uvs_and_tangents_follow_the_axis_change() {
+        let (doc, lib) = sample_doc();
+        for up in [UpAxis::Y, UpAxis::Z] {
+            let s = build(&doc, &lib, &SceneOptions { up, ..Default::default() });
+            for m in &s.meshes {
+                assert_eq!(m.uvs.len(), m.positions.len());
+                assert_eq!(m.tangents.len(), m.positions.len());
+                for (t, n) in m.tangents.iter().zip(&m.normals) {
+                    assert!(t.truncate().dot(*n).abs() < 1e-3, "tangent must stay perpendicular after {up:?}");
+                }
+            }
+        }
     }
 
     #[test]

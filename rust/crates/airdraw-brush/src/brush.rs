@@ -228,7 +228,8 @@ color = "#FF8800"
         let brush = Brush::compile(def, &StageRegistry::with_builtins()).unwrap();
         assert_eq!(brush.material().color[0], 1.0);
         let mesh = brush.build(&input(10));
-        assert_eq!(mesh.positions.len(), 10 * 6 + 2);
+        // Rings of 6 sides + a seam vertex, plus two cap centers.
+        assert_eq!(mesh.positions.len(), 10 * 7 + 2);
     }
 
     #[test]

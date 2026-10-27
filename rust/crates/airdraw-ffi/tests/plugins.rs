@@ -19,6 +19,8 @@ fn scene() -> ExportScene {
         name: format!("stroke_{x}"),
         positions: vec![Vec3::new(x, 0.0, 0.0), Vec3::new(x + 1.0, 0.0, 0.0), Vec3::new(x, 1.0, 0.0)],
         normals: vec![Vec3::Z; 3],
+        uvs: Vec::new(),
+        tangents: Vec::new(),
         indices: vec![0, 1, 2],
         material: 0,
     };

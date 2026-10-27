@@ -109,6 +109,14 @@ impl Buffers {
         self.accessors.len() - 1
     }
 
+    /// A float vertex attribute with `components` per vertex.
+    fn floats(&mut self, data: &[f32], components: usize, kind: &str) -> usize {
+        let bytes: Vec<u8> = data.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let view = self.view(&bytes, ARRAY_BUFFER);
+        self.accessors.push(json!({"bufferView": view, "componentType": FLOAT, "count": data.len() / components, "type": kind}));
+        self.accessors.len() - 1
+    }
+
     fn indices(&mut self, data: &[u32]) -> usize {
         let bytes: Vec<u8> = data.iter().flat_map(|i| i.to_le_bytes()).collect();
         let view = self.view(&bytes, ELEMENT_ARRAY_BUFFER);
@@ -163,6 +171,15 @@ fn build(scene: &ExportScene, opts: &Params, bin_uri: Option<&str>) -> (Value, V
             let mut attrs = json!({"POSITION": buf.vec3s(&m.positions, true)});
             if with_normals && m.normals.len() == m.positions.len() {
                 attrs["NORMAL"] = json!(buf.vec3s(&m.normals, false));
+                // glTF allows TANGENT only together with NORMAL.
+                if m.tangents.len() == m.positions.len() {
+                    let flat: Vec<f32> = m.tangents.iter().flat_map(|t| t.to_array()).collect();
+                    attrs["TANGENT"] = json!(buf.floats(&flat, 4, "VEC4"));
+                }
+            }
+            if m.uvs.len() == m.positions.len() {
+                let flat: Vec<f32> = m.uvs.iter().flat_map(|u| u.to_array()).collect();
+                attrs["TEXCOORD_0"] = json!(buf.floats(&flat, 2, "VEC2"));
             }
             let prim = json!({"attributes": attrs, "indices": buf.indices(&m.indices), "material": m.material, "mode": MODE_TRIANGLES});
             meshes.push(json!({"name": m.name, "primitives": [prim]}));
@@ -281,7 +298,12 @@ mod tests {
         }
         for acc in json["accessors"].as_array().into_iter().flatten() {
             let view = &json["bufferViews"][acc["bufferView"].as_u64().unwrap() as usize];
-            let comps = if acc["type"] == "VEC3" { 3 } else { 1 };
+            let comps = match acc["type"].as_str().unwrap() {
+                "VEC2" => 2,
+                "VEC3" => 3,
+                "VEC4" => 4,
+                _ => 1,
+            };
             let need = acc["count"].as_u64().unwrap() * comps * 4;
             assert_eq!(view["byteLength"].as_u64().unwrap(), need);
             assert_eq!(view["byteOffset"].as_u64().unwrap() % 4, 0);
@@ -296,6 +318,26 @@ mod tests {
         let mut sink = MemorySink::new("sketch");
         ExporterRegistry::with_builtins().export(id, &scene, &Params::new(), &mut sink).unwrap();
         sink
+    }
+
+    /// Stroke UVs (and tangents where the format has them) reach every mesh format.
+    #[test]
+    fn uvs_reach_every_format() {
+        let sink = export("com.airdraw.glb", &SceneOptions::default());
+        let json = check_glb(&sink.files["sketch.glb"]);
+        for mesh in json["meshes"].as_array().unwrap() {
+            let attrs = &mesh["primitives"][0]["attributes"];
+            let count = |key: &str| json["accessors"][attrs[key].as_u64().unwrap() as usize]["count"].as_u64().unwrap();
+            assert_eq!(count("TEXCOORD_0"), count("POSITION"));
+            assert_eq!(count("TANGENT"), count("POSITION"));
+        }
+        let text = |id: &str, file: &str| String::from_utf8_lossy(&export(id, &SceneOptions::default()).files[file]).into_owned();
+        let obj = text("com.airdraw.obj", "sketch.obj");
+        assert!(obj.lines().any(|l| l.starts_with("vt ")));
+        assert!(obj.lines().filter(|l| l.starts_with("f ")).all(|l| l.split_whitespace().skip(1).all(|c| c.split('/').count() == 3 && !c.contains("//"))));
+        assert!(text("com.airdraw.ply", "sketch.ply").contains("property float s\nproperty float t\n"));
+        assert!(text("com.airdraw.usda", "sketch.usda").contains("texCoord2f[] primvars:st"));
+        assert!(text("com.airdraw.fbx", "sketch.fbx").contains("LayerElementUV"));
     }
 
     #[test]

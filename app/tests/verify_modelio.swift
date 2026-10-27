@@ -10,11 +10,12 @@ for path in CommandLine.arguments.dropFirst() {
         continue
     }
     let asset = MDLAsset(url: url)
-    var meshes = 0, vertices = 0, triangles = 0, materials = Set<String>()
+    var meshes = 0, vertices = 0, triangles = 0, withUV = 0, materials = Set<String>()
     func walk(_ o: MDLObject) {
         if let m = o as? MDLMesh {
             meshes += 1
             vertices += m.vertexCount
+            if m.vertexAttributeData(forAttributeNamed: MDLVertexAttributeTextureCoordinate) != nil { withUV += 1 }
             for case let sub as MDLSubmesh in m.submeshes ?? [] {
                 triangles += sub.indexCount / 3
                 if let mat = sub.material { materials.insert(mat.name) }
@@ -23,5 +24,5 @@ for path in CommandLine.arguments.dropFirst() {
         for child in o.children.objects { walk(child) }
     }
     for i in 0..<asset.count { walk(asset.object(at: i)) }
-    print("VERIFY \(url.lastPathComponent): meshes=\(meshes) vertices=\(vertices) triangles=\(triangles) materials=\(materials.count)")
+    print("VERIFY \(url.lastPathComponent): meshes=\(meshes) vertices=\(vertices) triangles=\(triangles) with_uv=\(withUV) materials=\(materials.count)")
 }

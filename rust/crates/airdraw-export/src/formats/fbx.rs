@@ -289,34 +289,52 @@ pub fn write_fbx(scene: &ExportScene) -> Vec<u8> {
                     [nrm.x as f64, nrm.y as f64, nrm.z as f64]
                 })
                 .collect();
-            objects.children.push(
-                n("Geometry")
-                    .p(geom)
-                    .p(object_name(&m.name, "Geometry"))
-                    .p("Mesh")
-                    .c(Node::leaf("Vertices", Prop::ArrF64(vertices)))
-                    .c(Node::leaf("PolygonVertexIndex", Prop::ArrI32(polygons)))
-                    .c(Node::leaf("GeometryVersion", 124))
-                    .c(n("LayerElementNormal")
-                        .p(0)
-                        .c(Node::leaf("Version", 101))
-                        .c(Node::leaf("Name", ""))
-                        .c(Node::leaf("MappingInformationType", "ByPolygonVertex"))
-                        .c(Node::leaf("ReferenceInformationType", "Direct"))
-                        .c(Node::leaf("Normals", Prop::ArrF64(normals))))
-                    .c(n("LayerElementMaterial")
-                        .p(0)
-                        .c(Node::leaf("Version", 101))
-                        .c(Node::leaf("Name", ""))
-                        .c(Node::leaf("MappingInformationType", "AllSame"))
-                        .c(Node::leaf("ReferenceInformationType", "IndexToDirect"))
-                        .c(Node::leaf("Materials", Prop::ArrI32(vec![0]))))
-                    .c(n("Layer")
-                        .p(0)
-                        .c(Node::leaf("Version", 100))
-                        .c(n("LayerElement").c(Node::leaf("Type", "LayerElementNormal")).c(Node::leaf("TypedIndex", 0)))
-                        .c(n("LayerElement").c(Node::leaf("Type", "LayerElementMaterial")).c(Node::leaf("TypedIndex", 0)))),
-            );
+            let with_uv = m.uvs.len() == m.positions.len();
+            let mut geometry = n("Geometry")
+                .p(geom)
+                .p(object_name(&m.name, "Geometry"))
+                .p("Mesh")
+                .c(Node::leaf("Vertices", Prop::ArrF64(vertices)))
+                .c(Node::leaf("PolygonVertexIndex", Prop::ArrI32(polygons)))
+                .c(Node::leaf("GeometryVersion", 124))
+                .c(n("LayerElementNormal")
+                    .p(0)
+                    .c(Node::leaf("Version", 101))
+                    .c(Node::leaf("Name", ""))
+                    .c(Node::leaf("MappingInformationType", "ByPolygonVertex"))
+                    .c(Node::leaf("ReferenceInformationType", "Direct"))
+                    .c(Node::leaf("Normals", Prop::ArrF64(normals))));
+            if with_uv {
+                // One UV per vertex, looked up per polygon corner.
+                let uv: Vec<f64> = m.uvs.iter().flat_map(|u| [u.x as f64, u.y as f64]).collect();
+                let uv_index: Vec<i32> = m.indices.iter().map(|&i| i as i32).collect();
+                geometry = geometry.c(n("LayerElementUV")
+                    .p(0)
+                    .c(Node::leaf("Version", 101))
+                    .c(Node::leaf("Name", "UVMap"))
+                    .c(Node::leaf("MappingInformationType", "ByPolygonVertex"))
+                    .c(Node::leaf("ReferenceInformationType", "IndexToDirect"))
+                    .c(Node::leaf("UV", Prop::ArrF64(uv)))
+                    .c(Node::leaf("UVIndex", Prop::ArrI32(uv_index))));
+            }
+            let mut layer = n("Layer")
+                .p(0)
+                .c(Node::leaf("Version", 100))
+                .c(n("LayerElement").c(Node::leaf("Type", "LayerElementNormal")).c(Node::leaf("TypedIndex", 0)))
+                .c(n("LayerElement").c(Node::leaf("Type", "LayerElementMaterial")).c(Node::leaf("TypedIndex", 0)));
+            if with_uv {
+                layer = layer.c(n("LayerElement").c(Node::leaf("Type", "LayerElementUV")).c(Node::leaf("TypedIndex", 0)));
+            }
+            geometry = geometry
+                .c(n("LayerElementMaterial")
+                    .p(0)
+                    .c(Node::leaf("Version", 101))
+                    .c(Node::leaf("Name", ""))
+                    .c(Node::leaf("MappingInformationType", "AllSame"))
+                    .c(Node::leaf("ReferenceInformationType", "IndexToDirect"))
+                    .c(Node::leaf("Materials", Prop::ArrI32(vec![0]))))
+                .c(layer);
+            objects.children.push(geometry);
             connections.children.push(connect(geom, model));
             connections.children.push(connect(material_ids[m.material], model));
         }

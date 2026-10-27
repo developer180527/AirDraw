@@ -36,7 +36,7 @@ impl Exporter for Obj {
             let _ = writeln!(obj, "mtllib {stem}.mtl");
         }
         // OBJ indices are 1-based and global across the file.
-        let (mut v_base, mut vn_base) = (1u32, 1u32);
+        let (mut v_base, mut vn_base, mut vt_base) = (1u32, 1u32, 1u32);
         for node in &scene.nodes {
             if let Some(mi) = node.mesh {
                 let m = &scene.meshes[mi];
@@ -50,13 +50,25 @@ impl Exporter for Obj {
                 for n in &m.normals {
                     let _ = writeln!(obj, "vn {:.4} {:.4} {:.4}", n.x, n.y, n.z);
                 }
+                let with_uv = m.uvs.len() == m.positions.len();
+                if with_uv {
+                    for t in &m.uvs {
+                        let _ = writeln!(obj, "vt {:.5} {:.5}", t.x, t.y);
+                    }
+                }
                 for tri in m.indices.chunks_exact(3) {
                     let [a, b, c] = [tri[0] + v_base, tri[1] + v_base, tri[2] + v_base];
                     let [na, nb, nc] = [tri[0] + vn_base, tri[1] + vn_base, tri[2] + vn_base];
-                    let _ = writeln!(obj, "f {a}//{na} {b}//{nb} {c}//{nc}");
+                    if with_uv {
+                        let [ta, tb, tc] = [tri[0] + vt_base, tri[1] + vt_base, tri[2] + vt_base];
+                        let _ = writeln!(obj, "f {a}/{ta}/{na} {b}/{tb}/{nb} {c}/{tc}/{nc}");
+                    } else {
+                        let _ = writeln!(obj, "f {a}//{na} {b}//{nb} {c}//{nc}");
+                    }
                 }
                 v_base += m.positions.len() as u32;
                 vn_base += m.normals.len() as u32;
+                vt_base += if with_uv { m.uvs.len() as u32 } else { 0 };
             }
             if let Some(ci) = node.curve {
                 let c = &scene.curves[ci];
@@ -119,10 +131,19 @@ mod tests {
         let max_index = obj
             .lines()
             .filter(|l| l.starts_with("f "))
-            .flat_map(|l| l[2..].split(' ').map(|c| c.split("//").next().unwrap().parse::<u32>().unwrap()))
+            .flat_map(|l| l[2..].split(' ').map(|c| c.split('/').next().unwrap().parse::<u32>().unwrap()))
             .max()
             .unwrap();
         assert_eq!(max_index, verts);
+        // Faces are v/vt/vn and every texture index exists.
+        let uvs = obj.lines().filter(|l| l.starts_with("vt ")).count() as u32;
+        let max_uv = obj
+            .lines()
+            .filter(|l| l.starts_with("f "))
+            .flat_map(|l| l[2..].split(' ').map(|c| c.split('/').nth(1).unwrap().parse::<u32>().unwrap()))
+            .max()
+            .unwrap();
+        assert_eq!(max_uv, uvs);
         assert_eq!(obj.lines().filter(|l| l.starts_with("o ")).count(), 3);
         assert!(obj.contains("mtllib sketch.mtl"));
         assert_eq!(mtl.matches("newmtl ").count(), 2);

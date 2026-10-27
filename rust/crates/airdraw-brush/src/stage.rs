@@ -1,7 +1,7 @@
 //! Stroke data and the four stage kinds a brush is built from:
 //! input points → [Filter]s → [Dynamics] → [Geometry] → mesh, plus a [Material].
 
-use glam::Vec3;
+use glam::{Vec2, Vec3, Vec4};
 
 use crate::params::{ParamSpec, Params};
 use crate::stream::{MeshStream, PointStream};
@@ -46,6 +46,12 @@ impl From<&InputPoint> for StrokePoint {
 pub struct MeshBuffers {
     pub positions: Vec<Vec3>,
     pub normals: Vec<Vec3>,
+    /// Texture coordinates. Strokes: `u` = distance along the stroke (world units), `v` = 0..1
+    /// around the tube or across the ribbon; dots use spherical coordinates.
+    pub uvs: Vec<Vec2>,
+    /// Unit tangent (direction of increasing `u`) and handedness: bitangent =
+    /// `cross(normal, tangent.xyz) * tangent.w` (the glTF and Godot convention).
+    pub tangents: Vec<Vec4>,
     pub indices: Vec<i32>,
 }
 
@@ -53,6 +59,37 @@ impl MeshBuffers {
     pub fn is_empty(&self) -> bool {
         self.indices.is_empty()
     }
+
+    /// Appends a vertex with all its attributes.
+    pub fn push(&mut self, position: Vec3, normal: Vec3, uv: Vec2, tangent: Vec4) {
+        self.positions.push(position);
+        self.normals.push(normal);
+        self.uvs.push(uv);
+        self.tangents.push(tangent);
+    }
+
+    pub fn reserve(&mut self, vertices: usize, indices: usize) {
+        self.positions.reserve(vertices);
+        self.normals.reserve(vertices);
+        self.uvs.reserve(vertices);
+        self.tangents.reserve(vertices);
+        self.indices.reserve(indices);
+    }
+
+    /// Appends `other`, whose indices already count this mesh's vertices.
+    pub fn append(&mut self, other: MeshBuffers) {
+        self.positions.extend(other.positions);
+        self.normals.extend(other.normals);
+        self.uvs.extend(other.uvs);
+        self.tangents.extend(other.tangents);
+        self.indices.extend(other.indices);
+    }
+}
+
+/// A tangent with its handedness: `t` points along increasing `u`, `dpdv` along increasing `v`.
+pub fn tangent_with_sign(t: Vec3, normal: Vec3, dpdv: Vec3) -> Vec4 {
+    let w = if normal.cross(t).dot(dpdv) >= 0.0 { 1.0 } else { -1.0 };
+    t.extend(w)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

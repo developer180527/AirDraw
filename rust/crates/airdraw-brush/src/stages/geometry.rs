@@ -1,7 +1,7 @@
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 
 use crate::params::{ParamSpec, Params, ParamsExt};
-use crate::stage::{Geometry, MeshBuffers, Stage, StrokePoint};
+use crate::stage::{Geometry, MeshBuffers, Stage, StrokePoint, tangent_with_sign};
 use crate::stream::MeshStream;
 
 /// Tangent at each point, from its neighbours.
@@ -18,14 +18,6 @@ fn tangent(a: Vec3, b: Vec3) -> Vec3 {
 /// Point `i` of a stroke split into committed points and a provisional tail.
 fn point_at(committed: &[StrokePoint], tail: &[StrokePoint], i: usize) -> StrokePoint {
     if i < committed.len() { committed[i] } else { tail[i - committed.len()] }
-}
-
-/// Appends finish output (whose indices already count the committed vertices) to the
-/// committed mesh: a stream's commit + finish as one build.
-fn append(m: &mut MeshBuffers, rest: MeshBuffers) {
-    m.positions.extend(rest.positions);
-    m.normals.extend(rest.normals);
-    m.indices.extend(rest.indices);
 }
 
 /// Round tube around the stroke, radius = width / 2, with flat end caps.
@@ -48,7 +40,7 @@ impl Geometry for Tube {
         s.commit(pts, m);
         let mut rest = MeshBuffers::default();
         s.finish(&[], &mut rest);
-        append(m, rest);
+        m.append(rest);
     }
 
     fn stream(&self, p: &Params) -> Option<Box<dyn MeshStream>> {
@@ -61,7 +53,8 @@ impl Geometry for Tube {
 struct TubeStream {
     sides: usize,
     caps: bool,
-    /// Cosine and sine of each vertex angle around a ring.
+    /// Cosine and sine of each vertex angle around a ring, `sides + 1` of them: the last
+    /// repeats the first exactly, a seam vertex with `v` = 1 so textures wrap cleanly.
     angles: Vec<(f32, f32)>,
     /// Committed points from `next - 1` on (all a ring still needs), oldest first.
     window: Vec<StrokePoint>,
@@ -86,12 +79,13 @@ struct TubeFrame {
 impl TubeStream {
     fn new(p: &Params) -> Self {
         let sides = p.int("sides").max(3) as usize;
-        let angles = (0..sides)
+        let mut angles: Vec<(f32, f32)> = (0..sides)
             .map(|j| {
                 let a = j as f32 / sides as f32 * std::f32::consts::TAU;
                 (a.cos(), a.sin())
             })
             .collect();
+        angles.push(angles[0]);
         Self {
             sides,
             caps: p.flag("caps"),
@@ -114,32 +108,33 @@ impl TubeStream {
         let binormal = t.cross(frame.normal);
         let r = pt.width * 0.5;
         let base = offset + out.positions.len() as i32;
-        for &(cos, sin) in &self.angles {
+        // Around the ring, `v` grows toward the binormal at angle 0: one handedness per ring.
+        let tangent = tangent_with_sign(t, frame.normal, binormal);
+        for (j, &(cos, sin)) in self.angles.iter().enumerate() {
             let dir = frame.normal * cos + binormal * sin;
-            out.positions.push(pt.pos + dir * r);
-            out.normals.push(dir);
+            let v = j as f32 / self.sides as f32;
+            out.push(pt.pos + dir * r, dir, Vec2::new(pt.dist, v), tangent);
         }
         let s = self.sides as i32;
         if i > 0 {
             for j in 0..s {
-                let (a, b) = (frame.last_ring + j, frame.last_ring + (j + 1) % s);
-                let (c, d) = (base + j, base + (j + 1) % s);
+                let (a, b) = (frame.last_ring + j, frame.last_ring + j + 1);
+                let (c, d) = (base + j, base + j + 1);
                 out.indices.extend_from_slice(&[a, b, c, b, d, c]);
             }
         } else if self.caps {
-            self.cap(base, pt.pos, -t, false, out, offset);
+            self.cap(base, pt, -t, frame.normal, false, out, offset);
         }
         frame.last_ring = base;
     }
 
-    /// A fan closing the ring that starts at index `ring`.
-    fn cap(&self, ring: i32, center: Vec3, dir: Vec3, end: bool, out: &mut MeshBuffers, offset: i32) {
+    /// A fan closing the ring that starts at index `ring`, around a center vertex at `pt`.
+    #[allow(clippy::too_many_arguments)]
+    fn cap(&self, ring: i32, pt: &StrokePoint, dir: Vec3, across: Vec3, end: bool, out: &mut MeshBuffers, offset: i32) {
         let c = offset + out.positions.len() as i32;
-        out.positions.push(center);
-        out.normals.push(dir);
-        let s = self.sides as i32;
-        for j in 0..s {
-            let (a, b) = (ring + j, ring + (j + 1) % s);
+        out.push(pt.pos, dir, Vec2::new(pt.dist, 0.5), across.extend(1.0));
+        for j in 0..self.sides as i32 {
+            let (a, b) = (ring + j, ring + j + 1);
             out.indices.extend_from_slice(&if end { [c, a, b] } else { [c, b, a] });
         }
     }
@@ -147,10 +142,7 @@ impl TubeStream {
 
 impl MeshStream for TubeStream {
     fn commit(&mut self, input: &[StrokePoint], out: &mut MeshBuffers) {
-        let rings = input.len() * self.sides;
-        out.positions.reserve(rings);
-        out.normals.reserve(rings);
-        out.indices.reserve(rings * 6);
+        out.reserve(input.len() * (self.sides + 1), input.len() * self.sides * 6);
         // Indices below are relative to `window[0]`; the window is followed by `input`.
         let n = self.window.len() + input.len();
         let at = |i: usize| point_at(&self.window, input, i);
@@ -180,7 +172,7 @@ impl MeshStream for TubeStream {
             self.ring(&mut frame, self.start + i, &at(i), t, out, self.committed);
         }
         if self.caps {
-            self.cap(frame.last_ring, at(n - 1).pos, t, true, out, self.committed);
+            self.cap(frame.last_ring, &at(n - 1), t, frame.normal, true, out, self.committed);
         }
     }
 }
@@ -202,12 +194,7 @@ impl Geometry for Ribbon {
         let lift = p.float("lift");
         let base = m.positions.len() as i32;
         for (pt, t) in pts.iter().zip(tangents(pts)) {
-            let normal = pt.normal.try_normalize().unwrap_or(Vec3::Y);
-            let side = t.cross(normal).try_normalize().unwrap_or_else(|| t.any_orthonormal_vector());
-            let center = pt.pos + normal * lift;
-            let half = side * pt.width * 0.5;
-            m.positions.extend_from_slice(&[center - half, center + half]);
-            m.normals.extend_from_slice(&[normal, normal]);
+            ribbon_pair(m, pt, t, lift);
         }
         for i in 0..pts.len() as i32 - 1 {
             let a = base + i * 2;
@@ -235,15 +222,22 @@ struct RibbonStream {
     committed: i32,
 }
 
+/// The two vertices across the ribbon at `pt` (`v` = 0 on one edge, 1 on the other).
+fn ribbon_pair(m: &mut MeshBuffers, pt: &StrokePoint, t: Vec3, lift: f32) {
+    let normal = pt.normal.try_normalize().unwrap_or(Vec3::Y);
+    let side = t.cross(normal).try_normalize().unwrap_or_else(|| t.any_orthonormal_vector());
+    let center = pt.pos + normal * lift;
+    let half = side * pt.width * 0.5;
+    // The stroke direction within the surface (the stroke may climb out of the surface's plane).
+    let tangent = tangent_with_sign(normal.cross(side), normal, side);
+    m.push(center - half, normal, Vec2::new(pt.dist, 0.0), tangent);
+    m.push(center + half, normal, Vec2::new(pt.dist, 1.0), tangent);
+}
+
 impl RibbonStream {
     fn pair(&self, last_pair: &mut i32, i: usize, pt: &StrokePoint, t: Vec3, out: &mut MeshBuffers, offset: i32) {
-        let normal = pt.normal.try_normalize().unwrap_or(Vec3::Y);
-        let side = t.cross(normal).try_normalize().unwrap_or_else(|| t.any_orthonormal_vector());
-        let center = pt.pos + normal * self.lift;
-        let half = side * pt.width * 0.5;
         let base = offset + out.positions.len() as i32;
-        out.positions.extend_from_slice(&[center - half, center + half]);
-        out.normals.extend_from_slice(&[normal, normal]);
+        ribbon_pair(out, pt, t, self.lift);
         if i > 0 {
             let a = *last_pair;
             out.indices.extend_from_slice(&[a, a + 1, base, a + 1, base + 1, base]);
@@ -254,9 +248,7 @@ impl RibbonStream {
 
 impl MeshStream for RibbonStream {
     fn commit(&mut self, input: &[StrokePoint], out: &mut MeshBuffers) {
-        out.positions.reserve(input.len() * 2);
-        out.normals.reserve(input.len() * 2);
-        out.indices.reserve(input.len() * 6);
+        out.reserve(input.len() * 2, input.len() * 6);
         // Indices below are relative to `window[0]`; the window is followed by `input`.
         let n = self.window.len() + input.len();
         let at = |i: usize| point_at(&self.window, input, i);
@@ -401,24 +393,29 @@ impl MeshStream for DotsStream {
     }
 }
 
+/// A UV sphere with a seam column (`segments + 1` vertices per ring) so `u` wraps cleanly:
+/// `u` = 0..1 around, `v` = 0..1 from top to bottom.
 fn sphere(m: &mut MeshBuffers, center: Vec3, r: f32, segments: usize, offset: i32) {
     let rings = (segments / 2).max(2);
     let base = offset + m.positions.len() as i32;
     for i in 0..=rings {
         let phi = std::f32::consts::PI * i as f32 / rings as f32;
-        for j in 0..segments {
-            let theta = std::f32::consts::TAU * j as f32 / segments as f32;
+        for j in 0..=segments {
+            // The seam column reuses column 0's angle exactly, so positions match.
+            let theta = std::f32::consts::TAU * (j % segments) as f32 / segments as f32;
             let dir = Vec3::new(phi.sin() * theta.cos(), phi.cos(), phi.sin() * theta.sin());
-            m.positions.push(center + dir * r);
-            m.normals.push(dir);
+            let along = Vec3::new(-theta.sin(), 0.0, theta.cos());
+            let down = Vec3::new(phi.cos() * theta.cos(), -phi.sin(), phi.cos() * theta.sin());
+            let uv = Vec2::new(j as f32 / segments as f32, i as f32 / rings as f32);
+            m.push(center + dir * r, dir, uv, tangent_with_sign(along, dir, down));
         }
     }
-    let s = segments as i32;
+    let w = segments as i32 + 1;
     for i in 0..rings as i32 {
-        for j in 0..s {
-            let a = base + i * s + j;
-            let b = base + i * s + (j + 1) % s;
-            m.indices.extend_from_slice(&[a, b, a + s, b, b + s, a + s]);
+        for j in 0..segments as i32 {
+            let a = base + i * w + j;
+            let b = a + 1;
+            m.indices.extend_from_slice(&[a, b, a + w, b, b + w, a + w]);
         }
     }
 }
@@ -480,14 +477,93 @@ mod tests {
     }
 
     fn valid(m: &MeshBuffers) -> bool {
-        !m.is_empty() && m.positions.len() == m.normals.len() && m.indices.iter().all(|&i| (i as usize) < m.positions.len())
+        let n = m.positions.len();
+        !m.is_empty()
+            && m.normals.len() == n
+            && m.uvs.len() == n
+            && m.tangents.len() == n
+            && m.indices.iter().all(|&i| (i as usize) < n)
+    }
+
+    /// A gently curving stroke with growing distance and varying width.
+    fn curve(n: usize) -> Vec<StrokePoint> {
+        let mut dist = 0.0;
+        let mut prev: Option<Vec3> = None;
+        (0..n)
+            .map(|i| {
+                let mut p = line(1)[0];
+                let a = i as f32 * 0.2;
+                p.pos = Vec3::new(a.cos() * (1.0 + a * 0.1), (a * 0.7).sin() * 0.3, a.sin());
+                dist += prev.map_or(0.0, |q| q.distance(p.pos));
+                prev = Some(p.pos);
+                p.dist = dist;
+                p.width = 0.05 + 0.02 * (a * 3.0).sin();
+                p
+            })
+            .collect()
+    }
+
+    /// Tangents are unit length, perpendicular to the normal, with handedness ±1, and on every
+    /// triangle they agree with the direction the UVs actually run (what normal maps need).
+    #[test]
+    fn uvs_and_tangents_match_the_surface() {
+        let mut dots = defaults(Dots.schema());
+        dots.insert("spacing".into(), crate::params::ParamValue::Float(0.2));
+        for (name, g, p) in [("tube", &Tube as &dyn Geometry, defaults(Tube.schema())), ("ribbon", &Ribbon, defaults(Ribbon.schema())), ("dots", &Dots, dots)] {
+            let mut m = MeshBuffers::default();
+            g.build(&curve(40), &p, &mut m);
+            assert!(valid(&m), "{name}");
+            for (t, n) in m.tangents.iter().zip(&m.normals) {
+                assert!((t.truncate().length() - 1.0).abs() < 1e-3, "{name}: tangent not unit {t}");
+                assert!(t.truncate().dot(*n).abs() < 1e-3, "{name}: tangent not perpendicular to normal");
+                assert!(t.w == 1.0 || t.w == -1.0, "{name}: handedness {}", t.w);
+            }
+            let (mut checked, mut agree) = (0, 0);
+            for tri in m.indices.as_chunks::<3>().0 {
+                let [a, b, c] = tri.map(|i| i as usize);
+                let (e1, e2) = (m.positions[b] - m.positions[a], m.positions[c] - m.positions[a]);
+                let (d1, d2) = (m.uvs[b] - m.uvs[a], m.uvs[c] - m.uvs[a]);
+                let det = d1.x * d2.y - d2.x * d1.y;
+                if det.abs() < 1e-6 || e1.cross(e2).length() < 1e-9 {
+                    continue; // caps: no UV area; sphere poles: no surface area
+                }
+                let dpdu = (e1 * d2.y - e2 * d1.y) / det;
+                let dpdv = (e2 * d1.x - e1 * d2.x) / det;
+                let t = m.tangents[a];
+                let bitangent = m.normals[a].cross(t.truncate()) * t.w;
+                checked += 1;
+                if dpdu.dot(t.truncate()) > 0.0 && dpdv.dot(bitangent) > 0.0 {
+                    agree += 1;
+                }
+            }
+            assert!(checked > 20, "{name}: only {checked} triangles with UV area");
+            // A few triangles at tight spots may disagree by numerics; the convention must hold.
+            assert!(agree * 100 >= checked * 98, "{name}: tangent frame matches UVs on {agree}/{checked} triangles");
+        }
+    }
+
+    #[test]
+    fn tube_u_is_distance_and_seam_closes() {
+        let pts = curve(10);
+        let mut m = MeshBuffers::default();
+        Tube.build(&pts, &defaults(Tube.schema()), &mut m);
+        // Ring 0 (9 vertices: 8 sides + seam), then the start cap center, then ring 1...
+        let ring = |i: usize| if i == 0 { 0 } else { 9 + 1 + (i - 1) * 9 };
+        for (i, p) in pts.iter().enumerate() {
+            let r = ring(i);
+            assert_eq!(m.uvs[r].x, p.dist);
+            assert_eq!((m.uvs[r].y, m.uvs[r + 8].y), (0.0, 1.0));
+            assert_eq!(m.positions[r + 8], m.positions[r], "seam vertex sits on the first one");
+            assert_eq!(m.normals[r + 8], m.normals[r]);
+        }
     }
 
     #[test]
     fn tube_counts() {
         let mut m = MeshBuffers::default();
         Tube.build(&line(3), &defaults(Tube.schema()), &mut m);
-        assert_eq!(m.positions.len(), 3 * 8 + 2);
+        // 8 sides + a seam vertex per ring, plus two cap centers.
+        assert_eq!(m.positions.len(), 3 * 9 + 2);
         assert_eq!(m.indices.len(), 2 * 8 * 6 + 2 * 8 * 3);
         assert!(valid(&m));
     }
@@ -508,7 +584,7 @@ mod tests {
         params.insert("spacing".into(), crate::params::ParamValue::Float(0.1));
         Dots.build(&line(11), &params, &mut m);
         assert!(valid(&m));
-        let per_dot = (6 / 2 + 1) * 6;
+        let per_dot = (6 / 2 + 1) * (6 + 1);
         assert_eq!(m.positions.len() / per_dot, 11);
     }
 }

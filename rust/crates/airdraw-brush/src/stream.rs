@@ -89,14 +89,14 @@ impl BrushStream {
     /// The whole mesh if the stroke ended after `tail`: committed geometry plus [`preview`](Self::preview).
     pub fn mesh(&self, tail: &[InputPoint]) -> MeshBuffers {
         let mut out = self.committed_mesh.clone();
-        append(&mut out, self.preview(tail));
+        out.append(self.preview(tail));
         out
     }
 
     /// [`mesh`](Self::mesh) for a stroke that's done, without copying the committed geometry.
     pub fn into_mesh(mut self, tail: &[InputPoint]) -> MeshBuffers {
         let preview = self.preview(tail);
-        append(&mut self.committed_mesh, preview);
+        self.committed_mesh.append(preview);
         self.committed_mesh
     }
 
@@ -228,13 +228,6 @@ impl MeshStream for BatchGeometry {
     fn finish(&self, tail: &[StrokePoint], out: &mut MeshBuffers) {
         self.stage.build(&held_and(&self.held, tail), &self.params, out);
     }
-}
-
-/// Appends `rest`, whose indices already count `m`'s vertices.
-fn append(m: &mut MeshBuffers, rest: MeshBuffers) {
-    m.positions.extend(rest.positions);
-    m.normals.extend(rest.normals);
-    m.indices.extend(rest.indices);
 }
 
 fn held_and(held: &[StrokePoint], tail: &[StrokePoint]) -> Vec<StrokePoint> {
