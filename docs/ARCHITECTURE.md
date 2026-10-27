@@ -872,8 +872,11 @@ Mac (M4 Pro), real sketches copied off the iPad:
 - **Times, 1M points** (sample strokes tiled with per-point jitter so no copy repeats; this
   compresses worse than real data, 2.1×, so it's a pessimistic workload), median of 5:
   save format 3 12 ms, **format 4 fast (autosave) 28 ms**, format 4 max 1.2 s, open
-  format 3 17 ms, **open format 4 15 ms**. Well under the 50 ms autosave budget on the Mac;
-  iPad numbers: run `BENCH=file-format scripts/bench_ipad.sh`.
+  format 3 17 ms, **open format 4 15 ms**.
+- **iPad (M5)**, its own sketches, same table: sizes identical; 1M points: save format 3
+  12 ms, **format 4 fast 25 ms**, max 0.9 s, open format 3 16 ms, **open format 4 15 ms**.
+  Autosave is well under the 50 ms budget on both. An empty sketch grows from 125 to 171
+  bytes (section headers), which doesn't matter.
 
 #### Undo history (`HIST`)
 

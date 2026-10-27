@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BENCH="${BENCH:-live-stroke}"
 case "$BENCH" in
   live-stroke) RESULTS="live_stroke_bench.csv live_stroke_bench.txt"; WAIT=90 ;;
-  file-format) RESULTS="file_format_bench.txt"; WAIT=60 ;;
+  file-format) RESULTS="file_format_bench.txt"; WAIT=30 ;;
   *) echo "Unknown BENCH '$BENCH' (live-stroke, file-format)" >&2; exit 1 ;;
 esac
 GODOT="$ROOT/engine/godot/bin/godot.macos.editor.arm64"
@@ -22,7 +22,9 @@ DEVICE="${1:-$(xcrun devicectl list devices 2>/dev/null | awk '/iPad/ && (/avail
 PRESETS="$ROOT/app/export_presets.cfg"
 cp "$PRESETS" "$PRESETS.bench-backup"
 trap 'mv "$PRESETS.bench-backup" "$PRESETS"' EXIT
-sed -i '' 's|^exclude_filter="tests/\*"|exclude_filter=""|' "$PRESETS"
+# Drop tests/* from the exclude filter, whatever else it lists (icons, …).
+sed -i '' -E '/^exclude_filter=/ s#tests/\*(, *)?##' "$PRESETS"
+grep -q '^exclude_filter=.*tests/' "$PRESETS" && { echo "Couldn't include tests/ in the export" >&2; exit 1; }
 
 "$ROOT/scripts/build_ios_core.sh"
 mkdir -p "$ROOT/build/ios"
@@ -34,7 +36,17 @@ xcrun devicectl device install app --device "$DEVICE" "$ROOT/build/ios/AirDrawBe
 xcrun devicectl device process launch --terminate-existing --device "$DEVICE" \
   com.venugopal.airdraw ++ "bench-$BENCH" ${LOOK:+look "$LOOK"} >/dev/null
 echo "Benchmark '$BENCH' running on the iPad (keep it unlocked)..."
+# The summary file is written last; wait for it (up to 5 minutes) instead of a fixed time.
+DONE="${RESULTS##* }"
 sleep "$WAIT"
+tries=0
+until xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataContainer \
+    --domain-identifier com.venugopal.airdraw --source "Library/Application Support/$DONE" \
+    --destination "$ROOT/build/ios/$DONE" >/dev/null 2>&1; do
+  tries=$((tries + 1))
+  [ "$tries" -lt 24 ] || { echo "No results after 5 minutes" >&2; exit 1; }
+  sleep 10
+done
 for f in $RESULTS; do
   xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataContainer \
     --domain-identifier com.venugopal.airdraw --source "Library/Application Support/$f" \
