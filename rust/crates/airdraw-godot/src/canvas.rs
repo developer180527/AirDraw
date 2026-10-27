@@ -1,76 +1,22 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use airdraw_brush::{Brush, BrushLibrary, BrushSource, InputPoint, MaterialDesc, MeshBuffers, Shading, StageRegistry};
 use airdraw_doc::{BrushRef, Change, Document, Stroke, StrokeId, read_thumbnail};
 use airdraw_export::{ExporterRegistry, FolderSink, SceneOptions, build_scene};
 use godot::classes::base_material_3d::{CullMode, Feature, ShadingMode};
-use godot::classes::mesh::{ArrayType, PrimitiveType};
+use godot::classes::mesh::PrimitiveType;
 use godot::classes::{ArrayMesh, INode3D, Material, MeshInstance3D, Node3D, StandardMaterial3D};
 use godot::prelude::*;
 
 use crate::export_bridge::{def_to_dict, dict_to_def, dict_to_params, slot_from_name, spec_to_dict};
+use crate::live::{LiveStroke, UpdateTiming, mesh_arrays};
 
 /// Render layers of stroke nodes: the default layer plus layer 20, which only strokes use,
 /// so offscreen cameras (thumbnails) can render strokes without grids or guides.
 const STROKE_LAYERS: u32 = 1 | (1 << 19);
-
-/// The stroke being drawn: its raw input, the brush snapshot it started with, and its node.
-struct LiveStroke {
-    brush_ref: BrushRef,
-    brush: Arc<Brush>,
-    points: Vec<InputPoint>,
-    /// Where the OS expects the pen to go next. Drawn as a tail to hide input latency,
-    /// replaced on every update, never stored.
-    predicted: Vec<InputPoint>,
-    instance: Gd<MeshInstance3D>,
-}
-
-impl LiveStroke {
-    fn rebuild(&mut self) -> UpdateTiming {
-        let start = Instant::now();
-        let mesh = if self.predicted.is_empty() {
-            self.brush.build(&self.points)
-        } else {
-            let mut all = Vec::with_capacity(self.points.len() + self.predicted.len());
-            all.extend_from_slice(&self.points);
-            all.extend_from_slice(&self.predicted);
-            self.brush.build(&all)
-        };
-        let built = Instant::now();
-        let mut timing = UpdateTiming {
-            points: self.points.len(),
-            vertices: mesh.positions.len(),
-            build: built - start,
-            ..Default::default()
-        };
-        if !mesh.is_empty() {
-            let arrays = mesh_arrays(&mesh);
-            let converted = Instant::now();
-            let mut m = ArrayMesh::new_gd();
-            m.add_surface_from_arrays(PrimitiveType::TRIANGLES, &arrays);
-            self.instance.set_mesh(&m);
-            timing.convert = converted - built;
-            timing.upload = converted.elapsed();
-        }
-        timing
-    }
-}
-
-/// Cost of one live-stroke update, split by phase (design 3e, step 0).
-#[derive(Default)]
-struct UpdateTiming {
-    points: usize,
-    vertices: usize,
-    /// `Brush::build` on the whole stroke.
-    build: Duration,
-    /// `MeshBuffers` → Godot packed arrays.
-    convert: Duration,
-    /// New `ArrayMesh`, `add_surface_from_arrays` (GPU buffer creation), `set_mesh`.
-    upload: Duration,
-}
 
 /// Shows a [`Document`] as mesh nodes and edits it. Input code feeds world-space points;
 /// finished strokes go into the document, and undo/redo/load update only the nodes that
@@ -144,12 +90,11 @@ impl SketchCanvas {
         let brush = self.brush.clone();
         let brush_ref = self.doc.intern_brush(&brush.def);
         self.compiled.entry(brush_ref).or_insert_with(|| brush.clone());
-        let mut instance = MeshInstance3D::new_alloc();
-        instance.set_layer_mask(STROKE_LAYERS);
-        instance.set_material_override(&self.material_for(brush_ref));
-        self.base_mut().add_child(&instance);
-        let points = vec![input_point(pos, normal, pressure, time)];
-        self.current = Some(LiveStroke { brush_ref, brush, points, predicted: Vec::new(), instance });
+        let material = self.material_for(brush_ref);
+        let first = input_point(pos, normal, pressure, time);
+        let live = LiveStroke::new(&brush, brush_ref, first, &material, STROKE_LAYERS);
+        self.base_mut().add_child(&live.instance);
+        self.current = Some(live);
     }
 
     #[func]
@@ -157,13 +102,10 @@ impl SketchCanvas {
         self.extend_stroke(&[input_point(pos, normal, pressure, time)], &[]);
     }
 
-    /// Appends points and replaces the predicted tail, rebuilding the mesh once.
+    /// Appends points and replaces the predicted tail, updating the mesh once.
     pub(crate) fn extend_stroke(&mut self, points: &[InputPoint], predicted: &[InputPoint]) {
         if let Some(s) = &mut self.current {
-            s.points.extend_from_slice(points);
-            s.predicted.clear();
-            s.predicted.extend_from_slice(predicted);
-            let t = s.rebuild();
+            let t = s.update(points, predicted);
             if let Some(timings) = &mut self.timings {
                 timings.push(t);
             }
@@ -185,7 +127,7 @@ impl SketchCanvas {
         self.timings = on.then(Vec::new);
     }
 
-    /// Recorded updates as columns: `points`, `vertices` (packed ints) and `build_ms`,
+    /// Recorded updates as columns: `points`, `vertices`, `uploaded_vertices` (packed ints) and `build_ms`,
     /// `convert_ms`, `upload_ms` (packed floats). Clears the records.
     #[func]
     fn take_live_timings(&mut self) -> VarDictionary {
@@ -196,6 +138,7 @@ impl SketchCanvas {
         let mut d = VarDictionary::new();
         d.set("points", &timings.iter().map(|t| t.points as i64).collect::<PackedInt64Array>());
         d.set("vertices", &timings.iter().map(|t| t.vertices as i64).collect::<PackedInt64Array>());
+        d.set("uploaded_vertices", &timings.iter().map(|t| t.uploaded as i64).collect::<PackedInt64Array>());
         d.set("build_ms", &ms(|t| t.build));
         d.set("convert_ms", &ms(|t| t.convert));
         d.set("upload_ms", &ms(|t| t.upload));
@@ -204,26 +147,21 @@ impl SketchCanvas {
 
     #[func]
     pub(crate) fn end_stroke(&mut self) {
-        let Some(mut s) = self.current.take() else { return };
-        s.predicted.clear();
-        let t = s.rebuild();
+        let Some(s) = self.current.take() else { return };
+        let Some((instance, brush_ref, points, t)) = s.finish() else { return };
         if let Some(timings) = &mut self.timings {
             timings.push(t);
         }
-        if s.instance.get_mesh().is_none() {
-            s.instance.queue_free();
-            return;
-        }
-        let (id, changes) = self.doc.add_stroke(s.brush_ref, s.points);
+        let (id, changes) = self.doc.add_stroke(brush_ref, points);
         // The live node already shows this stroke; adopt it instead of rebuilding.
-        self.nodes.insert(id, s.instance);
+        self.nodes.insert(id, instance);
         self.apply(changes);
     }
 
     #[func]
     pub(crate) fn cancel_stroke(&mut self) {
-        if let Some(mut s) = self.current.take() {
-            s.instance.queue_free();
+        if let Some(s) = self.current.take() {
+            s.cancel();
         }
     }
 
@@ -743,10 +681,6 @@ fn preview_stroke() -> Vec<InputPoint> {
         .collect()
 }
 
-fn v3(v: glam::Vec3) -> Vector3 {
-    Vector3::new(v.x, v.y, v.z)
-}
-
 fn set_mesh(node: &mut Gd<MeshInstance3D>, mesh: &MeshBuffers) {
     if !mesh.is_empty() {
         node.set_mesh(&array_mesh(mesh));
@@ -757,21 +691,6 @@ fn array_mesh(m: &MeshBuffers) -> Gd<ArrayMesh> {
     let mut mesh = ArrayMesh::new_gd();
     mesh.add_surface_from_arrays(PrimitiveType::TRIANGLES, &mesh_arrays(m));
     mesh
-}
-
-fn mesh_arrays(m: &MeshBuffers) -> VarArray {
-    let positions: PackedVector3Array = m.positions.iter().copied().map(v3).collect();
-    let normals: PackedVector3Array = m.normals.iter().copied().map(v3).collect();
-    // Brush meshes are counter-clockwise (the convention of every export format); Godot
-    // treats clockwise as front-facing, so flip each triangle for display.
-    let indices: PackedInt32Array = m.indices.chunks_exact(3).flat_map(|t| [t[0], t[2], t[1]]).collect();
-
-    let mut arrays = VarArray::new();
-    arrays.resize(ArrayType::MAX.ord() as usize, &Variant::nil());
-    arrays.set(ArrayType::VERTEX.ord() as usize, &positions.to_variant());
-    arrays.set(ArrayType::NORMAL.ord() as usize, &normals.to_variant());
-    arrays.set(ArrayType::INDEX.ord() as usize, &indices.to_variant());
-    arrays
 }
 
 fn godot_material(d: &MaterialDesc) -> Gd<Material> {

@@ -26,8 +26,16 @@ xcrun devicectl device process launch --terminate-existing --device "$DEVICE" \
   com.venugopal.airdraw ++ bench-live-stroke >/dev/null
 echo "Benchmark running on the iPad (keep it unlocked)..."
 sleep 90
-OUT="$ROOT/build/ios/live_stroke_bench.csv"
-xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataContainer \
-  --domain-identifier com.venugopal.airdraw --source "Library/Application Support/live_stroke_bench.csv" \
-  --destination "$OUT" >/dev/null
-echo "Results: $OUT"
+for f in live_stroke_bench.csv live_stroke_bench.txt; do
+  xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataContainer \
+    --domain-identifier com.venugopal.airdraw --source "Library/Application Support/$f" \
+    --destination "$ROOT/build/ios/$f" >/dev/null
+done
+# Images the bench saves when the finished and rebuilt strokes differ.
+for f in bench_com.airdraw.ink_finished.png bench_com.airdraw.ink_rebuilt.png bench_com.airdraw.ribbon_finished.png bench_com.airdraw.ribbon_rebuilt.png; do
+  xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataContainer \
+    --domain-identifier com.venugopal.airdraw --source "Library/Application Support/$f" \
+    --destination "$ROOT/build/ios/$f" >/dev/null 2>&1 || true
+done
+cat "$ROOT/build/ios/live_stroke_bench.txt"
+echo "Per-update data: $ROOT/build/ios/live_stroke_bench.csv"

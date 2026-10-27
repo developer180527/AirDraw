@@ -439,7 +439,7 @@ since meshes are never stored.
   load, re-brush and export, since live strokes stop calling `build` in step 3. If it ever
   matters, causal stages can get an in-place fast path for whole-input commits.
 
-#### Godot side (`LiveStroke` in `canvas.rs`)
+#### Godot side (`LiveStroke` in `airdraw-godot/src/live.rs`, implemented)
 
 Godot 4 can append surfaces to an `ArrayMesh` but can't grow or edit a surface's index
 buffer in place. So committed geometry is uploaded in **sealed chunks**:
@@ -448,17 +448,50 @@ buffer in place. So committed geometry is uploaded in **sealed chunks**:
   as contiguous triangle ranges. A chunk copies the vertex range its triangles use, so a tube
   ring at the boundary is duplicated once, and its indices are rebased to zero. Triangles are
   flipped for Godot's winding while copying.
-- **Sealed mesh:** a full chunk is appended once with `add_surface_from_arrays` and never
-  uploaded again. At Godot's 256-surface limit (about 1M vertices) a new sealed node starts.
-- **Live mesh:** one small `ArrayMesh`, rebuilt every update, holding the open (unfilled)
-  chunk and the provisional tail. Its `PackedArray`s are reused, not reallocated.
-- **Pen up:** the finished stroke becomes one single-surface mesh from the complete buffers
-  (one upload), so documents still have one node and one surface per stroke. That keeps the
-  later batching work (merging finished strokes per layer and material) independent of this
-  change. Cancel drops everything.
+- **Sealed chunks** are appended once with `add_surface_from_arrays` to the stroke node's own
+  mesh and never uploaded again.
+- **Live mesh:** a child node with one small `ArrayMesh`, cleared and refilled every update,
+  holding the open (unfilled) chunk and the provisional tail. The tail's first triangles can
+  use committed vertices (the last tube ring), so the copied vertex range starts at the
+  lowest one they use.
+- **Pen up (decision 2, revised 2026-10-27):** the open chunk plus the end of the stroke
+  become one more surface, and the live child is removed. The finished stroke is still **one
+  node with one mesh**, so undo, re-brush, thumbnails and export code are unchanged. Short
+  strokes (under one chunk, most of them) end as one surface; long ones keep one surface per
+  chunk. Full consolidation was measured first and dropped: a 20 s Ink stroke (90k vertices)
+  took ~10 ms to re-upload as one surface, which drops a frame at pen-up. Undo/redo and
+  loading still rebuild strokes as one surface from their raw points.
+- **Surface limit:** at Godot's 256 surfaces per mesh, the sealed chunks are merged into one
+  surface (a one-time re-upload) and sealing continues. Reaching it takes a stroke of about
+  2.6M triangles (`live_stroke_bench.tscn ++ long`).
+- Cancel frees the node with its live child.
 
 Per update, the work is now bounded: Rust processes the new points plus the tail, and Godot
-copies and uploads at most one chunk plus the tail (about 200 KB) instead of the whole stroke.
+copies and uploads at most one chunk plus the tail (about 4.5k vertices) instead of the
+whole stroke.
+
+**Results (steps 3–4).** These come from the same `live_stroke_bench`, 20 s spiral, median ms
+per update. The bench also checks that the live stroke, the finished stroke and the stroke
+rebuilt from the document (undo + redo) are pixel-identical, and they are, with identical
+triangle counts.
+
+| Device | Brush | At | Before (step 0) | After | Uploaded vertices | Pen-up before → after |
+|---|---|---|---|---|---|---|
+| Mac M4 Pro | Ink | 20 s | 4.36 | **0.38** | ≤ 4 377 (of 89 554) | 4.3 → 0.6 ms |
+| Mac M4 Pro | Ribbon | 20 s | 1.39 | **0.39** | ≤ 3 724 (of 20 114) | 2.2 → 0.6 ms |
+| iPad Pro M5 | Ink | 20 s | 4.71 | **0.67** | ≤ 4 377 (of 89 554) | not measured → 0.5–0.6 ms |
+| iPad Pro M5 | Ribbon | 20 s | 3.48 | **0.61** | ≤ 3 724 (of 20 114) | not measured → 0.5 ms |
+
+On iPad, a 20 s Ink stroke now uses 8% of the 120 Hz frame per update instead of 57%, and
+the cost stays flat as the stroke grows (0.42 ms at 5 s and at 10 s).
+
+One renderer quirk: with Godot's **Mobile** renderer (used on iPad), a long Ink stroke
+finished as chunk surfaces and the same stroke rebuilt as one surface differ by 1–4/255 in a
+single channel at a few scattered pixels (86 of 13 002 stroke pixels on iPad, 3 on the Mac
+with `--rendering-method mobile`). With Forward+ they are pixel-identical, and the triangle
+data is identical in both cases, so this is the Mobile renderer's shading arithmetic, not
+geometry. The visible effect is nil: a long stroke may shift by a barely measurable amount
+in a few pixels when the document is reopened.
 
 #### Rollout
 
@@ -467,8 +500,8 @@ copies and uploads at most one chunk plus the tail (about 200 KB) instead of the
 | 0 ✅ | Measure today's cost per update on Mac and iPad (`live_stroke_bench`, results above) | none |
 | 1 ✅ | `PointStream`/`MeshStream` traits, batch fallback for every stage, `BrushStream`; `Brush::build` and `centerline` = push + finish | none: build and centerline output bit-identical before/after (64 fingerprints over every stage), all tests and the smoke test pass. Build phase ~10% slower until step 2 (batch fallbacks copy held points) |
 | 2 ✅ | Native streams for the built-in stages in the table, one at a time | tube vertex order only: against the pre-stream code, 98 of 126 fingerprints are bit-identical and the other 28 (capped tubes) have identical triangles, vertices and centerlines. Split tests compare streams pushed in pieces (1 point at a time, up to 4, up to 40) against the batch stages, and fail on planted bugs |
-| 3 | `LiveStroke` uses `BrushStream` + sealed/live chunks; pen-up consolidation | none visible |
-| 4 | Re-measure (step 0 again) on Mac and iPad | faster |
+| 3 ✅ | `LiveStroke` uses `BrushStream` + sealed/live chunks; pen-up seals the rest (chunks kept, see decision 2) | none visible: live, finished and rebuilt strokes are pixel-identical |
+| 4 ✅ | Re-measure (step 0 again) on Mac and iPad | per-update cost flat with stroke length (results above) |
 
 #### Acceptance
 
@@ -480,13 +513,16 @@ copies and uploads at most one chunk plus the tail (about 200 KB) instead of the
   length: the last second costs ≤ 1.5× the first.
 - **Device:** on iPad, frame time during a 30 s stroke stays within the 120 Hz budget, with
   no upward trend (Instruments).
+  *Status:* in the 20 s bench on iPad Pro M5, none of 4 800 updates took a frame over
+  8.62 ms, with no upward trend. A 30 s hand-drawn stroke under Instruments hasn't been done yet.
 - The existing smoke test (draw, undo, re-brush, export) passes unchanged.
 
-#### Decisions needed
+#### Decisions (approved 2026-10-27)
 
 1. Chunk size of 4096 vertices (tunable later).
-2. Consolidate to one surface at pen-up (proposed), or keep the chunks as they are.
-3. Batch fallback for non-streaming stages (proposed), or require every stage to stream.
+2. ~~Consolidate to one surface at pen-up.~~ Revised after measuring: keep sealed chunks as
+   surfaces of the stroke's mesh, so pen-up uploads at most one chunk (see Godot side).
+3. Batch fallback for non-streaming stages.
 4. Accept the one-time tube vertex-order change.
 
 ## 4. Export system (`airdraw-export`)
