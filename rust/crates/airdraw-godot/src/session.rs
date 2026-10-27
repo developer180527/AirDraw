@@ -292,7 +292,7 @@ impl SketchSession {
         let current = self.active_guide();
         let anchor = rays
             .iter()
-            .find_map(|r| current.intersect(*r).map(|h| h.point))
+            .find_map(|r| current.intersect_in_reach(*r).map(|h| h.point))
             .unwrap_or_else(|| rays.first().map_or(glam::Vec3::ZERO, |r| r.origin + r.dir * 5.0));
         Sweep::from_view(&rays, forward, anchor, SweepOptions::default()).map(Guide::Sweep)
     }
@@ -344,9 +344,10 @@ impl SketchSession {
         self.with_canvas(|c| c.extend_stroke(&batch, &tail));
     }
 
-    /// Screen position → hit on the current stroke's guide, or `None` if the ray misses it.
+    /// Screen position → hit on the current stroke's guide, or `None` if the ray misses it
+    /// or meets it out of reach (pen near a plane's horizon).
     fn project(&self, pos: glam::Vec2) -> Option<Hit> {
-        self.stroke_guide.as_ref()?.intersect(self.ray(pos)?)
+        self.stroke_guide.as_ref()?.intersect_in_reach(self.ray(pos)?)
     }
 
     /// The camera ray through a screen position.

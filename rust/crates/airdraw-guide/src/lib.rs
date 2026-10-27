@@ -32,7 +32,18 @@ pub enum Guide {
     Sweep(Sweep),
 }
 
+/// How far from the world origin a stroke point may land, world units. A ray that grazes a
+/// plane (pen near its horizon) meets it kilometres away; those hits count as misses, or
+/// one stroke segment spans the whole view. Comfortably past the floor (20) and the camera's
+/// zoom range (50).
+pub const REACH: f32 = 100.0;
+
 impl Guide {
+    /// Nearest hit within [`REACH`] of the origin; farther hits are treated as misses.
+    pub fn intersect_in_reach(&self, ray: Ray) -> Option<Hit> {
+        self.intersect(ray).filter(|h| h.point.length() <= REACH)
+    }
+
     /// Nearest hit in front of the ray's origin.
     pub fn intersect(&self, ray: Ray) -> Option<Hit> {
         match self {
@@ -245,6 +256,17 @@ fn resample(pts: &[Vec3], dirs: &[Vec3], opts: SweepOptions) -> Option<(Vec<Vec3
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn grazing_plane_hits_are_out_of_reach() {
+        let plane = Guide::Plane { origin: Vec3::ZERO, normal: Vec3::Z };
+        // Camera 5 in front of the plane, ray almost parallel to it: hit is ~50 km away.
+        let ray = Ray { origin: Vec3::new(0.0, 0.0, 5.0), dir: Vec3::new(1.0, 0.0, -1e-4).normalize() };
+        assert!(plane.intersect(ray).is_some());
+        assert_eq!(plane.intersect_in_reach(ray), None);
+        let straight = Ray { origin: Vec3::new(0.0, 0.0, 5.0), dir: Vec3::NEG_Z };
+        assert_eq!(plane.intersect_in_reach(straight), plane.intersect(straight));
+    }
+
     use super::*;
 
     /// A perspective camera at `eye` looking down -Z: the ray through normalized screen
