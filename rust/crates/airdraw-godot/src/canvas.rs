@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use airdraw_brush::{Brush, BrushLibrary, BrushSource, InputPoint, MaterialDesc, MeshBuffers, Shading, StageRegistry};
 use airdraw_doc::{BrushRef, Change, Document, Stroke, StrokeId, read_thumbnail};
@@ -28,7 +29,8 @@ struct LiveStroke {
 }
 
 impl LiveStroke {
-    fn rebuild(&mut self) {
+    fn rebuild(&mut self) -> UpdateTiming {
+        let start = Instant::now();
         let mesh = if self.predicted.is_empty() {
             self.brush.build(&self.points)
         } else {
@@ -37,8 +39,37 @@ impl LiveStroke {
             all.extend_from_slice(&self.predicted);
             self.brush.build(&all)
         };
-        set_mesh(&mut self.instance, &mesh);
+        let built = Instant::now();
+        let mut timing = UpdateTiming {
+            points: self.points.len(),
+            vertices: mesh.positions.len(),
+            build: built - start,
+            ..Default::default()
+        };
+        if !mesh.is_empty() {
+            let arrays = mesh_arrays(&mesh);
+            let converted = Instant::now();
+            let mut m = ArrayMesh::new_gd();
+            m.add_surface_from_arrays(PrimitiveType::TRIANGLES, &arrays);
+            self.instance.set_mesh(&m);
+            timing.convert = converted - built;
+            timing.upload = converted.elapsed();
+        }
+        timing
     }
+}
+
+/// Cost of one live-stroke update, split by phase (design 3e, step 0).
+#[derive(Default)]
+struct UpdateTiming {
+    points: usize,
+    vertices: usize,
+    /// `Brush::build` on the whole stroke.
+    build: Duration,
+    /// `MeshBuffers` → Godot packed arrays.
+    convert: Duration,
+    /// New `ArrayMesh`, `add_surface_from_arrays` (GPU buffer creation), `set_mesh`.
+    upload: Duration,
 }
 
 /// Shows a [`Document`] as mesh nodes and edits it. Input code feeds world-space points;
@@ -59,6 +90,8 @@ pub struct SketchCanvas {
     materials: HashMap<BrushRef, Gd<Material>>,
     nodes: HashMap<StrokeId, Gd<MeshInstance3D>>,
     current: Option<LiveStroke>,
+    /// Per-update live-stroke costs, recorded only while benchmarking.
+    timings: Option<Vec<UpdateTiming>>,
 }
 
 #[godot_api]
@@ -84,6 +117,7 @@ impl INode3D for SketchCanvas {
             materials: HashMap::new(),
             nodes: HashMap::new(),
             current: None,
+            timings: None,
         }
     }
 
@@ -129,15 +163,53 @@ impl SketchCanvas {
             s.points.extend_from_slice(points);
             s.predicted.clear();
             s.predicted.extend_from_slice(predicted);
-            s.rebuild();
+            let t = s.rebuild();
+            if let Some(timings) = &mut self.timings {
+                timings.push(t);
+            }
         }
+    }
+
+    /// Appends several points with one rebuild, as a frame of coalesced pen samples does.
+    #[func]
+    fn add_points(&mut self, positions: PackedVector3Array, normal: Vector3, pressures: PackedFloat32Array, times: PackedFloat64Array) {
+        let points: Vec<InputPoint> = (0..positions.len())
+            .map(|i| input_point(positions[i], normal, pressures.get(i).unwrap_or(1.0), times.get(i).unwrap_or(0.0)))
+            .collect();
+        self.extend_stroke(&points, &[]);
+    }
+
+    /// Starts (or stops) recording the cost of every live-stroke update; clears earlier records.
+    #[func]
+    fn set_record_live_timings(&mut self, on: bool) {
+        self.timings = on.then(Vec::new);
+    }
+
+    /// Recorded updates as columns: `points`, `vertices` (packed ints) and `build_ms`,
+    /// `convert_ms`, `upload_ms` (packed floats). Clears the records.
+    #[func]
+    fn take_live_timings(&mut self) -> VarDictionary {
+        let timings = self.timings.as_mut().map(std::mem::take).unwrap_or_default();
+        let ms = |f: fn(&UpdateTiming) -> Duration| -> PackedFloat64Array {
+            timings.iter().map(|t| f(t).as_secs_f64() * 1000.0).collect()
+        };
+        let mut d = VarDictionary::new();
+        d.set("points", &timings.iter().map(|t| t.points as i64).collect::<PackedInt64Array>());
+        d.set("vertices", &timings.iter().map(|t| t.vertices as i64).collect::<PackedInt64Array>());
+        d.set("build_ms", &ms(|t| t.build));
+        d.set("convert_ms", &ms(|t| t.convert));
+        d.set("upload_ms", &ms(|t| t.upload));
+        d
     }
 
     #[func]
     pub(crate) fn end_stroke(&mut self) {
         let Some(mut s) = self.current.take() else { return };
         s.predicted.clear();
-        s.rebuild();
+        let t = s.rebuild();
+        if let Some(timings) = &mut self.timings {
+            timings.push(t);
+        }
         if s.instance.get_mesh().is_none() {
             s.instance.queue_free();
             return;
@@ -682,6 +754,12 @@ fn set_mesh(node: &mut Gd<MeshInstance3D>, mesh: &MeshBuffers) {
 }
 
 fn array_mesh(m: &MeshBuffers) -> Gd<ArrayMesh> {
+    let mut mesh = ArrayMesh::new_gd();
+    mesh.add_surface_from_arrays(PrimitiveType::TRIANGLES, &mesh_arrays(m));
+    mesh
+}
+
+fn mesh_arrays(m: &MeshBuffers) -> VarArray {
     let positions: PackedVector3Array = m.positions.iter().copied().map(v3).collect();
     let normals: PackedVector3Array = m.normals.iter().copied().map(v3).collect();
     // Brush meshes are counter-clockwise (the convention of every export format); Godot
@@ -693,10 +771,7 @@ fn array_mesh(m: &MeshBuffers) -> Gd<ArrayMesh> {
     arrays.set(ArrayType::VERTEX.ord() as usize, &positions.to_variant());
     arrays.set(ArrayType::NORMAL.ord() as usize, &normals.to_variant());
     arrays.set(ArrayType::INDEX.ord() as usize, &indices.to_variant());
-
-    let mut mesh = ArrayMesh::new_gd();
-    mesh.add_surface_from_arrays(PrimitiveType::TRIANGLES, &arrays);
-    mesh
+    arrays
 }
 
 fn godot_material(d: &MaterialDesc) -> Gd<Material> {
