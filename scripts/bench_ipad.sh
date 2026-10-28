@@ -30,11 +30,15 @@ grep -q '^exclude_filter=.*tests/' "$PRESETS" && { echo "Couldn't include tests/
 
 "$ROOT/scripts/build_ios_core.sh"
 mkdir -p "$ROOT/build/ios"
-rm -f "$ROOT/build/ios/AirDrawBench.ipa"
+rm -rf "$ROOT/build/ios/AirDrawBench.ipa" "$ROOT/build/ios/AirDrawBench.xcarchive"
 "$GODOT" --headless --path "$ROOT/app" --import >/dev/null 2>&1 || true
 "$GODOT" --headless --path "$ROOT/app" --export-debug "iPad" "$ROOT/build/ios/AirDrawBench.ipa" 2>&1 | grep -E "ERROR|SUCCEEDED|FAILED" || true
-[ -f "$ROOT/build/ios/AirDrawBench.ipa" ] || { echo "Export failed" >&2; exit 1; }
-xcrun devicectl device install app --device "$DEVICE" "$ROOT/build/ios/AirDrawBench.ipa" | tail -1
+# Xcode's IPA export can fail on signing parameters (e.g. certificateType
+# DEVELOPMENT_MANAGED) after the archive succeeded; the archive's signed .app installs fine.
+INSTALL="$ROOT/build/ios/AirDrawBench.ipa"
+[ -f "$INSTALL" ] || INSTALL="$ROOT/build/ios/AirDrawBench.xcarchive/Products/Applications/AirDrawBench.app"
+[ -e "$INSTALL" ] || { echo "Export failed" >&2; exit 1; }
+xcrun devicectl device install app --device "$DEVICE" "$INSTALL" | tail -1
 xcrun devicectl device process launch --terminate-existing --device "$DEVICE" \
   com.venugopal.airdraw ++ "bench-$BENCH" ${LOOK:+look "$LOOK"} >/dev/null
 echo "Benchmark '$BENCH' running on the iPad (keep it unlocked)..."

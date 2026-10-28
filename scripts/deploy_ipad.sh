@@ -9,8 +9,13 @@ DEVICE="${1:-$(xcrun devicectl list devices 2>/dev/null | awk '/iPad/ && (/avail
 
 "$ROOT/scripts/build_ios_core.sh"
 mkdir -p "$ROOT/build/ios"
+rm -rf "$ROOT/build/ios/AirDraw.ipa" "$ROOT/build/ios/AirDraw.xcarchive"
 "$GODOT" --headless --path "$ROOT/app" --import >/dev/null 2>&1 || true
 "$GODOT" --headless --path "$ROOT/app" --export-debug "iPad" "$ROOT/build/ios/AirDraw.ipa" 2>&1 | grep -E "ERROR|SUCCEEDED|FAILED" || true
-[ -f "$ROOT/build/ios/AirDraw.ipa" ] || { echo "Export failed" >&2; exit 1; }
-xcrun devicectl device install app --device "$DEVICE" "$ROOT/build/ios/AirDraw.ipa" | tail -1
+# Xcode's IPA export can fail on signing parameters (e.g. certificateType
+# DEVELOPMENT_MANAGED) after the archive succeeded; the archive's signed .app installs fine.
+INSTALL="$ROOT/build/ios/AirDraw.ipa"
+[ -f "$INSTALL" ] || INSTALL="$ROOT/build/ios/AirDraw.xcarchive/Products/Applications/AirDraw.app"
+[ -e "$INSTALL" ] || { echo "Export failed" >&2; exit 1; }
+xcrun devicectl device install app --device "$DEVICE" "$INSTALL" | tail -1
 xcrun devicectl device process launch --device "$DEVICE" com.venugopal.airdraw | tail -1

@@ -1204,7 +1204,7 @@ A gizmo sits at the selection's centre, sized in screen points:
 |---|---|
 | 1 ✅ | `airdraw-pick` (index, capsule, nearest, lasso, cut, front-only depth) with tests; `Op::Replace` in `airdraw-doc` and the `replace` op in `HIST`, with round-trip and older-build tests |
 | 2 ✅ | Whole-stroke Erase: rail button, context bar, `E`, eraser end, Pencil double-tap, ring cursor, one undo step per drag; smoke checks |
-| 3 ✅ | Partial erase with live pieces; `BENCH=erase` on the iPad (iPad run pending) |
+| 3 ✅ | Partial erase with live pieces; `BENCH=erase` on the iPad |
 | 4 | Select: tap, lasso, accent outline, Delete, Duplicate, Re-brush, Select All, long-press and right-click menus |
 | 5 | Transform gizmo: move and rotate, baked on release; scale follows per-stroke size |
 
@@ -1282,16 +1282,18 @@ A gizmo sits at the selection's centre, sized in screen points:
   5,000-point Ink stroke on a real canvas, 20 cuts.
   - Mac (M-series, 1440×900):
 
-| Measure | Mac | Target (iPad) |
-|---|---|---|
-| Eraser move, 100k points | 0.03 ms mean, 0.08 ms p95 | < 1 ms |
-| Eraser move, 1M points | 0.40 ms mean, 1.03 ms p95 | < 4 ms |
-| Partial-erase move with the piece rebuild, 5k-point stroke | 1.69 ms mean, 2.80 ms max | < 4 ms |
-| Lift after 20 cuts (21 strokes built) | 1.97 ms | |
-| Lasso over 40% of the view, 1M points | 3.5–4.6 ms | |
+| Measure | Mac | iPad Pro M5 (1668×2420) | Target (iPad) |
+|---|---|---|---|
+| Eraser move, 100k points | 0.03 ms mean, 0.08 ms p95 | 0.03 ms mean, 0.04 ms p95 | < 1 ms ✅ |
+| Eraser move, 1M points | 0.40 ms mean, 1.03 ms p95 | 0.28 ms mean, 0.38 ms p95 | < 4 ms ✅ |
+| Partial-erase move with the piece rebuild, 5k-point stroke | 1.69 ms mean, 2.80 ms max | 1.89 ms mean, 3.59 ms max | < 4 ms ✅ |
+| Lift after 20 cuts (21 strokes built) | 1.97 ms | 3.03 ms | |
+| Lasso over 40% of the view, 1M points | 3.5–4.6 ms | 3.1 ms | |
 
-  - The iPad run is still to do. The export needs the iPad connected; last time it was
-    unreachable and the signing step failed.
+  - Run on the iPad 2026-10-28. Xcode's IPA export step now fails on its own signing
+    parameters (`certificateType DEVELOPMENT_MANAGED`, and it picks the Mac as the selected
+    device) after the archive succeeds. `deploy_ipad.sh` and `bench_ipad.sh` install the
+    archive's signed `.app` instead.
 - **Smoke test, 4 new lines:** the line is cut into live pieces with nothing committed, splits
   on lift, is one undo step, and Shift erases whole. The pieces check fails if the pieces are
   never added to the scene.
