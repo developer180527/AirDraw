@@ -914,7 +914,8 @@ func _layout() -> void:
 	# Tray docked to the hand-side edge; view cube on the other side.
 	_rail.theme_type_variation = "TrayLeft" if hand_left else "TrayRight"
 	_rail.reset_size()
-	_rail.position = Vector2(0.0 if hand_left else screen.x - _rail.size.x, top + 6 * _s)
+	# Vertically centred on the screen, never under the top row.
+	_rail.position = Vector2(0.0 if hand_left else screen.x - _rail.size.x, maxf(top + 6 * _s, (screen.y - _rail.size.y) / 2))
 	var cube_size := 104 * _s
 	_cube.size = Vector2(cube_size, cube_size)
 	_cube.position = Vector2(screen.x - m - cube_size if hand_left else m, top)
@@ -928,12 +929,13 @@ func _layout() -> void:
 	# Brush list next to the tray, sized to its rows up to the room above the bar.
 	_sheet.visible = sheet_open
 	var w := minf(340 * _s, screen.x - _rail.size.x - 3 * m)
-	var room := _bar.position.y - m - _rail.position.y - 120 * _s
+	var sheet_y := top + 6 * _s
+	var room := _bar.position.y - m - sheet_y - 120 * _s
 	_brush_scroll.custom_minimum_size = Vector2(0, minf(_brush_list.get_combined_minimum_size().y, room))
 	_sheet.custom_minimum_size = Vector2(w, 0)
 	_sheet.reset_size()
 	var sheet_x := _rail.size.x + m if hand_left else screen.x - _rail.size.x - m - w
-	_sheet.position = Vector2(sheet_x, _rail.position.y)
+	_sheet.position = Vector2(sheet_x, sheet_y)
 
 	_place_toast()
 	layout_changed.emit.call_deferred()

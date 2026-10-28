@@ -21,7 +21,7 @@ const DANGER := Color(1.0, 0.45, 0.4)
 const LIGHT := Color(0.97, 0.97, 0.96, 0.96)
 const LIGHT_HOVER := Color(0.91, 0.91, 0.9, 0.98)
 const INK := Color(0.16, 0.17, 0.2)
-const TRAY := Color(0.14, 0.145, 0.16, 0.97)
+const TRAY := Color(0.055, 0.055, 0.065, 0.97)
 const DIVIDER := Color(1, 1, 1, 0.08)
 ## Inter (SIL OFL, fonts/Inter-OFL.txt): a variable font, weight 100–900, optical size 14–32.
 const FONT := preload("res://fonts/Inter.ttf")
