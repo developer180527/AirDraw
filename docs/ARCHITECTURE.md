@@ -1036,7 +1036,7 @@ numbers) still reports the file as corrupt.
 all, and viewing never rewrites a file.
 History cap: see the revised rule under Undo history.
 
-### 3i. Erase and Select (approved 2026-10-28 with the proposed defaults; steps 1–3 implemented)
+### 3i. Erase and Select (approved 2026-10-28 with the proposed defaults; steps 1–4 implemented)
 
 Two tools are still missing from the rail (§5-3): **Erase** and **Select**. Both need the
 same thing first: knowing which strokes, and which parts of them, are under the pen. Then
@@ -1205,7 +1205,7 @@ A gizmo sits at the selection's centre, sized in screen points:
 | 1 ✅ | `airdraw-pick` (index, capsule, nearest, lasso, cut, front-only depth) with tests; `Op::Replace` in `airdraw-doc` and the `replace` op in `HIST`, with round-trip and older-build tests |
 | 2 ✅ | Whole-stroke Erase: rail button, context bar, `E`, eraser end, Pencil double-tap, ring cursor, one undo step per drag; smoke checks |
 | 3 ✅ | Partial erase with live pieces; `BENCH=erase` on the iPad |
-| 4 | Select: tap, lasso, accent outline, Delete, Duplicate, Re-brush, Select All, long-press and right-click menus |
+| 4 ✅ | Select: tap, lasso, accent outline, Delete, Duplicate, Re-brush, Select All, long-press and right-click menus |
 | 5 | Transform gizmo: move and rotate, baked on release; scale follows per-stroke size |
 
 #### Step 1 results (2026-10-28)
@@ -1297,6 +1297,41 @@ A gizmo sits at the selection's centre, sized in screen points:
 - **Smoke test, 4 new lines:** the line is cut into live pieces with nothing committed, splits
   on lift, is one undo step, and Shift erases whole. The pieces check fails if the pieces are
   never added to the scene.
+
+#### Step 4 results (2026-10-28)
+
+- **Tool:** Select (`V`) sits between Erase and Guide.
+  - A pen or mouse stroke under 10 px of travel is a tap: it picks the frontmost stroke within
+    14 pt. A tap on nothing clears the selection.
+  - A longer stroke is a lasso, drawn in the accent colour while you draw it and closed back
+    to its start.
+  - Shift adds to the selection and Alt removes, checked when the pen lifts.
+  - A pen's eraser end still erases.
+- **Highlight:** a `material_overlay` on each selected node. It is a pale tint over the
+  stroke, with the outline shader in the accent colour as its next pass. Tinting was added
+  after the first try: an accent outline alone vanished on the Ribbon brush, whose blue
+  (`#2F6FDE`) is almost the accent.
+- **Select bar:** "N selected", Delete, Duplicate, Re-brush, Select All, Deselect.
+- **Keys:** `⌫`, `⌘D`, `⇧R`, `⌘A`, `Esc`.
+- **Duplicate:** copies go on top, 5% of the distance to the camera towards its right, and
+  become the selection. `duplicate_strokes` now takes an offset.
+- **Stroke menu:** a right-click without dragging, or a finger held still for 0.5 s, opens
+  it, with any tool active.
+  - It selects the stroke there, keeping a selection the stroke is already part of, then
+    switches to Select and opens the menu at the pointer.
+  - Nothing opens while a stroke, erase or lasso is in progress.
+  - It shares the ⋯ menu's scrim.
+- **In step with the document:**
+  - Removed strokes leave the selection.
+  - A re-brushed stroke gets its highlight again (it may change between one- and two-sided).
+  - Loading clears the selection.
+  - The selection isn't saved and isn't an undo step.
+- **Smoke test, 3 new lines** (92 in all, the older 82 unchanged):
+  - tap, outline, bar and Esc
+  - lasso (shown, then cleared), duplicate as one undo step, select all
+  - the right-click and long-press menus, Delete from the menu, `⌫`, Re-brush
+- **Learned while testing:** a mouse click 4 ms after a touch lifts is dropped by the router
+  as the OS's copy of that touch. That is correct, so the test waits.
 
 #### Open details (proposed defaults)
 

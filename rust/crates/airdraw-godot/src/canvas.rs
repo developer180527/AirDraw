@@ -21,6 +21,16 @@ use crate::live::{LiveStroke, UpdateTiming, mesh_arrays};
 /// so offscreen cameras (thumbnails) can render strokes without grids or guides.
 const STROKE_LAYERS: u32 = 1 | (1 << 19);
 
+/// The accent outline of selected strokes (`UiTheme.ACCENT`).
+const SELECTION_COLOR: Color = Color::from_rgb(0.33, 0.52, 1.0);
+/// Drawn over a selected stroke's own surface: lightens it, whatever its colour.
+const SELECTION_TINT_SHADER: &str = "shader_type spatial;
+render_mode unshaded, cull_disabled, depth_draw_never, shadows_disabled;
+void fragment() {
+\tALBEDO = vec3(1.0);
+\tALPHA = 0.55;
+}
+";
 /// Partial-erase pieces shorter than this (metres) are dropped.
 const MIN_PIECE: f32 = 0.001;
 /// Ids of live partial-erase pieces in the pick index: far above any document stroke id.
@@ -82,6 +92,10 @@ pub struct SketchCanvas {
     half_widths: HashMap<BrushRef, f32>,
     /// The eraser drag in progress, if any.
     erasing: Option<Erase>,
+    /// Selected strokes, in the order they were picked. Not part of the document (§3i).
+    selection: Vec<StrokeId>,
+    /// The accent outline drawn over selected strokes, by double-sided.
+    select_overlays: HashMap<bool, Gd<Material>>,
     /// Per-update live-stroke costs, recorded only while benchmarking.
     timings: Option<Vec<UpdateTiming>>,
 }
@@ -116,6 +130,8 @@ impl INode3D for SketchCanvas {
             pick: PickIndex::new(),
             half_widths: HashMap::new(),
             erasing: None,
+            selection: Vec::new(),
+            select_overlays: HashMap::new(),
             timings: None,
         }
     }
@@ -153,6 +169,9 @@ impl SketchCanvas {
     /// The Look changed (picked, or a sketch was loaded): apply `look_environment()`.
     #[signal]
     fn look_changed();
+    /// The selection changed; `count` strokes are selected.
+    #[signal]
+    fn selection_changed(count: i64);
 
     // ---- Looks ---------------------------------------------------------------------------
 
@@ -628,6 +647,164 @@ impl SketchCanvas {
         out.join("\n").as_str().into()
     }
 
+    // ---- Selection (§3i) ---------------------------------------------------------------------
+
+    /// Selects the frontmost stroke within `tolerance` pixels of `pos`. `mode`: 0 replaces the
+    /// selection (a miss clears it), 1 adds, 2 removes. Returns whether a stroke was there.
+    #[func]
+    pub(crate) fn select_at(&mut self, camera: Gd<Camera3D>, pos: Vector2, tolerance: f32, mode: i64) -> bool {
+        let Some(cam) = pick_camera(&camera) else { return false };
+        self.skip_hidden_layers();
+        let hit = self.pick.nearest(&cam, glam::Vec2::new(pos.x, pos.y), tolerance);
+        self.select(hit.into_iter().collect(), mode);
+        hit.is_some()
+    }
+
+    /// Selects strokes with at least half their points inside the lasso (screen pixels), at any
+    /// depth. `mode` as for [`Self::select_at`]. Returns how many the lasso caught.
+    #[func]
+    pub(crate) fn select_lasso(&mut self, camera: Gd<Camera3D>, polygon: PackedVector2Array, mode: i64) -> i64 {
+        let Some(cam) = pick_camera(&camera) else { return 0 };
+        self.skip_hidden_layers();
+        let poly: Vec<glam::Vec2> = polygon.as_slice().iter().map(|p| glam::Vec2::new(p.x, p.y)).collect();
+        let ids = self.pick.in_lasso(&cam, &poly);
+        let n = ids.len() as i64;
+        self.select(ids, mode);
+        n
+    }
+
+    /// Whether the frontmost stroke within `tolerance` pixels of `pos` is selected.
+    #[func]
+    fn selected_at(&mut self, camera: Gd<Camera3D>, pos: Vector2, tolerance: f32) -> bool {
+        let Some(cam) = pick_camera(&camera) else { return false };
+        self.skip_hidden_layers();
+        self.pick.nearest(&cam, glam::Vec2::new(pos.x, pos.y), tolerance).is_some_and(|id| self.selection.contains(&id))
+    }
+
+    #[func]
+    fn select_all(&mut self) {
+        let hidden: Vec<_> = self.doc.layers().iter().filter(|l| !l.visible || l.locked).map(|l| l.id).collect();
+        let ids = self.doc.strokes().iter().filter(|s| !hidden.contains(&s.layer)).map(|s| s.id).collect();
+        self.set_selection(ids);
+    }
+
+    #[func]
+    fn deselect(&mut self) {
+        self.set_selection(Vec::new());
+    }
+
+    #[func]
+    fn selection_count(&self) -> i64 {
+        self.selection.len() as i64
+    }
+
+    /// Removes the selected strokes (one undo step).
+    #[func]
+    fn delete_selected(&mut self) -> i64 {
+        let ids = std::mem::take(&mut self.selection);
+        let changes = self.doc.remove_strokes(&ids);
+        self.apply(changes);
+        self.signals().selection_changed().emit(0);
+        ids.len() as i64
+    }
+
+    /// Copies the selected strokes, a little to the camera's right, and selects the copies
+    /// (one undo step).
+    #[func]
+    fn duplicate_selected(&mut self, camera: Gd<Camera3D>) -> i64 {
+        if self.selection.is_empty() {
+            return 0;
+        }
+        let t = camera.get_global_transform();
+        let (lo, hi) = self.selection.iter().filter_map(|id| self.doc.stroke(*id)).flat_map(|s| s.points.iter()).fold(
+            (glam::Vec3::splat(f32::MAX), glam::Vec3::splat(f32::MIN)),
+            |(lo, hi), p| (lo.min(p.pos), hi.max(p.pos)),
+        );
+        let eye = glam::Vec3::new(t.origin.x, t.origin.y, t.origin.z);
+        let right = t.basis.col_a();
+        let offset = glam::Vec3::new(right.x, right.y, right.z) * eye.distance((lo + hi) * 0.5) * 0.05;
+        let (changes, copies) = self.doc.duplicate_strokes(&self.selection, offset);
+        self.apply(changes);
+        let n = copies.len() as i64;
+        self.set_selection(copies);
+        n
+    }
+
+    /// Re-brushes the selected strokes with the current brush (one undo step).
+    #[func]
+    fn rebrush_selected(&mut self) -> bool {
+        let brush = self.brush.clone();
+        let r = self.doc.intern_brush(&brush.def);
+        self.compiled.entry(r).or_insert(brush);
+        let changes = self.doc.set_brush(&self.selection.clone(), r);
+        let changed = !changes.is_empty();
+        self.apply(changes);
+        changed
+    }
+
+    fn skip_hidden_layers(&mut self) {
+        let skipped = self.doc.layers().iter().filter(|l| !l.visible || l.locked).map(|l| l.id);
+        self.pick.set_skipped_layers(skipped);
+    }
+
+    fn select(&mut self, ids: Vec<StrokeId>, mode: i64) {
+        let mut next = if mode == 0 { Vec::new() } else { self.selection.clone() };
+        for id in ids {
+            match mode {
+                2 => next.retain(|s| *s != id),
+                _ if !next.contains(&id) => next.push(id),
+                _ => {}
+            }
+        }
+        self.set_selection(next);
+    }
+
+    fn set_selection(&mut self, ids: Vec<StrokeId>) {
+        if ids == self.selection {
+            return;
+        }
+        for id in std::mem::take(&mut self.selection) {
+            if let Some(node) = self.nodes.get_mut(&id) {
+                node.set_material_overlay(Option::<&Gd<Material>>::None);
+            }
+        }
+        self.selection = ids;
+        for id in self.selection.clone() {
+            self.highlight(id);
+        }
+        let n = self.selection.len() as i64;
+        self.signals().selection_changed().emit(n);
+    }
+
+    /// Draws the accent outline over a selected stroke.
+    fn highlight(&mut self, id: StrokeId) {
+        let Some(brush) = self.doc.stroke(id).map(|s| s.brush) else { return };
+        let double_sided = self.brush_for(brush).material().double_sided;
+        let overlay = match self.select_overlays.get(&double_sided) {
+            Some(m) => m.clone(),
+            None => {
+                // A pale tint over the stroke (so it shows on strokes the accent's colour),
+                // then the accent outline.
+                let mut outline = ShaderMaterial::new_gd();
+                outline.set_shader(&self.shader(airdraw_look::OUTLINE_SHADER, double_sided));
+                outline.set_shader_parameter("outline_color", &SELECTION_COLOR.to_variant());
+                outline.set_shader_parameter("outline_width", &3.0f32.to_variant());
+                outline.set_shader_parameter("flat_ribbon", &double_sided.to_variant());
+                let mut tint_shader = Shader::new_gd();
+                tint_shader.set_code(SELECTION_TINT_SHADER);
+                let mut tint = ShaderMaterial::new_gd();
+                tint.set_shader(&tint_shader);
+                tint.set_next_pass(&outline);
+                let m: Gd<Material> = tint.upcast();
+                self.select_overlays.insert(double_sided, m.clone());
+                m
+            }
+        };
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.set_material_overlay(&overlay);
+        }
+    }
+
     #[func]
     fn is_erasing(&self) -> bool {
         self.erasing.is_some()
@@ -1033,8 +1210,21 @@ impl SketchCanvas {
         }
         for change in changes {
             match change {
-                Change::Added(id) | Change::Updated(id) => self.index_stroke(id),
-                Change::Removed(id) => self.pick.remove(id),
+                Change::Added(id) => self.index_stroke(id),
+                Change::Updated(id) => {
+                    self.index_stroke(id);
+                    if self.selection.contains(&id) {
+                        self.highlight(id);
+                    }
+                }
+                Change::Removed(id) => {
+                    self.pick.remove(id);
+                    if let Some(i) = self.selection.iter().position(|s| *s == id) {
+                        self.selection.remove(i);
+                        let n = self.selection.len() as i64;
+                        self.signals().selection_changed().emit(n);
+                    }
+                }
                 Change::Guide => {}
                 Change::Reset => {
                     if let Some(Erase::Partial(p)) = self.erasing.take() {
@@ -1044,6 +1234,10 @@ impl SketchCanvas {
                         }
                     }
                     self.pick.clear();
+                    if !self.selection.is_empty() {
+                        self.selection.clear();
+                        self.signals().selection_changed().emit(0);
+                    }
                 }
             }
             match change {

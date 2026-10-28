@@ -848,7 +848,7 @@ mod tests {
         let (_, pieces) = d.replace_strokes(vec![(a, vec![p[..10].to_vec(), p[14..].to_vec()])]);
         let moved: Vec<InputPoint> = d.stroke(b).unwrap().points.iter().map(|q| InputPoint { pos: q.pos + Vec3::X, ..*q }).collect();
         d.replace_strokes(vec![(b, vec![moved])]);
-        d.duplicate_strokes(&pieces);
+        d.duplicate_strokes(&pieces, Vec3::ZERO);
         d.set_brush(&pieces, ribbon);
         d.undo();
         d.undo();
@@ -935,7 +935,7 @@ mod tests {
         let ink = d.intern_brush(&brush("com.airdraw.ink"));
         d.add_stroke(ink, points(300, 0.0));
         let (big, _) = d.add_stroke(ink, points(40_000, 1.0));
-        d.duplicate_strokes(&[big]);
+        d.duplicate_strokes(&[big], Vec3::ZERO);
         d.undo();
         d.undo();
         let mut back = Document::from_bytes(&d.to_bytes()).unwrap();

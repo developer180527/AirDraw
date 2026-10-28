@@ -6,6 +6,12 @@ class_name Shortcuts
 const KEYS := {
 	"tool_draw": [KEY_B, false, false],
 	"tool_erase": [KEY_E, false, false],
+	"tool_select": [KEY_V, false, false],
+	"select_all": [KEY_A, true, false],
+	"deselect": [KEY_ESCAPE, false, false],
+	"duplicate": [KEY_D, true, false],
+	"delete_selection": [KEY_BACKSPACE, false, false],
+	"rebrush_selection": [KEY_R, false, true],
 	"tool_guide": [KEY_G, false, false],
 	"undo": [KEY_Z, true, false],
 	"redo": [KEY_Z, true, true],
@@ -49,6 +55,8 @@ static func hint(action: String) -> String:
 	var text := OS.get_keycode_string(k[0])
 	if k[0] == KEY_BACKSPACE:
 		text = "⌫" if apple else "Backspace"
+	elif k[0] == KEY_ESCAPE:
+		text = "Esc"
 	if k[2]:
 		text = ("⇧" if apple else "Shift+") + text
 	if k[1]:

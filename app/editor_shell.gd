@@ -3,14 +3,14 @@ extends CanvasLayer
 ## The drawing screen's chrome, floating over a full-screen canvas (docs/ARCHITECTURE.md §5-3).
 ##
 ## Light round buttons float along the top: Gallery and the sketch name on the left, the tools
-## (Draw, Erase, Guide) in the middle, undo/redo/export/menu on the right, with the view cube below.
+## (Draw, Erase, Select, Guide) in the middle, undo/redo/export/menu on the right, with the view cube below.
 ## A slim dark tray docked to the hand-side edge holds the recent brushes as nibs; the brush
 ## list opens next to it with a live stroke preview per brush and closes when you draw. A
 ## slim bar at the bottom holds the current tool's options. Same layout on tablet and desktop;
 ## left-handed mode mirrors the tray and cube.
 
 signal action(name: String)  ## gallery, export, undo, redo, edit_brush, import_brushes, clear, remove_guide, save_copy
-signal tool_selected(tool: String)  ## draw, erase, guide
+signal tool_selected(tool: String)  ## draw, erase, select, guide
 signal plane_requested(index: int)  ## GuideController preset index (3 = view-aligned)
 signal guide_offset_changed(offset: float)
 signal guide_opacity_changed(opacity: float)
@@ -19,13 +19,22 @@ signal orbit_requested(delta: Vector2)
 signal look_requested(id: String)
 signal eraser_size_changed(radius_px: float)
 signal eraser_partial_changed(partial: bool)
+## A selection command from the Select bar or the stroke menu: delete, duplicate, rebrush,
+## select_all, deselect.
+signal selection_action(name: String)
+## Right-click or finger long-press at `pos` (viewport pixels): select what's there and show
+## the stroke menu.
+signal stroke_menu_requested(pos: Vector2)
 signal layout_changed
 
 const SETTINGS := "user://settings.cfg"
-const TOOLS := [["draw", "Draw", "brush", "tool_draw"], ["erase", "Erase", "eraser", "tool_erase"], ["guide", "Guide", "guide", "tool_guide"]]
+const TOOLS := [["draw", "Draw", "brush", "tool_draw"], ["erase", "Erase", "eraser", "tool_erase"], ["select", "Select", "select", "tool_select"], ["guide", "Guide", "guide", "tool_guide"]]
 ## Eraser diameter in points (scaled like the rest of the UI), and its slider range.
 const ERASER_SIZE := 24.0
 const ERASER_SIZES := Vector2(8.0, 96.0)
+## Selection commands: action, label, shortcut.
+const SELECTION_ACTIONS := [["delete", "Delete", "delete_selection"], ["duplicate", "Duplicate", "duplicate"],
+	["rebrush", "Re-brush", "rebrush_selection"], ["select_all", "Select All", "select_all"]]
 const GUIDE_PLANES := ["Front", "Side", "Top", "View"]
 const RECENT_MAX := 5
 
@@ -79,6 +88,11 @@ var _look := ""
 var _guide_path: Line2D
 var _eraser_ring: Control  ## the eraser's outline at the pen
 var _eraser_at := Vector2.ZERO
+var _lasso: Line2D  ## the Select tool's lasso while it's drawn
+var _stroke_menu: PanelContainer  ## right-click / long-press menu for selected strokes
+var _selected := 0  ## selected strokes, for the Select bar
+var _press_at := Vector2.INF  ## where a right-click or a lone finger went down
+var _press_serial := 0  ## invalidates a pending long-press
 ## Guide state shown in the context bars.
 var _has_drawn_guide := false
 var _plane := 0
@@ -129,6 +143,15 @@ func setup(p_canvas: SketchCanvas, camera: Camera3D) -> void:
 		_eraser_ring.draw_arc(_eraser_at, r + _s, 0.0, TAU, 48, Color(1, 1, 1, 0.8), 2.0 * _s, true)
 		_eraser_ring.draw_arc(_eraser_at, r, 0.0, TAU, 48, Color(0.1, 0.1, 0.12, 0.9), 1.2 * _s, true))
 	_root.add_child(_eraser_ring)
+	_lasso = Line2D.new()
+	_lasso.name = "Lasso"
+	_lasso.default_color = UiTheme.ACCENT
+	_lasso.joint_mode = Line2D.LINE_JOINT_ROUND
+	_root.add_child(_lasso)
+	canvas.selection_changed.connect(func(n: int) -> void:
+		_selected = n
+		if tool == "select":
+			_rebuild_bar())
 
 	canvas.brushes_changed.connect(_rebuild_brushes)
 	canvas.brush_changed.connect(func(id: String) -> void:
@@ -144,6 +167,7 @@ func setup(p_canvas: SketchCanvas, camera: Camera3D) -> void:
 
 ## With a mouse, the Erase tool's ring follows the pointer over the canvas.
 func _input(event: InputEvent) -> void:
+	_watch_menu_press(event)
 	if tool != "erase" or not event is InputEventMouseMotion:
 		return
 	var motion := event as InputEventMouseMotion
@@ -151,6 +175,27 @@ func _input(event: InputEvent) -> void:
 		return
 	var over_ui := ui_rects().any(func(r: Rect2) -> bool: return r.has_point(motion.position))
 	show_eraser(motion.position, not over_ui)
+
+
+## Right-click (without dragging) or a still finger held for half a second on the canvas asks
+## for the stroke menu there.
+func _watch_menu_press(event: InputEvent) -> void:
+	var over_ui := func(p: Vector2) -> bool: return ui_rects().any(func(r: Rect2) -> bool: return r.has_point(p))
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT:
+		if event.pressed:
+			_press_at = event.position
+		elif _press_at.distance_to(event.position) < 6 * _s and not over_ui.call(event.position):
+			stroke_menu_requested.emit(event.position)
+	elif event is InputEventScreenTouch:
+		_press_serial += 1
+		if event.pressed and event.index == 0 and not over_ui.call(event.position):
+			_press_at = event.position
+			var serial := _press_serial
+			get_tree().create_timer(0.5).timeout.connect(func() -> void:
+				if serial == _press_serial:
+					stroke_menu_requested.emit(_press_at))
+	elif event is InputEventScreenDrag and _press_at.distance_to(event.position) > 10 * _s:
+		_press_serial += 1
 
 
 # ---- Public API ------------------------------------------------------------------------
@@ -169,8 +214,8 @@ func ui_rects() -> Array[Rect2]:
 	var rects: Array[Rect2] = []
 	if ui_hidden:
 		return rects
-	if _menu.visible:
-		# While the menu is open a touch anywhere just closes it.
+	if _menu.visible or _stroke_menu.visible:
+		# While a menu is open a touch anywhere just closes it.
 		rects.append(_scrim.get_global_rect())
 	for c: Control in [_gallery, _title, _tools, _actions, _rail, _bar, _cube, _sheet]:
 		if c.visible:
@@ -211,6 +256,11 @@ func set_guide_drawing(on: bool) -> void:
 		b.set_pressed_no_signal(on)
 
 
+## How near a tap must be to a stroke to pick it, viewport pixels.
+func tap_tolerance_px() -> float:
+	return 14.0 * _s
+
+
 ## Eraser radius in viewport pixels.
 func eraser_radius_px() -> float:
 	return eraser_size * 0.5 * _s
@@ -221,6 +271,26 @@ func show_eraser(pos: Vector2, shown: bool) -> void:
 	_eraser_at = pos
 	_eraser_ring.visible = shown
 	_eraser_ring.queue_redraw()
+
+
+## The Select tool's lasso, in screen pixels (empty clears it).
+func show_lasso(points: PackedVector2Array) -> void:
+	if points.size() > 1:
+		points.append(points[0])
+	_lasso.points = points
+	_lasso.width = 2 * _s
+
+
+## The menu for selected strokes, opened at `pos` (viewport pixels).
+func open_stroke_menu(pos: Vector2) -> void:
+	close_menu()
+	_apply_sizes()
+	_stroke_menu.reset_size()
+	var screen := get_viewport().get_visible_rect().size
+	_stroke_menu.position = (pos + Vector2(8, 8) * _s).clamp(Vector2.ZERO, screen - _stroke_menu.size)
+	_scrim.visible = true
+	_stroke_menu.visible = true
+	layout_changed.emit.call_deferred()
 
 
 ## The guide stroke being drawn, in screen pixels (empty clears it).
@@ -245,7 +315,7 @@ func close_sheet() -> void:
 func toggle_ui() -> void:
 	ui_hidden = not ui_hidden
 	for c in _root.get_children():
-		if c != _toast and c != _guide_path and c != _menu and c != _scrim and c != _eraser_ring:
+		if c != _toast and c != _guide_path and c != _menu and c != _scrim and c != _eraser_ring and c != _lasso and c != _stroke_menu:
 			c.visible = not ui_hidden
 	close_menu()
 	if ui_hidden:
@@ -316,8 +386,9 @@ func show_look(id: String) -> void:
 
 
 func close_menu() -> void:
-	if _menu and _menu.visible:
+	if (_menu and _menu.visible) or (_stroke_menu and _stroke_menu.visible):
 		_menu.visible = false
+		_stroke_menu.visible = false
 		_scrim.visible = false
 		layout_changed.emit.call_deferred()
 
@@ -455,6 +526,16 @@ func _build_menu() -> void:
 	item.call("Import brushes", "Import brushes", action.emit.bind("import_brushes"))
 	item.call("Clear sketch", "Clear sketch", action.emit.bind("clear"))
 
+	_stroke_menu = _panel()
+	_stroke_menu.name = "Stroke menu"
+	_stroke_menu.visible = false
+	var rows := VBoxContainer.new()
+	rows.add_theme_constant_override("separation", 0)
+	_stroke_menu.add_child(rows)
+	for a in SELECTION_ACTIONS:
+		_menu_item(rows, "Menu " + a[1], a[1], selection_action.emit.bind(a[0])).tooltip_text = Shortcuts.tooltip(a[1], a[2])
+	_root.add_child(_stroke_menu)
+
 
 func _menu_item(parent: Control, name: String, text: String, on_press: Callable) -> Button:
 	var b := _button(name, "", text, func() -> void:
@@ -510,6 +591,8 @@ func _rebuild_bar() -> void:
 			_draw_bar()
 		"erase":
 			_erase_bar()
+		"select":
+			_select_bar()
 		"guide":
 			_guide_bar()
 	_apply_sizes()
@@ -543,6 +626,20 @@ func _draw_bar() -> void:
 		_bar_row.add_child(on)
 		_bar_button("Remove guide", "Remove", action.emit.bind("remove_guide")).tooltip_text = \
 			"Remove the guide and draw on the preset plane"
+
+
+func _select_bar() -> void:
+	var label := Label.new()
+	label.text = "%d selected" % _selected if _selected > 0 else "Tap or lasso strokes"
+	label.theme_type_variation = "Small"
+	_bar_row.add_child(label)
+	_bar_row.add_child(VSeparator.new())
+	for a in SELECTION_ACTIONS:
+		var b := _bar_button(a[1], a[1], selection_action.emit.bind(a[0]))
+		b.tooltip_text = Shortcuts.tooltip(a[1], a[2])
+		b.disabled = _selected == 0 and a[0] != "select_all"
+	if _selected > 0:
+		_bar_button("Deselect", "Deselect", selection_action.emit.bind("deselect")).tooltip_text = Shortcuts.tooltip("Deselect", "deselect")
 
 
 func _erase_bar() -> void:

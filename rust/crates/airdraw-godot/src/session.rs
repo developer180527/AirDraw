@@ -44,6 +44,14 @@ pub struct SketchSession {
     erase_partial: bool,
     /// Where the eraser was last, while an eraser drag is on.
     erase_last: Option<glam::Vec2>,
+    /// The pen selects (the Select tool): a tap picks a stroke, a drag draws a lasso.
+    #[var]
+    select_tool: bool,
+    /// How near a tap must be to a stroke to pick it, viewport pixels.
+    #[var]
+    tap_tolerance: f32,
+    /// The Select tool's pen path so far (screen pixels), while one is on.
+    select_path: Option<Vec<glam::Vec2>>,
     /// The guide the current stroke started on; it stays on it until the pen lifts.
     stroke_guide: Option<Guide>,
     /// Screen positions and camera rays of the guide being drawn.
@@ -81,6 +89,9 @@ impl INode for SketchSession {
             eraser_radius: 12.0,
             erase_partial: false,
             erase_last: None,
+            select_tool: false,
+            tap_tolerance: 14.0,
+            select_path: None,
             stroke_guide: None,
             guide_path: Vec::new(),
             platform: Platform::builder(data_root).input(input).build(),
@@ -176,6 +187,9 @@ impl SketchSession {
     /// Where to draw the eraser's ring (viewport pixels), or `shown` false to hide it.
     #[signal]
     fn eraser_cursor(pos: Vector2, shown: bool);
+    /// The Select tool's lasso so far (viewport pixels); empty when it ends.
+    #[signal]
+    fn lasso_changed(points: PackedVector2Array);
     /// An eraser drag ended; `erased` strokes went (one undo step).
     #[signal]
     fn erased(count: i64);
@@ -197,6 +211,12 @@ impl SketchSession {
     fn pick_project(&self, world: Vector3) -> Vector2 {
         let at = self.pick_camera().and_then(|c| c.project(v3(world))).map(|(p, _)| p);
         at.map_or(Vector2::new(-1.0, -1.0), |p| Vector2::new(p.x, p.y))
+    }
+
+    /// A stroke, erase or lasso is in progress (a held finger shouldn't open a menu then).
+    #[func]
+    fn is_busy(&self) -> bool {
+        self.drawing || self.pending_begin.is_some() || self.erase_last.is_some() || self.select_path.is_some()
     }
 
     #[func]
@@ -252,6 +272,14 @@ impl SketchSession {
         };
         if erase {
             self.erase_stroke(e);
+            return;
+        }
+        let select = match e {
+            StrokeEvent::Begin { .. } => self.select_tool,
+            _ => self.select_path.is_some(),
+        };
+        if select {
+            self.select_stroke(e);
             return;
         }
         if self.guide_drawing {
@@ -348,6 +376,49 @@ impl SketchSession {
                 self.with_canvas(|c| c.cancel_erase());
                 self.signals().eraser_cursor().emit(Vector2::ZERO, false);
             }
+        }
+    }
+
+    /// Select tool: a tap (under 10 px of travel) picks the stroke there, a drag lassos.
+    /// Shift adds to the selection, Alt removes from it.
+    fn select_stroke(&mut self, e: StrokeEvent) {
+        let path = match e {
+            StrokeEvent::Begin { sample, .. } => {
+                self.cancel_drawing();
+                self.select_path = Some(vec![sample.pos]);
+                return;
+            }
+            StrokeEvent::Extend { samples, .. } => {
+                let Some(path) = &mut self.select_path else { return };
+                path.extend(samples.iter().map(|s| s.pos));
+                let points: PackedVector2Array = path.iter().map(|p| Vector2::new(p.x, p.y)).collect();
+                if path.windows(2).map(|w| w[0].distance(w[1])).sum::<f32>() >= TAP_TRAVEL {
+                    self.signals().lasso_changed().emit(&points);
+                }
+                return;
+            }
+            StrokeEvent::End { sample } => {
+                let Some(mut path) = self.select_path.take() else { return };
+                path.push(sample.pos);
+                path
+            }
+            StrokeEvent::Cancel => {
+                self.select_path = None;
+                self.signals().lasso_changed().emit(&PackedVector2Array::new());
+                return;
+            }
+        };
+        self.signals().lasso_changed().emit(&PackedVector2Array::new());
+        let input = Input::singleton();
+        let mode = if input.is_key_pressed(Key::ALT) { 2 } else if input.is_key_pressed(Key::SHIFT) { 1 } else { 0 };
+        let (Some(camera), Some(mut canvas)) = (self.camera.clone(), self.canvas.clone()) else { return };
+        let travel: f32 = path.windows(2).map(|w| w[0].distance(w[1])).sum();
+        if travel < TAP_TRAVEL {
+            let at = path[0];
+            canvas.bind_mut().select_at(camera, Vector2::new(at.x, at.y), self.tap_tolerance, mode);
+        } else {
+            let polygon: PackedVector2Array = path.iter().map(|p| Vector2::new(p.x, p.y)).collect();
+            canvas.bind_mut().select_lasso(camera, polygon, mode);
         }
     }
 
@@ -454,6 +525,9 @@ impl SketchSession {
         }
     }
 }
+
+/// Pen travel (pixels) under which a Select-tool stroke is a tap, not a lasso.
+const TAP_TRAVEL: f32 = 10.0;
 
 fn v3(v: Vector3) -> glam::Vec3 {
     glam::Vec3::new(v.x, v.y, v.z)

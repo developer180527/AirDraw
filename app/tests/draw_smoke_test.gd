@@ -548,6 +548,75 @@ func _ready() -> void:
 	_key(KEY_Z, true)
 	await _tap(shell.find_button("Erase whole"))
 	print("SMOKE erase back_to_whole=", not session.erase_partial, " sketch_restored=", canvas.stroke_count() == before_cut)
+	# Select (§3i): V, tap a stroke (accent outline), Esc, lasso, duplicate as one undo step,
+	# select all, and the stroke menu by right-click and long-press.
+	var sel_row := center.y + 120.0
+	main.set_tool("draw")
+	await _stroke(Vector2(center.x - 150, sel_row), func(t: float) -> Vector2: return Vector2(t * 300.0, 0.0))
+	var sel_strokes: int = canvas.stroke_count()
+	_key(KEY_V)
+	var sel_v_selects: bool = main.get("tool") == "select" and shell.find_button("Select").button_pressed
+	await _click(Vector2(center.x, sel_row), MOUSE_BUTTON_LEFT)
+	var sel_outlined := func() -> int:
+		return canvas.get_children().filter(func(c): return c is MeshInstance3D and c.visible and c.material_overlay != null).size()
+	var sel_tapped: int = canvas.selection_count()
+	var sel_outline_matches: bool = sel_outlined.call() == sel_tapped
+	var sel_bar_says: bool = shell.find_button("Delete") != null and not shell.find_button("Delete").disabled
+	await _shot("user://select_tap.png")
+	_key(KEY_ESCAPE)
+	var sel_esc_clears: bool = canvas.selection_count() == 0 and sel_outlined.call() == 0 and shell.find_button("Delete").disabled
+	print("SMOKE select v=", sel_v_selects, " tap=", sel_tapped == 1, " outlined=", sel_outline_matches, " bar=", sel_bar_says, " esc_clears=", sel_esc_clears)
+	var sel_box := [Vector2(center.x - 170, sel_row - 25), Vector2(center.x + 170, sel_row - 25), Vector2(center.x + 170, sel_row + 25), Vector2(center.x - 170, sel_row + 25), Vector2(center.x - 170, sel_row - 25)]
+	await _erase_drag(sel_box[0], sel_box[0], func() -> void: pass)  # a tap on nothing clears
+	_mouse_button(sel_box[0], true)
+	for i in range(1, 5):
+		for k in 10:
+			var sel_ev := InputEventMouseMotion.new()
+			sel_ev.position = sel_box[i - 1].lerp(sel_box[i], (k + 1) / 10.0)
+			sel_ev.button_mask = MOUSE_BUTTON_MASK_LEFT
+			Input.parse_input_event(sel_ev)
+	Input.flush_buffered_events()
+	var sel_lasso_drawn: bool = shell._lasso.points.size() > 3
+	_mouse_button(sel_box[4], false)
+	await get_tree().process_frame
+	var sel_lassoed: int = canvas.selection_count()
+	_key(KEY_D, true)
+	var sel_duplicated: bool = canvas.stroke_count() == sel_strokes + sel_lassoed and canvas.selection_count() == sel_lassoed
+	_key(KEY_Z, true)
+	var sel_dup_undone: bool = canvas.stroke_count() == sel_strokes
+	_key(KEY_A, true)
+	var sel_all: bool = canvas.selection_count() == canvas.stroke_count()
+	_key(KEY_ESCAPE)
+	print("SMOKE select lasso=", sel_lassoed >= 1, " lasso_shown=", sel_lasso_drawn, " lasso_cleared=", shell._lasso.points.is_empty(),
+		" duplicate=", sel_duplicated, " one_undo_step=", sel_dup_undone, " all=", sel_all)
+	main.set_tool("draw")
+	await _click(Vector2(center.x, sel_row), MOUSE_BUTTON_RIGHT)
+	await _settle()
+	var sel_menu_by_click: bool = shell._stroke_menu.visible and canvas.selection_count() == 1 and main.get("tool") == "select"
+	await _tap(shell.find_button("Menu Delete"))
+	var sel_menu_deleted: bool = canvas.stroke_count() == sel_strokes - 1 and not shell._stroke_menu.visible
+	_key(KEY_Z, true)
+	_touch(0, Vector2(center.x, sel_row), true)
+	await get_tree().create_timer(0.7).timeout
+	var sel_menu_by_hold: bool = shell._stroke_menu.visible and canvas.selection_count() == 1
+	_touch(0, Vector2(center.x, sel_row), false)
+	shell.close_menu()
+	_key(KEY_BACKSPACE)
+	var sel_backspace: bool = canvas.stroke_count() == sel_strokes - 1
+	_key(KEY_Z, true)
+	# Mouse events right after a touch are taken as the OS's copies of it and dropped.
+	await get_tree().create_timer(0.3).timeout
+	await _click(Vector2(center.x, sel_row), MOUSE_BUTTON_LEFT)
+	canvas.set_brush("com.airdraw.dots")
+	var sel_rebrushed: bool = canvas.rebrush_selected()
+	if sel_rebrushed:
+		_key(KEY_Z, true)
+	_key(KEY_ESCAPE)
+	print("SMOKE select menu_right_click=", sel_menu_by_click, " menu_delete=", sel_menu_deleted, " menu_long_press=", sel_menu_by_hold,
+		" backspace=", sel_backspace, " rebrush=", sel_rebrushed, " restored=", canvas.stroke_count() == sel_strokes,
+		" pickable_in_step=", canvas.pickable_count() == canvas.stroke_count())
+	main.set_tool("draw")
+	main.set_tool("erase")
 	main.call("_pen_action", "doubletap")
 	var back_to_draw: bool = main.get("tool") == "draw"
 	main.call("_pen_action", "doubletap")
@@ -602,6 +671,17 @@ func _erase_drag(a: Vector2, b: Vector2, mid: Callable) -> void:
 	Input.flush_buffered_events()
 	mid.call()
 	_mouse_button(b, false)
+	await get_tree().process_frame
+
+
+func _click(pos: Vector2, button: MouseButton) -> void:
+	for pressed in [true, false]:
+		var ev := InputEventMouseButton.new()
+		ev.button_index = button
+		ev.position = pos
+		ev.pressed = pressed
+		Input.parse_input_event(ev)
+	Input.flush_buffered_events()
 	await get_tree().process_frame
 
 

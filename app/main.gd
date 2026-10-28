@@ -22,7 +22,7 @@ var thumbnails: ThumbnailRenderer
 var home: HomeScreen
 var app_files: AppFiles
 ## The pen's tool: "draw" (ink on the active guide), "erase" (removes the strokes it passes
-## over) or "guide" (the next stroke draws a guide).
+## over), "select" (tap or lasso strokes) or "guide" (the next stroke draws a guide).
 var tool := "draw"
 ## The tool before the current one, for Pencil double-tap (Draw ⇄ Erase).
 var previous_tool := "draw"
@@ -121,6 +121,9 @@ func _ready() -> void:
 	toolbar.eraser_size_changed.connect(func(r: float) -> void: session.eraser_radius = r)
 	toolbar.eraser_partial_changed.connect(func(on: bool) -> void: session.erase_partial = on)
 	session.eraser_cursor.connect(toolbar.show_eraser)
+	session.lasso_changed.connect(toolbar.show_lasso)
+	toolbar.selection_action.connect(_selection_action)
+	toolbar.stroke_menu_requested.connect(_open_stroke_menu)
 	toolbar.look_requested.connect(func(id: String) -> void:
 		canvas.set_look(id)
 		_update_hud())
@@ -262,6 +265,14 @@ func _handle_key(event: InputEventKey) -> void:
 			set_tool("draw")
 		"tool_erase":
 			set_tool("erase")
+		"tool_select":
+			set_tool("select")
+		"select_all", "deselect", "duplicate":
+			_selection_action(action)
+		"delete_selection":
+			_selection_action("delete")
+		"rebrush_selection":
+			_selection_action("rebrush")
 		"tool_guide":
 			set_tool("draw" if tool == "guide" else "guide")
 		"undo":
@@ -319,10 +330,44 @@ func set_tool(t: String) -> void:
 	session.erase_tool = t == "erase"
 	session.eraser_radius = toolbar.eraser_radius_px()
 	session.erase_partial = toolbar.eraser_partial
+	session.select_tool = t == "select"
+	session.tap_tolerance = toolbar.tap_tolerance_px()
 	toolbar.set_tool(t)
 	toolbar.set_guide_drawing(t == "guide")
 	if t == "guide":
 		_set_status("Draw a line: it becomes a surface you can draw on.")
+
+
+## Selection commands from the Select bar, the stroke menu and the keyboard (§3i).
+func _selection_action(action: String) -> void:
+	match action:
+		"delete":
+			var n: int = canvas.delete_selected()
+			if n > 0:
+				_set_status("Deleted %d stroke%s — Undo brings %s back" % [n, "" if n == 1 else "s", "it" if n == 1 else "them"])
+		"duplicate":
+			canvas.duplicate_selected(rig.camera)
+		"rebrush":
+			if canvas.rebrush_selected():
+				_set_status("Re-brushed with " + canvas.brush_name(canvas.current_brush()))
+		"select_all":
+			canvas.select_all()
+			set_tool("select")
+		"deselect":
+			canvas.deselect()
+
+
+## Right-click or long-press: select the stroke there (keeping a selection it's part of) and
+## open the stroke menu.
+func _open_stroke_menu(pos: Vector2) -> void:
+	if session.is_busy():
+		return
+	var tolerance := toolbar.tap_tolerance_px()
+	if not canvas.selected_at(rig.camera, pos, tolerance):
+		canvas.select_at(rig.camera, pos, tolerance, 0)
+	if canvas.selection_count() > 0:
+		set_tool("select")
+		toolbar.open_stroke_menu(pos)
 
 
 func _file_action(action: String) -> void:

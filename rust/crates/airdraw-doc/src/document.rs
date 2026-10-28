@@ -331,16 +331,27 @@ impl Document {
         (changes, ids.into_iter().flatten().collect())
     }
 
-    /// Copies strokes (same layer, brush and points) on top of the sketch, in document order.
-    /// One undo step. Returns the changes and the copies' ids.
-    pub fn duplicate_strokes(&mut self, ids: &[StrokeId]) -> (Vec<Change>, Vec<StrokeId>) {
+    /// Copies strokes (same layer and brush, points moved by `offset`) on top of the sketch, in
+    /// document order. One undo step. Returns the changes and the copies' ids.
+    pub fn duplicate_strokes(&mut self, ids: &[StrokeId], offset: glam::Vec3) -> (Vec<Change>, Vec<StrokeId>) {
         let originals: Vec<Stroke> = self.strokes.iter().filter(|s| ids.contains(&s.id)).cloned().collect();
         if originals.is_empty() {
             return (Vec::new(), Vec::new());
         }
         let base = self.strokes.len();
         let added: Vec<(usize, Stroke)> =
-            originals.into_iter().enumerate().map(|(n, s)| (base + n, Stroke { id: self.new_id(), ..s })).collect();
+            originals
+            .into_iter()
+            .enumerate()
+            .map(|(n, s)| {
+                let points: Arc<[InputPoint]> = if offset == glam::Vec3::ZERO {
+                    s.points.clone()
+                } else {
+                    s.points.iter().map(|p| InputPoint { pos: p.pos + offset, ..*p }).collect()
+                };
+                (base + n, Stroke { id: self.new_id(), points, ..s })
+            })
+            .collect();
         let new_ids = added.iter().map(|(_, s)| s.id).collect();
         (self.commit(Op::Replace { removed: Vec::new(), added }), new_ids)
     }
@@ -633,13 +644,16 @@ pub(crate) mod tests {
         let mut d = Document::new();
         let ink = d.intern_brush(&brush("com.airdraw.ink"));
         let s: Vec<_> = (0..3).map(|i| d.add_stroke(ink, points(4, i as f32)).0).collect();
-        let (changes, copies) = d.duplicate_strokes(&[s[2], s[0]]);
+        let (changes, copies) = d.duplicate_strokes(&[s[2], s[0]], Vec3::ZERO);
         assert_eq!(changes, copies.iter().map(|&c| Change::Added(c)).collect::<Vec<_>>());
         assert_eq!(ids(&d), [s.clone(), copies.clone()].concat());
         assert_eq!(d.stroke(copies[0]).unwrap().points, d.stroke(s[0]).unwrap().points, "document order");
         d.undo();
         assert_eq!(ids(&d), s);
-        assert!(d.duplicate_strokes(&[]).0.is_empty());
+        assert!(d.duplicate_strokes(&[], Vec3::ZERO).0.is_empty());
+        let (_, moved) = d.duplicate_strokes(&[s[1]], Vec3::X);
+        let (a, b) = (&d.stroke(s[1]).unwrap().points, &d.stroke(moved[0]).unwrap().points);
+        assert!(a.iter().zip(b.iter()).all(|(p, q)| q.pos == p.pos + Vec3::X && q.pressure == p.pressure));
     }
 
     #[test]
