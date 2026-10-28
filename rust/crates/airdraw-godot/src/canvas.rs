@@ -7,6 +7,7 @@ use airdraw_brush::{Brush, BrushLibrary, BrushSource, InputPoint, MaterialDesc, 
 use airdraw_doc::{BrushRef, Change, Document, Stroke, StrokeId, read_thumbnail};
 use airdraw_guide::Guide;
 use airdraw_look::LookLibrary;
+use airdraw_pick::{Camera, PickIndex};
 use airdraw_export::{ExporterRegistry, FolderSink, SceneOptions, build_scene};
 use godot::classes::base_material_3d::{CullMode, Feature, ShadingMode};
 use godot::classes::mesh::PrimitiveType;
@@ -47,6 +48,12 @@ pub struct SketchCanvas {
     warm_up: Vec<(Gd<MeshInstance3D>, u32)>,
     nodes: HashMap<StrokeId, Gd<MeshInstance3D>>,
     current: Option<LiveStroke>,
+    /// Strokes the eraser and selection can pick (§3i), kept in step with the document.
+    pick: PickIndex,
+    /// Widest half width per brush snapshot, for picking.
+    half_widths: HashMap<BrushRef, f32>,
+    /// Strokes the eraser has touched in the current drag, hidden until it lifts.
+    erasing: Option<Vec<StrokeId>>,
     /// Per-update live-stroke costs, recorded only while benchmarking.
     timings: Option<Vec<UpdateTiming>>,
 }
@@ -78,6 +85,9 @@ impl INode3D for SketchCanvas {
             warm_up: Vec::new(),
             nodes: HashMap::new(),
             current: None,
+            pick: PickIndex::new(),
+            half_widths: HashMap::new(),
+            erasing: None,
             timings: None,
         }
     }
@@ -339,14 +349,81 @@ impl SketchCanvas {
         self.current.is_some()
     }
 
+    // ---- Erasing (§3i) -----------------------------------------------------------------------
+
+    /// Starts an eraser drag: strokes it touches hide at once and are removed together, as one
+    /// undo step, by [`Self::end_erase`].
+    pub(crate) fn begin_erase(&mut self) {
+        self.cancel_stroke();
+        self.cancel_erase();
+        let skipped = self.doc.layers().iter().filter(|l| !l.visible || l.locked).map(|l| l.id);
+        self.pick.set_skipped_layers(skipped);
+        self.erasing = Some(Vec::new());
+    }
+
+    /// Erases along `path` (screen pixels) with an eraser of `radius` pixels: the front strokes
+    /// under it. Returns how many strokes this drag has touched so far.
+    pub(crate) fn erase_along(&mut self, cam: &Camera, path: &[glam::Vec2], radius: f32) -> usize {
+        if self.erasing.is_none() {
+            return 0;
+        }
+        let moves: Vec<(glam::Vec2, glam::Vec2)> = match path {
+            [p] => vec![(*p, *p)],
+            _ => path.windows(2).map(|w| (w[0], w[1])).collect(),
+        };
+        for (a, b) in moves {
+            for id in self.pick.under_capsule(cam, a, b, radius, true) {
+                // Hidden strokes no longer hide what's behind them.
+                self.pick.remove(id);
+                if let Some(node) = self.nodes.get_mut(&id) {
+                    node.set_visible(false);
+                }
+                self.erasing.as_mut().expect("checked above").push(id);
+            }
+        }
+        self.erasing.as_ref().map_or(0, Vec::len)
+    }
+
+    /// Removes what the drag touched (one undo step). Returns how many strokes went.
+    pub(crate) fn end_erase(&mut self) -> usize {
+        let Some(ids) = self.erasing.take() else { return 0 };
+        let changes = self.doc.remove_strokes(&ids);
+        self.apply(changes);
+        ids.len()
+    }
+
+    /// Shows what the drag touched again, as if it never happened.
+    pub(crate) fn cancel_erase(&mut self) {
+        let Some(ids) = self.erasing.take() else { return };
+        for id in ids {
+            if let Some(node) = self.nodes.get_mut(&id) {
+                node.set_visible(true);
+            }
+            self.index_stroke(id);
+        }
+    }
+
+    #[func]
+    fn is_erasing(&self) -> bool {
+        self.erasing.is_some()
+    }
+
+    /// Strokes the pick index holds (tests).
+    #[func]
+    fn pickable_count(&self) -> i64 {
+        self.pick.len() as i64
+    }
+
     #[func]
     pub(crate) fn undo(&mut self) {
+        self.cancel_erase();
         let changes = self.doc.undo();
         self.apply(changes);
     }
 
     #[func]
     pub(crate) fn redo(&mut self) {
+        self.cancel_erase();
         let changes = self.doc.redo();
         self.apply(changes);
     }
@@ -365,6 +442,7 @@ impl SketchCanvas {
     #[func]
     fn clear(&mut self) {
         self.cancel_stroke();
+        self.cancel_erase();
         let changes = self.doc.clear();
         self.apply(changes);
     }
@@ -730,6 +808,15 @@ impl SketchCanvas {
         }
         for change in changes {
             match change {
+                Change::Added(id) | Change::Updated(id) => self.index_stroke(id),
+                Change::Removed(id) => self.pick.remove(id),
+                Change::Guide => {}
+                Change::Reset => {
+                    self.erasing = None;
+                    self.pick.clear();
+                }
+            }
+            match change {
                 Change::Added(id) if !self.nodes.contains_key(&id) => {
                     if let Some(stroke) = self.doc.stroke(id).cloned() {
                         let node = self.make_node(&stroke);
@@ -759,15 +846,40 @@ impl SketchCanvas {
                     self.compiled.clear();
                     self.materials.clear();
                     self.outlines.clear();
+                    self.half_widths.clear();
                     for stroke in self.doc.strokes().to_vec() {
                         let node = self.make_node(&stroke);
                         self.nodes.insert(stroke.id, node);
+                        self.index_stroke(stroke.id);
                     }
                 }
             }
         }
         let count = self.doc.strokes().len() as i64;
         self.signals().strokes_changed().emit(count);
+    }
+
+    /// Adds (or refreshes) a document stroke in the pick index.
+    fn index_stroke(&mut self, id: StrokeId) {
+        let Some(stroke) = self.doc.stroke(id).cloned() else { return };
+        let half_width = self.half_width_for(stroke.brush);
+        self.pick.insert(&stroke, half_width);
+    }
+
+    /// A brush snapshot's widest half width: its width on a slow, full-pressure test stroke
+    /// (pressure and speed only ever thin a line, tapers only shorten it).
+    fn half_width_for(&mut self, r: BrushRef) -> f32 {
+        if let Some(&w) = self.half_widths.get(&r) {
+            return w;
+        }
+        let brush = self.brush_for(r);
+        let probe: Vec<InputPoint> = (0..40)
+            .map(|i| InputPoint { pos: glam::Vec3::X * (i as f32 * 0.01), normal: glam::Vec3::Z, pressure: 1.0, tilt: None, t: i as f64 * 0.05 })
+            .collect();
+        let widest = brush.centerline(&probe).iter().map(|p| p.width).fold(0.0f32, f32::max);
+        let w = (widest * 0.5).max(0.001);
+        self.half_widths.insert(r, w);
+        w
     }
 
     fn make_node(&mut self, stroke: &Stroke) -> Gd<MeshInstance3D> {

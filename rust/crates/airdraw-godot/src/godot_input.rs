@@ -39,6 +39,9 @@ pub struct GodotInput {
     next_touch: u64,
     /// A native backend delivers touches; Godot's touch events are left to the GUI.
     pub skip_touch: bool,
+    /// The tablet pen's eraser end is towards the tablet (seen on its last motion, hover
+    /// included): its press erases.
+    pen_inverted: bool,
 }
 
 impl GodotInput {
@@ -61,9 +64,10 @@ impl GodotInput {
     pub fn convert(&mut self, event: &Gd<InputEvent>, tx: &QueueSender) -> bool {
         let t = now();
         if let Ok(e) = event.clone().try_cast::<InputEventMouseButton>() {
-            return mouse_button(&e, t, tx);
+            return mouse_button(&e, t, self.pen_inverted, tx);
         }
         if let Ok(e) = event.clone().try_cast::<InputEventMouseMotion>() {
+            self.pen_inverted = e.get_pen_inverted();
             return mouse_motion(&e, t, tx);
         }
         if let Ok(e) = event.clone().try_cast::<InputEventScreenTouch>() {
@@ -151,15 +155,17 @@ impl GodotInput {
     }
 }
 
-fn mouse_button(e: &Gd<InputEventMouseButton>, t: f64, tx: &QueueSender) -> bool {
+fn mouse_button(e: &Gd<InputEventMouseButton>, t: f64, pen_inverted: bool, tx: &QueueSender) -> bool {
     let pos = v2(e.get_position());
     let modifiers = modifiers(&e.clone().upcast());
     let index = e.get_button_index();
     if let Some(&(button, ..)) = MOUSE_BUTTONS.iter().find(|(_, gd, _)| *gd == index) {
         let id = mouse_id(button);
         let sample = PenSample::at(pos, t);
+        // A tablet pen pressed with its eraser end erases, like a pen's eraser on iPad.
+        let tool = if pen_inverted && button == MouseButton::Left { PointerTool::Eraser } else { PointerTool::Mouse(button) };
         tx.push(if e.is_pressed() {
-            PenEvent::Down { id, tool: PointerTool::Mouse(button), sample, modifiers }
+            PenEvent::Down { id, tool, sample, modifiers }
         } else {
             PenEvent::Up { id, sample }
         });

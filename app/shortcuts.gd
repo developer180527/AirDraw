@@ -5,6 +5,7 @@ class_name Shortcuts
 ## action → [keycode, needs Cmd/Ctrl, needs Shift]
 const KEYS := {
 	"tool_draw": [KEY_B, false, false],
+	"tool_erase": [KEY_E, false, false],
 	"tool_guide": [KEY_G, false, false],
 	"undo": [KEY_Z, true, false],
 	"redo": [KEY_Z, true, true],

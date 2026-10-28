@@ -479,6 +479,45 @@ func _ready() -> void:
 		" closes=", not shell._menu.visible)
 	await _tap(shell.find_button("Draw"))
 
+	# Erase (§3i): picking projects like Godot's camera; a drag hides what it touches and
+	# removes it on lift as one undo step; E and Pencil double-tap switch tools.
+	var session = main.get("session")
+	var worst := 0.0
+	for w in [Vector3.ZERO, Vector3(0.4, 0.3, -0.2), Vector3(-0.7, 0.1, 0.5)]:
+		worst = maxf(worst, session.pick_project(w).distance_to(rig.camera.unproject_position(w)))
+	print("SMOKE erase projection_matches_godot=", worst < 0.5, " pickable_in_step=", canvas.pickable_count() == canvas.stroke_count())
+	var line_y := center.y - 60.0
+	await _stroke(Vector2(center.x - 150, line_y), func(t: float) -> Vector2: return Vector2(t * 300.0, 0.0))
+	var with_line: int = canvas.stroke_count()
+	_key(KEY_E)
+	var tool_is_erase: bool = main.get("tool") == "erase" and shell.find_button("Erase").button_pressed
+	_mouse_button(Vector2(center.x - 160, line_y), true)
+	for i in range(1, 41):
+		var ev := InputEventMouseMotion.new()
+		ev.position = Vector2(center.x - 160 + i * 8.0, line_y + sin(i * 0.5) * 4.0)
+		ev.button_mask = MOUSE_BUTTON_MASK_LEFT
+		Input.parse_input_event(ev)
+	Input.flush_buffered_events()
+	var mid_drag: bool = canvas.is_erasing() and canvas.stroke_count() == with_line and shell._eraser_ring.visible
+	await _shot("user://erase_drag.png")
+	_mouse_button(Vector2(center.x + 170, line_y), false)
+	await get_tree().process_frame
+	var after_erase: int = canvas.stroke_count()
+	_key(KEY_Z, true)
+	var erase_undone: int = canvas.stroke_count()
+	_key(KEY_Z, true, true)
+	print("SMOKE erase tool=", tool_is_erase, " hides_until_lift=", mid_drag, " erased=", after_erase < with_line,
+		" no_ink=", after_erase <= with_line - 1, " ring_hidden_after=", not shell._eraser_ring.visible,
+		" one_undo_step=", erase_undone == with_line, " redo=", canvas.stroke_count() == after_erase,
+		" pickable_in_step=", canvas.pickable_count() == canvas.stroke_count())
+	# Leave the sketch as it was for the checks below (the erase may have emptied it).
+	_key(KEY_Z, true)
+	main.call("_pen_action", "doubletap")
+	var back_to_draw: bool = main.get("tool") == "draw"
+	main.call("_pen_action", "doubletap")
+	print("SMOKE erase double_tap_toggles=", back_to_draw and main.get("tool") == "erase")
+	await _tap(shell.find_button("Draw"))
+
 	# Home screen: Gallery autosaves; both sketches are in Recents with thumbnails.
 	await _tap(bar.find_button("Gallery"))
 	for i in 3:

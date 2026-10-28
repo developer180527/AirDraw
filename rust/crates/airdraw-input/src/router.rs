@@ -392,6 +392,21 @@ mod tests {
     }
 
     #[test]
+    fn eraser_end_strokes_are_eraser_strokes_and_end() {
+        // A pen's eraser end, including a tablet pen that arrives as the mouse (same id as
+        // its later mouse moves).
+        let mut r = InputRouter::new(RouterConfig::default());
+        let id = (1 << 32) + 1;
+        let out = run(&mut r, vec![down(id, PointerTool::Eraser, 0., 0., 0.), mv(id, 5., 0., 0.01), up(id, 6., 0., 0.02)]);
+        assert!(matches!(out[0], Routed::Stroke(StrokeEvent::Begin { tool: DrawTool::Eraser, .. })));
+        assert!(matches!(out[1], Routed::Stroke(StrokeEvent::Extend { .. })));
+        assert!(matches!(out[2], Routed::Stroke(StrokeEvent::End { .. })));
+        // The pen is up again: a finger can orbit.
+        let out = run(&mut r, vec![down(9, PointerTool::Finger, 0., 0., 1.0), mv(9, 10., 4., 1.1)]);
+        assert_eq!(out, vec![Routed::View(ViewEvent::Orbit(Vec2::new(10., 4.)))]);
+    }
+
+    #[test]
     fn one_finger_orbits() {
         let mut r = InputRouter::new(RouterConfig::default());
         let out = run(&mut r, vec![down(1, PointerTool::Finger, 0., 0., 0.), mv(1, 10., 4., 0.1)]);

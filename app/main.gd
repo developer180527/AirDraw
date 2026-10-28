@@ -21,8 +21,11 @@ var brush_editor: BrushEditor
 var thumbnails: ThumbnailRenderer
 var home: HomeScreen
 var app_files: AppFiles
-## The pen's tool: "draw" (ink on the active guide) or "guide" (the next stroke draws a guide).
+## The pen's tool: "draw" (ink on the active guide), "erase" (removes the strokes it passes
+## over) or "guide" (the next stroke draws a guide).
 var tool := "draw"
+## The tool before the current one, for Pencil double-tap (Draw ⇄ Erase).
+var previous_tool := "draw"
 
 ## Overridable before the node enters the tree (tests).
 var sketch_dir := ""
@@ -112,6 +115,8 @@ func _ready() -> void:
 	toolbar.guide_offset_changed.connect(guides.set_offset)
 	toolbar.guide_opacity_changed.connect(guides.set_opacity)
 	toolbar.tool_selected.connect(set_tool)
+	toolbar.eraser_size_changed.connect(func(r: float) -> void: session.eraser_radius = r)
+	session.eraser_cursor.connect(toolbar.show_eraser)
 	toolbar.look_requested.connect(func(id: String) -> void:
 		canvas.set_look(id)
 		_update_hud())
@@ -251,6 +256,8 @@ func _handle_key(event: InputEventKey) -> void:
 	match action:
 		"tool_draw":
 			set_tool("draw")
+		"tool_erase":
+			set_tool("erase")
 		"tool_guide":
 			set_tool("draw" if tool == "guide" else "guide")
 		"undo":
@@ -301,8 +308,12 @@ func _apply_look() -> void:
 
 ## Switches the pen's tool. The Guide tool draws one guide, then the app goes back to Draw.
 func set_tool(t: String) -> void:
+	if t != tool:
+		previous_tool = tool
 	tool = t
 	session.guide_drawing = t == "guide"
+	session.erase_tool = t == "erase"
+	session.eraser_radius = toolbar.eraser_radius_px()
 	toolbar.set_tool(t)
 	toolbar.set_guide_drawing(t == "guide")
 	if t == "guide":
@@ -343,6 +354,7 @@ func _update_ui_regions() -> void:
 	if home and home.visible:
 		session.set_ui_regions([screen])
 		return
+	session.eraser_radius = toolbar.eraser_radius_px()
 	var regions: Array[Rect2] = toolbar.ui_rects()
 	if export_dialog and export_dialog.visible:
 		regions.append(screen)
@@ -358,12 +370,12 @@ func _set_status(text: String) -> void:
 	_update_hud()
 
 
-## Apple Pencil gestures. Placeholder mapping until there's an eraser and tool palette.
+## Apple Pencil gestures. Double-tap switches Draw ⇄ Erase (or back to the tool before Erase),
+## unless it's turned off in the iPad's Pencil settings.
 func _pen_action(action: String) -> void:
 	match action:
 		"doubletap":
-			canvas.undo()
-			_set_status("Pencil double-tap: undo")
+			set_tool((previous_tool if previous_tool != "erase" else "draw") if tool == "erase" else "erase")
 		"squeeze":
 			_cycle_brush(1)
 			_set_status("Pencil squeeze: " + canvas.brush_name(canvas.current_brush()))

@@ -3,24 +3,28 @@ extends CanvasLayer
 ## The drawing screen's chrome, floating over a full-screen canvas (docs/ARCHITECTURE.md §5-3).
 ##
 ## Light round buttons float along the top: Gallery and the sketch name on the left, the tools
-## (Draw, Guide) in the middle, undo/redo/export/menu on the right, with the view cube below.
+## (Draw, Erase, Guide) in the middle, undo/redo/export/menu on the right, with the view cube below.
 ## A slim dark tray docked to the hand-side edge holds the recent brushes as nibs; the brush
 ## list opens next to it with a live stroke preview per brush and closes when you draw. A
 ## slim bar at the bottom holds the current tool's options. Same layout on tablet and desktop;
 ## left-handed mode mirrors the tray and cube.
 
 signal action(name: String)  ## gallery, export, undo, redo, edit_brush, import_brushes, clear, remove_guide, save_copy
-signal tool_selected(tool: String)  ## draw, guide
+signal tool_selected(tool: String)  ## draw, erase, guide
 signal plane_requested(index: int)  ## GuideController preset index (3 = view-aligned)
 signal guide_offset_changed(offset: float)
 signal guide_opacity_changed(opacity: float)
 signal view_requested(view: String)  ## front, back, side, left, top, bottom, 3d
 signal orbit_requested(delta: Vector2)
 signal look_requested(id: String)
+signal eraser_size_changed(radius_px: float)
 signal layout_changed
 
 const SETTINGS := "user://settings.cfg"
-const TOOLS := [["draw", "Draw", "brush", "tool_draw"], ["guide", "Guide", "guide", "tool_guide"]]
+const TOOLS := [["draw", "Draw", "brush", "tool_draw"], ["erase", "Erase", "eraser", "tool_erase"], ["guide", "Guide", "guide", "tool_guide"]]
+## Eraser diameter in points (scaled like the rest of the UI), and its slider range.
+const ERASER_SIZE := 24.0
+const ERASER_SIZES := Vector2(8.0, 96.0)
 const GUIDE_PLANES := ["Front", "Side", "Top", "View"]
 const RECENT_MAX := 5
 
@@ -31,6 +35,8 @@ var tool := "draw"
 var ui_hidden := false
 var sheet_open := false
 var tray_collapsed := false
+## Eraser diameter in points.
+var eraser_size := ERASER_SIZE
 ## Brush ids, most recent first (the tray; keys 1–9).
 var recent_brushes: Array[String] = []
 
@@ -68,6 +74,8 @@ var _look_items := {}  ## look id → menu item
 var _look_box: VBoxContainer  ## the menu's Look rows, rebuilt when it opens
 var _look := ""
 var _guide_path: Line2D
+var _eraser_ring: Control  ## the eraser's outline at the pen
+var _eraser_at := Vector2.ZERO
 ## Guide state shown in the context bars.
 var _has_drawn_guide := false
 var _plane := 0
@@ -108,6 +116,16 @@ func setup(p_canvas: SketchCanvas, camera: Camera3D) -> void:
 	_guide_path.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	_guide_path.end_cap_mode = Line2D.LINE_CAP_ROUND
 	_root.add_child(_guide_path)
+	_eraser_ring = Control.new()
+	_eraser_ring.name = "Eraser ring"
+	_eraser_ring.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_eraser_ring.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_eraser_ring.visible = false
+	_eraser_ring.draw.connect(func() -> void:
+		var r := eraser_radius_px()
+		_eraser_ring.draw_arc(_eraser_at, r + _s, 0.0, TAU, 48, Color(1, 1, 1, 0.8), 2.0 * _s, true)
+		_eraser_ring.draw_arc(_eraser_at, r, 0.0, TAU, 48, Color(0.1, 0.1, 0.12, 0.9), 1.2 * _s, true))
+	_root.add_child(_eraser_ring)
 
 	canvas.brushes_changed.connect(_rebuild_brushes)
 	canvas.brush_changed.connect(func(id: String) -> void:
@@ -119,6 +137,17 @@ func setup(p_canvas: SketchCanvas, camera: Camera3D) -> void:
 	_sync_history()
 	get_viewport().size_changed.connect(_layout)
 	_layout()
+
+
+## With a mouse, the Erase tool's ring follows the pointer over the canvas.
+func _input(event: InputEvent) -> void:
+	if tool != "erase" or not event is InputEventMouseMotion:
+		return
+	var motion := event as InputEventMouseMotion
+	if motion.button_mask != 0:
+		return
+	var over_ui := ui_rects().any(func(r: Rect2) -> bool: return r.has_point(motion.position))
+	show_eraser(motion.position, not over_ui)
 
 
 # ---- Public API ------------------------------------------------------------------------
@@ -154,6 +183,8 @@ func set_title(text: String, dirty: bool) -> void:
 ## Highlights the current tool and shows its context bar.
 func set_tool(p_tool: String) -> void:
 	tool = p_tool
+	if tool != "erase":
+		show_eraser(_eraser_at, false)
 	# set_pressed_no_signal doesn't release the group's other buttons, so set each one.
 	for t in _tool_buttons:
 		_tool_buttons[t].set_pressed_no_signal(t == tool)
@@ -175,6 +206,18 @@ func set_guide_drawing(on: bool) -> void:
 	var b := find_button("Draw guide")
 	if b:
 		b.set_pressed_no_signal(on)
+
+
+## Eraser radius in viewport pixels.
+func eraser_radius_px() -> float:
+	return eraser_size * 0.5 * _s
+
+
+## Shows the eraser's ring at `pos` (viewport pixels), or hides it.
+func show_eraser(pos: Vector2, shown: bool) -> void:
+	_eraser_at = pos
+	_eraser_ring.visible = shown
+	_eraser_ring.queue_redraw()
 
 
 ## The guide stroke being drawn, in screen pixels (empty clears it).
@@ -199,7 +242,7 @@ func close_sheet() -> void:
 func toggle_ui() -> void:
 	ui_hidden = not ui_hidden
 	for c in _root.get_children():
-		if c != _toast and c != _guide_path and c != _menu and c != _scrim:
+		if c != _toast and c != _guide_path and c != _menu and c != _scrim and c != _eraser_ring:
 			c.visible = not ui_hidden
 	close_menu()
 	if ui_hidden:
@@ -462,6 +505,8 @@ func _rebuild_bar() -> void:
 	match tool:
 		"draw":
 			_draw_bar()
+		"erase":
+			_erase_bar()
 		"guide":
 			_guide_bar()
 	_apply_sizes()
@@ -495,6 +540,31 @@ func _draw_bar() -> void:
 		_bar_row.add_child(on)
 		_bar_button("Remove guide", "Remove", action.emit.bind("remove_guide")).tooltip_text = \
 			"Remove the guide and draw on the preset plane"
+
+
+func _erase_bar() -> void:
+	var label := Label.new()
+	label.text = "Erases whole strokes · Size"
+	label.theme_type_variation = "Small"
+	_bar_row.add_child(label)
+	var size := HSlider.new()
+	size.name = "Eraser size"
+	size.min_value = ERASER_SIZES.x
+	size.max_value = ERASER_SIZES.y
+	size.step = 1.0
+	size.value = eraser_size
+	size.tooltip_text = "Eraser size on screen; it stays the same when you zoom"
+	size.custom_minimum_size.x = 160 * _s
+	size.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	size.value_changed.connect(func(v: float) -> void:
+		eraser_size = v
+		eraser_size_changed.emit(eraser_radius_px())
+		# Preview the size in the middle of the screen while dragging.
+		show_eraser(get_viewport().get_visible_rect().size * 0.5, true))
+	size.drag_ended.connect(func(_changed: bool) -> void:
+		show_eraser(_eraser_at, false)
+		_save_settings())
+	_bar_row.add_child(size)
 
 
 func _guide_bar() -> void:
@@ -820,6 +890,7 @@ func _load_settings() -> void:
 		left_handed = cfg.get_value("ui", "left_handed", false)
 		tray_collapsed = cfg.get_value("ui", "tray_collapsed", false)
 		recent_brushes.assign(cfg.get_value("ui", "recent_brushes", []))
+		eraser_size = clampf(cfg.get_value("ui", "eraser_size", ERASER_SIZE), ERASER_SIZES.x, ERASER_SIZES.y)
 
 
 func _save_settings() -> void:
@@ -828,4 +899,5 @@ func _save_settings() -> void:
 	cfg.set_value("ui", "left_handed", left_handed)
 	cfg.set_value("ui", "tray_collapsed", tray_collapsed)
 	cfg.set_value("ui", "recent_brushes", recent_brushes)
+	cfg.set_value("ui", "eraser_size", eraser_size)
 	cfg.save(SETTINGS)

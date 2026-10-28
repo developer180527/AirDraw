@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use airdraw_guide::{Guide, Hit, Ray, Sweep, SweepOptions};
-use airdraw_input::{Command, DeviceCaps, InputRouter, PenEvent, PenSample, Routed, RouterConfig, StrokeEvent, ViewEvent};
+use airdraw_input::{Command, DeviceCaps, DrawTool, InputRouter, PenEvent, PenSample, Routed, RouterConfig, StrokeEvent, ViewEvent};
 use airdraw_platform::{InputSource, MergedInput, Platform, QueueInput, QueueSender};
 use godot::classes::{Camera3D, INode, InputEvent, Node, Os};
 use godot::prelude::*;
@@ -31,6 +31,14 @@ pub struct SketchSession {
     /// The next pen stroke draws a 3D guide instead of ink, then this turns off.
     #[var]
     guide_drawing: bool,
+    /// The pen erases (the Erase tool). A pen's eraser end erases whatever this is.
+    #[var]
+    erase_tool: bool,
+    /// Eraser radius in viewport pixels.
+    #[var]
+    eraser_radius: f32,
+    /// Where the eraser was last, while an eraser drag is on.
+    erase_last: Option<glam::Vec2>,
     /// The guide the current stroke started on; it stays on it until the pen lifts.
     stroke_guide: Option<Guide>,
     /// Screen positions and camera rays of the guide being drawn.
@@ -64,6 +72,9 @@ impl INode for SketchSession {
             guide_origin: Vector3::ZERO,
             finger_draws: false,
             guide_drawing: false,
+            erase_tool: false,
+            eraser_radius: 12.0,
+            erase_last: None,
             stroke_guide: None,
             guide_path: Vec::new(),
             platform: Platform::builder(data_root).input(input).build(),
@@ -156,6 +167,12 @@ impl SketchSession {
     /// Hide or show all UI (4-finger tap).
     #[signal]
     fn ui_toggle_requested();
+    /// Where to draw the eraser's ring (viewport pixels), or `shown` false to hide it.
+    #[signal]
+    fn eraser_cursor(pos: Vector2, shown: bool);
+    /// An eraser drag ended; `erased` strokes went (one undo step).
+    #[signal]
+    fn erased(count: i64);
 
     /// Screen rectangles covered by UI (toolbar, open dialogs). Contacts starting there are
     /// ignored, since native backends see touches the GUI also handles.
@@ -166,6 +183,14 @@ impl SketchSession {
             .map(|r| (glam::Vec2::new(r.position.x, r.position.y), glam::Vec2::new(r.end().x, r.end().y)))
             .collect();
         self.router.set_ui_regions(regions);
+    }
+
+    /// Where picking puts a world point on screen (tests compare it with Godot's own
+    /// `Camera3D.unproject_position`); `(-1, -1)` behind the camera.
+    #[func]
+    fn pick_project(&self, world: Vector3) -> Vector2 {
+        let at = self.pick_camera().and_then(|c| c.project(v3(world))).map(|(p, _)| p);
+        at.map_or(Vector2::new(-1.0, -1.0), |p| Vector2::new(p.x, p.y))
     }
 
     #[func]
@@ -202,7 +227,11 @@ impl SketchSession {
                 let name = GString::from(format!("{a:?}").to_lowercase().as_str());
                 self.signals().pen_action().emit(&name);
             }
-            // Hover cursor comes with the native pen backends.
+            // The eraser's ring follows a hovering pen (Pencil hover on iPad).
+            Routed::Hover(Some(s)) if self.erase_tool && self.erase_last.is_none() => {
+                self.signals().eraser_cursor().emit(Vector2::new(s.pos.x, s.pos.y), true)
+            }
+            Routed::Hover(None) if self.erase_last.is_none() => self.signals().eraser_cursor().emit(Vector2::ZERO, false),
             Routed::Hover(_) => {}
         }
     }
@@ -211,12 +240,19 @@ impl SketchSession {
         if matches!(e, StrokeEvent::Begin { .. }) {
             self.signals().pen_down().emit();
         }
+        let erase = match e {
+            StrokeEvent::Begin { tool, .. } => tool == DrawTool::Eraser || self.erase_tool,
+            _ => self.erase_last.is_some(),
+        };
+        if erase {
+            self.erase_stroke(e);
+            return;
+        }
         if self.guide_drawing {
             self.guide_stroke(e);
             return;
         }
         match e {
-            // Eraser behaves like the brush until erasing is implemented.
             StrokeEvent::Begin { sample, .. } => {
                 self.cancel_drawing();
                 self.pending_begin = Some(sample);
@@ -274,6 +310,63 @@ impl SketchSession {
         }
         let path: PackedVector2Array = self.guide_path.iter().map(|(p, _)| *p).collect();
         self.signals().guide_path_changed().emit(&path);
+    }
+
+    /// Eraser drag: removes the front strokes the eraser passes over, all at once at the end.
+    fn erase_stroke(&mut self, e: StrokeEvent) {
+        match e {
+            StrokeEvent::Begin { sample, .. } => {
+                self.cancel_drawing();
+                self.with_canvas(|c| c.begin_erase());
+                self.erase_last = Some(sample.pos);
+                self.erase_to(&[sample.pos]);
+            }
+            StrokeEvent::Extend { samples, .. } => {
+                let Some(last) = self.erase_last else { return };
+                let path: Vec<glam::Vec2> = std::iter::once(last).chain(samples.iter().map(|s| s.pos)).collect();
+                self.erase_to(&path);
+            }
+            StrokeEvent::End { sample } => {
+                if let Some(last) = self.erase_last {
+                    self.erase_to(&[last, sample.pos]);
+                }
+                self.erase_last = None;
+                let mut count = 0;
+                self.with_canvas(|c| count = c.end_erase());
+                self.signals().eraser_cursor().emit(Vector2::ZERO, false);
+                self.signals().erased().emit(count as i64);
+            }
+            StrokeEvent::Cancel => {
+                self.erase_last = None;
+                self.with_canvas(|c| c.cancel_erase());
+                self.signals().eraser_cursor().emit(Vector2::ZERO, false);
+            }
+        }
+    }
+
+    fn erase_to(&mut self, path: &[glam::Vec2]) {
+        let Some(&end) = path.last() else { return };
+        self.erase_last = Some(end);
+        if let Some(cam) = self.pick_camera() {
+            let radius = self.eraser_radius;
+            self.with_canvas(|c| {
+                c.erase_along(&cam, path, radius);
+            });
+        }
+        self.signals().eraser_cursor().emit(Vector2::new(end.x, end.y), true);
+    }
+
+    /// The camera as picking sees it: world → camera, projection, viewport size in pixels.
+    fn pick_camera(&self) -> Option<airdraw_pick::Camera> {
+        let cam = self.camera.as_ref()?;
+        let size = cam.get_viewport()?.get_visible_rect().size;
+        let t = cam.get_global_transform().affine_inverse();
+        let a = |v: Vector3| glam::Vec3A::new(v.x, v.y, v.z);
+        let view = glam::Affine3A::from_cols(a(t.basis.col_a()), a(t.basis.col_b()), a(t.basis.col_c()), a(t.origin));
+        let p = cam.get_camera_projection();
+        let c = |v: Vector4| glam::Vec4::new(v.x, v.y, v.z, v.w);
+        let proj = glam::Mat4::from_cols(c(p.cols[0]), c(p.cols[1]), c(p.cols[2]), c(p.cols[3]));
+        Some(airdraw_pick::Camera::new(view, proj, glam::Vec2::new(size.x, size.y)))
     }
 
     fn add_guide_point(&mut self, pos: glam::Vec2) {

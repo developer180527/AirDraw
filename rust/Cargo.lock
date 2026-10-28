@@ -67,6 +67,7 @@ dependencies = [
  "airdraw-input",
  "airdraw-ios",
  "airdraw-look",
+ "airdraw-pick",
  "airdraw-platform",
  "glam",
  "godot",

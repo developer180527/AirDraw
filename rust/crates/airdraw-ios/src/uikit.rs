@@ -10,7 +10,7 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_foundation::NSSet;
 use objc2_ui_kit::{
     UIApplication, UIEvent, UIGestureRecognizer, UIGestureRecognizerState, UIHoverGestureRecognizer,
-    UIPencilInteraction, UIPencilInteractionDelegate, UIPencilInteractionPhase, UIPencilInteractionSqueeze,
+    UIPencilInteraction, UIPencilInteractionDelegate, UIPencilPreferredAction, UIPencilInteractionPhase, UIPencilInteractionSqueeze,
     UIPencilInteractionTap, UITouch, UITouchType, UIView,
 };
 
@@ -146,12 +146,12 @@ define_class!(
         /// iPadOS < 17.5.
         #[unsafe(method(pencilInteractionDidTap:))]
         fn did_tap_legacy(&self, _interaction: &UIPencilInteraction) {
-            self.ivars().push(PenEvent::Action(PenAction::DoubleTap));
+            self.tapped();
         }
 
         #[unsafe(method(pencilInteraction:didReceiveTap:))]
         fn did_tap(&self, _interaction: &UIPencilInteraction, _tap: &UIPencilInteractionTap) {
-            self.ivars().push(PenEvent::Action(PenAction::DoubleTap));
+            self.tapped();
         }
 
         #[unsafe(method(pencilInteraction:didReceiveSqueeze:))]
@@ -187,6 +187,16 @@ impl PencilHandler {
     fn new(mtm: MainThreadMarker, tx: QueueSender) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(tx);
         unsafe { msg_send![super(this), init] }
+    }
+
+    /// A double-tap, unless the user turned it off in Settings › Apple Pencil (the app maps
+    /// it to Draw ⇄ Erase).
+    fn tapped(&self) {
+        let ignore = MainThreadMarker::new()
+            .is_some_and(|mtm| UIPencilInteraction::preferredTapAction(mtm) == UIPencilPreferredAction::Ignore);
+        if !ignore {
+            self.ivars().push(PenEvent::Action(PenAction::DoubleTap));
+        }
     }
 }
 
