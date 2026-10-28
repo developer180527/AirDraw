@@ -828,9 +828,15 @@ pub struct WriteOptions { pub codec: CodecId, pub level: Level }
 - `Level::Fast` for autosave, `Level::Max` for "Save a copy". Levels change only the size,
   never the decoded bytes.
 - **Implemented (step 1):** `write`/`read` in `airdraw-pack`; a section that doesn't shrink is
-  stored instead. Reads are bounded (`ReadLimits`: 2 GiB per section, 1024 sections), so a
-  damaged header can't trigger huge allocations, and a codec must produce exactly the
-  header's length. zstd levels: Fast 3, Default 9, Max 19; default features off (no legacy
+  stored instead. Reads are bounded (`ReadLimits`: 2 GiB per section, 1024 sections), and a
+  codec must produce exactly the header's length. The limit alone didn't stop huge
+  allocations: zstd's bulk decoder reserved the claimed length (up to 2 GiB) for a frame that
+  doesn't record its size, or whose recorded size lies, which on iPad can fail and abort the
+  app (a crafted file shared via Files/AirDrop). Since 2026-10-28 the zstd codec checks the
+  claim against the frame's recorded size first and decodes into a buffer that grows only
+  with real output, stopping one byte past the claim; a test with a counting allocator
+  checks a 2 GiB claim reserves under 64 MB (the old decoder reserved all 2 GiB). Open
+  speed unchanged (16.1 vs 15.8 ms, file format benchmark). zstd levels: Fast 3, Default 9, Max 19; default features off (no legacy
   decoders). Built for macOS, iOS and Android (NDK clang via `CC_aarch64_linux_android`);
   Windows and Linux builds unverified until those toolchains are set up.
 - Tests run the container against the stored codec and a test codec, so the container is
@@ -972,7 +978,17 @@ stable key and section order, fixed codec settings per level.
 **Content id and hash:** `META` holds a random id created with the sketch; per-device state
 (last camera, tool) can be keyed by it, outside the file. A content hash (BLAKE3 of the
 decompressed `META` + `STRK`, excluding thumbnail and history) tells "same model" even when
-history, thumbnail or codec differ.
+history, thumbnail or codec differ. Copies made with "Save a Copy Without History" get a new
+id (`SaveOptions::new_content_id`), so they don't share per-device state with the original;
+their content hash still matches. (A file duplicated in the Files app keeps the id: the OS
+copies bytes.)
+
+**Forward compatibility of `META`:** the embedded Look (`look_def`) and the drawn guide are
+read leniently: a Look with fields this build doesn't know, or a guide kind from a newer app,
+reads as absent (the Look falls back to the built-in one with its id, else the default; the
+guide is dropped) instead of failing the whole section, which made such sketches unopenable
+(found 2026-10-28; `LookDef` is `deny_unknown_fields`). Damage that parses (non-finite guide
+numbers) still reports the file as corrupt.
 
 #### "Save a copy without history"
 

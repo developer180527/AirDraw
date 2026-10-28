@@ -128,11 +128,15 @@ pub struct SaveOptions {
     /// Include undo/redo history (within its size cap). Off for "Save a Copy Without
     /// History": deleted strokes are then gone from the file.
     pub history: bool,
+    /// Give the file a new content id: for copies, which become sketches of their own, so they
+    /// don't share per-device state (camera, tool) with the original. The content hash, which
+    /// covers only the artwork, still matches.
+    pub new_content_id: bool,
 }
 
 impl Default for SaveOptions {
     fn default() -> Self {
-        Self { level: Level::Fast, history: true }
+        Self { level: Level::Fast, history: true, new_content_id: false }
     }
 }
 
@@ -154,11 +158,21 @@ struct Meta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     look: Option<String>,
     /// The Look's full definition (format 4+), so it renders the same on a device without it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Read leniently: a Look this build can't parse (e.g. new fields from a newer app) is
+    /// dropped, and the sketch falls back to the built-in Look with that id.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
     look_def: Option<LookDef>,
     /// The drawn guide. Format 3 (a format 2 app would drop it and save the file guide-less).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Read leniently: a guide kind from a newer app is dropped, not the sketch.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
     guide: Option<GuideDef>,
+}
+
+/// Optional data from a newer app must not stop a sketch from opening: if the value doesn't
+/// parse as `T`, it reads as absent. (A missing key is handled by `#[serde(default)]`.)
+fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(d: D) -> Result<Option<T>, D::Error> {
+    let value = Option::<toml::Value>::deserialize(d)?;
+    Ok(value.and_then(|v| v.try_into().ok()))
 }
 
 /// What [`Document::content_hash`] covers: the artwork, not who saved it or when.
@@ -226,7 +240,8 @@ impl Document {
         let file_brush = |r: BrushRef| remap[r.0 as usize].unwrap();
         let strokes = crate::strokes::encode(&self.strokes, |s| file_brush(s.brush));
         let hash = content_hash(&self.content_toml(&brushes[..live]), &strokes);
-        let meta = self.meta_toml(brushes, Some(hash));
+        let content_id = if opts.new_content_id { crate::document::new_content_id() } else { self.content_id.clone() };
+        let meta = self.meta_toml(brushes, Some(hash), content_id);
         let mut w = self.file_head(FORMAT_VERSION);
         let mut sections = vec![Section { id: META, required: true, data: meta.into_bytes() }, Section { id: STRK, required: true, data: strokes }];
         if !undo.is_empty() || !redo.is_empty() {
@@ -242,7 +257,7 @@ impl Document {
     #[doc(hidden)]
     pub fn to_bytes_format3(&self) -> Vec<u8> {
         let (brushes, remap, _) = self.used_brushes(std::iter::empty());
-        let meta = self.meta_toml(brushes, None);
+        let meta = self.meta_toml(brushes, None, self.content_id.clone());
         let mut w = self.file_head(3);
         put_u32(&mut w, meta.len() as u32);
         w.extend_from_slice(meta.as_bytes());
@@ -290,10 +305,10 @@ impl Document {
         toml::to_string(&content).expect("document content always serializes")
     }
 
-    fn meta_toml(&self, brushes: Vec<BrushDef>, content_hash: Option<String>) -> String {
+    fn meta_toml(&self, brushes: Vec<BrushDef>, content_hash: Option<String>, content_id: String) -> String {
         let meta = Meta {
             app_version: env!("CARGO_PKG_VERSION").into(),
-            content_id: Some(self.content_id.clone()),
+            content_id: Some(content_id),
             content_hash,
             layers: self.layers.clone(),
             brushes,
@@ -1034,6 +1049,37 @@ mod tests {
         assert_eq!(meta.look, None);
     }
 
+    /// A newer app may add fields to a Look or new guide kinds. This build can't read them,
+    /// but the sketch must still open: the Look falls back to the built-in one with its id,
+    /// and the guide is dropped.
+    #[test]
+    fn newer_look_fields_and_guide_kinds_dont_block_opening() {
+        let newer = |meta: &str| meta.replacen("[look_def]\n", "[look_def]\ngrain = 0.5\n", 1);
+        let mut d = Document::new();
+        d.set_look(Some(clay()));
+        let meta = d.meta_toml(Vec::new(), None, d.content_id.clone());
+        assert!(newer(&meta).contains("grain = 0.5"));
+        let parsed: Meta = toml::from_str(&newer(&meta)).expect("META still parses");
+        assert!(parsed.look_def.is_none(), "the unreadable Look is dropped");
+        assert_eq!(parsed.look.as_deref(), Some("com.airdraw.clay"), "its id remains for the fallback");
+
+        let with_guide = format!("{meta}\n[guide]\nkind = \"torus\"\nradius = 2.0\n");
+        let parsed: Meta = toml::from_str(&with_guide).expect("META still parses");
+        assert!(parsed.guide.is_none());
+
+        // End to end through the file reader: a format 3 file (uncompressed META) with both.
+        let patched = format!("{}\n[guide]\nkind = \"torus\"\nradius = 2.0\n", newer(&meta));
+        let mut w = d.file_head(3); // magic, version, flags, (empty) thumbnail
+        put_u32(&mut w, patched.len() as u32);
+        w.extend_from_slice(patched.as_bytes());
+        put_u32(&mut w, 0); // no strokes
+        let sum = adler32(&w);
+        put_u32(&mut w, sum);
+        let back = Document::from_bytes(&w).expect("the sketch opens");
+        assert_eq!(back.look().map(|l| l.id.as_str()), Some("com.airdraw.clay"));
+        assert!(back.guide().is_none());
+    }
+
     #[test]
     fn embedded_look_renders_without_the_library() {
         // A custom Look this device doesn't have travels with the sketch.
@@ -1077,6 +1123,18 @@ mod tests {
         put_u32(&mut w, sum);
         bytes = w;
         assert_eq!(Document::from_bytes(&bytes).unwrap().look(), Some(&clay()));
+    }
+
+    /// A copy is a sketch of its own: new id (so it doesn't share per-device state with the
+    /// original), same artwork hash. Plain saves keep the id.
+    #[test]
+    fn copies_get_a_new_content_id_but_the_same_content_hash() {
+        let d = sample_doc();
+        let copy = Document::from_bytes(&d.to_bytes_with(SaveOptions { history: false, new_content_id: true, ..Default::default() })).unwrap();
+        assert_ne!(copy.content_id(), d.content_id());
+        assert!(valid_content_id(copy.content_id()));
+        assert_eq!(copy.content_hash(), d.content_hash());
+        assert_eq!(Document::from_bytes(&d.to_bytes()).unwrap().content_id(), d.content_id());
     }
 
     #[test]

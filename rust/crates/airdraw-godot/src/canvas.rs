@@ -579,11 +579,14 @@ impl SketchCanvas {
     }
 
     /// Writes a copy of the sketch to `path` without undo history (deleted strokes are gone
-    /// from it), for sharing. The open sketch, its file and its history are unchanged.
+    /// from it) and with its own content id, for sharing. The open sketch, its file and its
+    /// history are unchanged.
     /// Returns an empty string on success, else the error message.
     #[func]
     fn save_copy_without_history(&self, path: GString) -> GString {
-        let opts = airdraw_doc::SaveOptions { history: false, ..Default::default() };
+        // A copy is a sketch of its own: a new content id, so it doesn't share per-device
+        // state (camera, tool) with this one.
+        let opts = airdraw_doc::SaveOptions { history: false, new_content_id: true, ..Default::default() };
         match self.doc.save_with(Path::new(&path.to_string()), opts) {
             Ok(()) => GString::new(),
             Err(e) => GString::from(&e.to_string()),
