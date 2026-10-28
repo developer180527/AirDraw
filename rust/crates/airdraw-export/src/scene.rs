@@ -147,12 +147,7 @@ impl SceneOptions {
 
 /// Builds the export scene. `brush` resolves a document brush snapshot to a compiled brush
 /// (the host owns compilation and caching).
-pub fn build_scene(
-    doc: &Document,
-    name: &str,
-    brush: &mut dyn FnMut(BrushRef) -> Arc<Brush>,
-    opts: &SceneOptions,
-) -> ExportScene {
+pub fn build_scene(doc: &Document, name: &str, brush: &mut dyn FnMut(BrushRef) -> Arc<Brush>, opts: &SceneOptions) -> ExportScene {
     let mut scene = ExportScene {
         meta: SceneMeta { name: name.into(), up: opts.up, generator: format!("AirDraw {}", env!("CARGO_PKG_VERSION")) },
         nodes: Vec::new(),

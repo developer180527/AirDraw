@@ -198,10 +198,8 @@ impl SketchSession {
     /// ignored, since native backends see touches the GUI also handles.
     #[func]
     fn set_ui_regions(&mut self, rects: Array<Rect2>) {
-        let regions = rects
-            .iter_shared()
-            .map(|r| (glam::Vec2::new(r.position.x, r.position.y), glam::Vec2::new(r.end().x, r.end().y)))
-            .collect();
+        let regions =
+            rects.iter_shared().map(|r| (glam::Vec2::new(r.position.x, r.position.y), glam::Vec2::new(r.end().x, r.end().y))).collect();
         self.router.set_ui_regions(regions);
     }
 
@@ -242,9 +240,7 @@ impl SketchSession {
             Routed::Stroke(s) => self.stroke(s),
             Routed::View(ViewEvent::Orbit(d)) => self.signals().view_orbit().emit(Vector2::new(d.x, d.y)),
             Routed::View(ViewEvent::Pan(d)) => self.signals().view_pan().emit(Vector2::new(d.x, d.y)),
-            Routed::View(ViewEvent::Zoom { factor, at }) => {
-                self.signals().view_zoom().emit(factor, Vector2::new(at.x, at.y))
-            }
+            Routed::View(ViewEvent::Zoom { factor, at }) => self.signals().view_zoom().emit(factor, Vector2::new(at.x, at.y)),
             Routed::Command(Command::Undo) => self.with_canvas(|c| c.undo()),
             Routed::Command(Command::Redo) => self.with_canvas(|c| c.redo()),
             Routed::Command(Command::NudgeGuide(n)) => self.signals().guide_nudged().emit(n),
@@ -410,7 +406,13 @@ impl SketchSession {
         };
         self.signals().lasso_changed().emit(&PackedVector2Array::new());
         let input = Input::singleton();
-        let mode = if input.is_key_pressed(Key::ALT) { 2 } else if input.is_key_pressed(Key::SHIFT) { 1 } else { 0 };
+        let mode = if input.is_key_pressed(Key::ALT) {
+            2
+        } else if input.is_key_pressed(Key::SHIFT) {
+            1
+        } else {
+            0
+        };
         let (Some(camera), Some(mut canvas)) = (self.camera.clone(), self.canvas.clone()) else { return };
         let travel: f32 = path.windows(2).map(|w| w[0].distance(w[1])).sum();
         if travel < TAP_TRAVEL {

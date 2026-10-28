@@ -12,8 +12,8 @@ use airdraw_input::{Modifiers, MouseButton, PenEvent, PenSample, PointerId, Poin
 use airdraw_platform::QueueSender;
 use glam::Vec2;
 use godot::classes::{
-    InputEvent, InputEventMagnifyGesture, InputEventMouseButton, InputEventMouseMotion, InputEventPanGesture,
-    InputEventScreenDrag, InputEventScreenTouch, InputEventWithModifiers, Time,
+    InputEvent, InputEventMagnifyGesture, InputEventMouseButton, InputEventMouseMotion, InputEventPanGesture, InputEventScreenDrag,
+    InputEventScreenTouch, InputEventWithModifiers, Time,
 };
 use godot::global::{MouseButton as GdButton, MouseButtonMask};
 use godot::prelude::*;
@@ -28,8 +28,14 @@ const MOUSE_BUTTONS: [(MouseButton, GdButton, MouseButtonMask); 3] = [
 
 enum Touch {
     /// Down seen, tool not known until the first drag.
-    Pending { id: PointerId, sample: PenSample },
-    Active { id: PointerId, tool: PointerTool },
+    Pending {
+        id: PointerId,
+        sample: PenSample,
+    },
+    Active {
+        id: PointerId,
+        tool: PointerTool,
+    },
 }
 
 #[derive(Default)]
@@ -173,11 +179,7 @@ fn mouse_button(e: &Gd<InputEventMouseButton>, t: f64, pen_inverted: bool, tx: &
         let sample = PenSample::at(pos, t);
         // A tablet pen pressed with its eraser end erases, like a pen's eraser on iPad.
         let tool = if pen_inverted && button == MouseButton::Left { PointerTool::Eraser } else { PointerTool::Mouse(button) };
-        tx.push(if e.is_pressed() {
-            PenEvent::Down { id, tool, sample, modifiers }
-        } else {
-            PenEvent::Up { id, sample }
-        });
+        tx.push(if e.is_pressed() { PenEvent::Down { id, tool, sample, modifiers } } else { PenEvent::Up { id, sample } });
         return true;
     }
     let dir = if index == GdButton::WHEEL_UP {

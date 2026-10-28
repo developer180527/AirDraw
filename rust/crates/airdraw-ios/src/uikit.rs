@@ -9,9 +9,9 @@ use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_foundation::NSSet;
 use objc2_ui_kit::{
-    UIApplication, UIEvent, UIGestureRecognizer, UIGestureRecognizerState, UIHoverGestureRecognizer,
-    UIPencilInteraction, UIPencilInteractionDelegate, UIPencilPreferredAction, UIPencilInteractionPhase, UIPencilInteractionSqueeze,
-    UIPencilInteractionTap, UITouch, UITouchType, UIView,
+    UIApplication, UIEvent, UIGestureRecognizer, UIGestureRecognizerState, UIHoverGestureRecognizer, UIPencilInteraction,
+    UIPencilInteractionDelegate, UIPencilInteractionPhase, UIPencilInteractionSqueeze, UIPencilInteractionTap, UIPencilPreferredAction,
+    UITouch, UITouchType, UIView,
 };
 
 use crate::IPAD_PENCIL_CAPS;
@@ -192,8 +192,8 @@ impl PencilHandler {
     /// A double-tap, unless the user turned it off in Settings › Apple Pencil (the app maps
     /// it to Draw ⇄ Erase).
     fn tapped(&self) {
-        let ignore = MainThreadMarker::new()
-            .is_some_and(|mtm| UIPencilInteraction::preferredTapAction(mtm) == UIPencilPreferredAction::Ignore);
+        let ignore =
+            MainThreadMarker::new().is_some_and(|mtm| UIPencilInteraction::preferredTapAction(mtm) == UIPencilPreferredAction::Ignore);
         if !ignore {
             self.ivars().push(PenEvent::Action(PenAction::DoubleTap));
         }
@@ -213,9 +213,7 @@ pub fn set_viewport_size(width: f32, height: f32) {
 fn to_viewport(view: &UIView, x: f64, y: f64) -> Vec2 {
     let b = view.bounds();
     let scale = match VIEWPORT.with(Cell::get) {
-        Some(vp) if b.size.width > 0.0 && b.size.height > 0.0 => {
-            Vec2::new(vp.x / b.size.width as f32, vp.y / b.size.height as f32)
-        }
+        Some(vp) if b.size.width > 0.0 && b.size.height > 0.0 => Vec2::new(vp.x / b.size.width as f32, vp.y / b.size.height as f32),
         _ => Vec2::splat(view.contentScaleFactor() as f32),
     };
     Vec2::new(x as f32 * scale.x, y as f32 * scale.y)

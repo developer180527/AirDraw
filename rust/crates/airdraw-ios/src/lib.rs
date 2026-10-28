@@ -18,10 +18,15 @@ mod uikit;
 #[derive(Clone, Debug, PartialEq)]
 pub enum FileEvent {
     /// `bookmark` (hex) restores access later; present when the OS provides one.
-    Picked { path: String, bookmark: Option<String> },
+    Picked {
+        path: String,
+        bookmark: Option<String>,
+    },
     Cancelled,
     /// A file handed to [`export_file`] was saved; `name` is the name it got there.
-    Exported { name: String },
+    Exported {
+        name: String,
+    },
     ExportCancelled,
 }
 

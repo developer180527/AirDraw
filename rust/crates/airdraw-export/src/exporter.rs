@@ -117,13 +117,7 @@ impl ExporterRegistry {
 
     /// Validates `opts` against the exporter's schema (filling defaults) and runs it.
     /// Adds a warning when the scene holds data the format can't store.
-    pub fn export(
-        &self,
-        id: &str,
-        scene: &ExportScene,
-        opts: &Params,
-        out: &mut dyn ExportSink,
-    ) -> Result<ExportReport, ExportError> {
+    pub fn export(&self, id: &str, scene: &ExportScene, opts: &Params, out: &mut dyn ExportSink) -> Result<ExportReport, ExportError> {
         let e = self.get(id).ok_or_else(|| ExportError::UnknownExporter(id.into()))?;
         let schema = e.options();
         let mut resolved: Params = schema.iter().map(|s| (s.name.to_string(), s.default.clone())).collect();

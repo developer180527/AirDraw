@@ -1871,7 +1871,7 @@ budget. Deferred until stage composition proves insufficient.
 | 5 | Exporter structure (2026-10-27) | Every exporter is its own crate (`airdraw-export-obj`, `-gltf`, `-fbx`, `-stl`, `-ply`, `-usd`, `-svg`; shared helpers such as the zip writer also separate), wrapping an existing library or handwritten. `airdraw-export` keeps only the scene IR, the `Exporter` trait and the registry. Today's formats are modules in one crate and get split when export work resumes. |
 | 6 | Exports and history (2026-10-27) | Exported files (OBJ, FBX, STL, GLB…) are final builds: no undo history. Only `.airdraw` carries it. |
 
-## 9. Continuous integration (proposed, 2026-10-29)
+## 9. Continuous integration (approved 2026-10-29; stage 1 written)
 
 GitHub Actions on the public repo (`developer180527/AirDraw`): hosted runners are free,
 ARM ones included. One workflow, `.github/workflows/ci.yml`, on pushes to `main` and on
@@ -1921,7 +1921,10 @@ from any run. A smoke line with `=false` that isn't on an allow-list fails the j
   drop the TEMP debug→release line (CI builds release everywhere).
 - Android: an `Android` export preset, and `airdraw-ios`-style platform gating so the
   Android build has no iOS/macOS-only crates (already `cfg`-gated in `airdraw-ffi`).
-- Smoke test: an exit code (non-zero on any unexpected `false`), so CI doesn't parse logs.
+- Smoke test verdict: `scripts/check_smoke.py LOG` fails on script errors, an unexpected
+  `key=false`, or a run that stopped early (done in stage 1).
+- `rust/rustfmt.toml` (width 140, compact heuristics) matches the code as written, so
+  `cargo fmt --check` can gate CI (done in stage 1).
 - Android runs on an emulator and iOS on a simulator need x86_64/simulator builds of the
   engine and core; **build-only for now**, simulator runs later.
 

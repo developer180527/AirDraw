@@ -6,9 +6,9 @@ pub mod bench;
 mod document;
 mod file;
 mod history;
-mod strokes;
 pub mod recents;
+mod strokes;
 
 pub use document::{BrushRef, Change, Document, Layer, LayerId, Stroke, StrokeId};
-pub use recents::{RecentEntry, Recents};
 pub use file::{DocError, EXTENSION, FORMAT_VERSION, Level, MAX_THUMBNAIL_BYTES, SaveOptions, read_thumbnail};
+pub use recents::{RecentEntry, Recents};

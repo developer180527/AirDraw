@@ -243,7 +243,8 @@ impl Document {
         let content_id = if opts.new_content_id { crate::document::new_content_id() } else { self.content_id.clone() };
         let meta = self.meta_toml(brushes, Some(hash), content_id);
         let mut w = self.file_head(FORMAT_VERSION);
-        let mut sections = vec![Section { id: META, required: true, data: meta.into_bytes() }, Section { id: STRK, required: true, data: strokes }];
+        let mut sections =
+            vec![Section { id: META, required: true, data: meta.into_bytes() }, Section { id: STRK, required: true, data: strokes }];
         if !undo.is_empty() || !redo.is_empty() {
             sections.push(Section { id: HIST, required: false, data: crate::history::encode(undo, redo, &self.strokes, &file_brush) });
         }
@@ -301,7 +302,8 @@ impl Document {
     }
 
     fn content_toml(&self, brushes: &[BrushDef]) -> String {
-        let content = Content { layers: &self.layers, brushes, look_def: self.look.as_ref(), guide: self.guide().map(|g| GuideDef::new(g)) };
+        let content =
+            Content { layers: &self.layers, brushes, look_def: self.look.as_ref(), guide: self.guide().map(|g| GuideDef::new(g)) };
         toml::to_string(&content).expect("document content always serializes")
     }
 
@@ -339,7 +341,8 @@ impl Document {
         if version > FORMAT_VERSION {
             return Err(DocError::NewerVersion(version));
         }
-        let (meta, strokes, thumbnail, history) = if version >= SECTIONS_SINCE { read_sections(bytes)? } else { read_format3(bytes, version)? };
+        let (meta, strokes, thumbnail, history) =
+            if version >= SECTIONS_SINCE { read_sections(bytes)? } else { read_format3(bytes, version)? };
         for s in &strokes {
             if s.brush.0 as usize >= meta.brushes.len() {
                 return Err(DocError::Corrupt(format!("stroke {} uses missing brush {}", s.id.0, s.brush.0)));
@@ -354,8 +357,10 @@ impl Document {
         let guide = meta.guide.map(GuideDef::into_guide).transpose()?;
         // The embedded Look if this build can render it, else the built-in one with that id
         // (a Look from a newer app), else the default.
-        let look = meta.look_def.filter(|l| l.validate().is_ok()).or_else(|| LookLibrary::with_builtins().get(meta.look.as_deref()?).cloned());
-        let content_id = meta.content_id.filter(|id| valid_content_id(id)).unwrap_or_else(|| blake3::hash(bytes).to_hex()[..32].to_string());
+        let look =
+            meta.look_def.filter(|l| l.validate().is_ok()).or_else(|| LookLibrary::with_builtins().get(meta.look.as_deref()?).cloned());
+        let content_id =
+            meta.content_id.filter(|id| valid_content_id(id)).unwrap_or_else(|| blake3::hash(bytes).to_hex()[..32].to_string());
         let brush_count = meta.brushes.len();
         let mut doc = Document::from_parts(meta.layers, strokes, meta.brushes, thumbnail, look, guide, content_id);
         // History is optional: if it doesn't fit the strokes, the sketch opens without it.
@@ -426,10 +431,7 @@ fn read_sections(bytes: &[u8]) -> Result<Parts, DocError> {
         return Err(DocError::Corrupt(format!("{} unexpected bytes after the sections", bytes.len() - start - used)));
     }
     if let Some(s) = decoded.sections.iter().find(|s| s.required && s.id != META && s.id != STRK) {
-        return Err(DocError::Unsupported(format!(
-            "file uses a feature from a newer AirDraw (section {}). Update the app.",
-            s.id
-        )));
+        return Err(DocError::Unsupported(format!("file uses a feature from a newer AirDraw (section {}). Update the app.", s.id)));
     }
     let section = |id: SectionId| decoded.get(id).map(|s| &s.data[..]).ok_or_else(|| DocError::Corrupt(format!("no {id} section")));
     let meta = std::str::from_utf8(section(META)?).map_err(|_| DocError::Corrupt("metadata is not UTF-8".into()))?;
@@ -970,7 +972,11 @@ mod tests {
             out.extend_from_slice(&hist.data[4 + text(&hist.data).len()..]);
             out
         };
-        let wrong_index = with_text(text(&hist.data).replacen("index = 0", "index = 7", 1).replacen("index = 1", "index = 7", 1).replacen("index = 2", "index = 7", 1));
+        let wrong_index = with_text(text(&hist.data).replacen("index = 0", "index = 7", 1).replacen("index = 1", "index = 7", 1).replacen(
+            "index = 2",
+            "index = 7",
+            1,
+        ));
         let missing_stroke = with_text(text(&hist.data).replace("stroke = [", "stroke = [9999, 0] # ["));
         let missing_brush = with_text(text(&hist.data).replace("stroke = [3, 0]", "stroke = [3, 77]"));
         for bad in [b"garbage".to_vec(), hist.data[..hist.data.len() - 3].to_vec(), wrong_index, missing_stroke, missing_brush] {
@@ -1237,7 +1243,8 @@ mod tests {
     #[test]
     fn copies_get_a_new_content_id_but_the_same_content_hash() {
         let d = sample_doc();
-        let copy = Document::from_bytes(&d.to_bytes_with(SaveOptions { history: false, new_content_id: true, ..Default::default() })).unwrap();
+        let copy =
+            Document::from_bytes(&d.to_bytes_with(SaveOptions { history: false, new_content_id: true, ..Default::default() })).unwrap();
         assert_ne!(copy.content_id(), d.content_id());
         assert!(valid_content_id(copy.content_id()));
         assert_eq!(copy.content_hash(), d.content_hash());
@@ -1275,7 +1282,10 @@ mod tests {
         copy.content_id = "another-sketch-id".into();
         copy.set_thumbnail(Some(png())).unwrap();
         assert_eq!(copy.content_hash(), hash);
-        assert_eq!(Document::from_bytes(&d.to_bytes_with(SaveOptions { level: Level::Max, ..Default::default() })).unwrap().content_hash(), hash);
+        assert_eq!(
+            Document::from_bytes(&d.to_bytes_with(SaveOptions { level: Level::Max, ..Default::default() })).unwrap().content_hash(),
+            hash
+        );
         // Any change to the artwork changes it.
         let mut moved = d.clone();
         moved.remove_strokes(&[moved.strokes()[0].id]);

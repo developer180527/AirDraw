@@ -88,7 +88,11 @@ fn list<T: std::fmt::Display>(v: impl IntoIterator<Item = T>) -> String {
 pub fn usda(scene: &ExportScene) -> String {
     let mut s = String::new();
     let up = if scene.meta.up == UpAxis::Z { "Z" } else { "Y" };
-    let _ = writeln!(s, "#usda 1.0\n(\n    defaultPrim = \"Root\"\n    metersPerUnit = 1\n    upAxis = \"{up}\"\n    doc = \"{}\"\n)\n", scene.meta.generator);
+    let _ = writeln!(
+        s,
+        "#usda 1.0\n(\n    defaultPrim = \"Root\"\n    metersPerUnit = 1\n    upAxis = \"{up}\"\n    doc = \"{}\"\n)\n",
+        scene.meta.generator
+    );
     let _ = writeln!(s, "def Xform \"Root\"\n{{");
 
     // Materials.
@@ -99,11 +103,7 @@ pub fn usda(scene: &ExportScene) -> String {
         let [r, g, b, a] = m.base_color;
         let lin = [srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b)];
         // No unlit shader in UsdPreviewSurface: emit the color instead of reflecting light.
-        let (diffuse, emissive) = if m.unlit {
-            ([0.0; 3], lin)
-        } else {
-            (lin, lin.map(|c| c * m.emission))
-        };
+        let (diffuse, emissive) = if m.unlit { ([0.0; 3], lin) } else { (lin, lin.map(|c| c * m.emission)) };
         let _ = writeln!(s, "        def Material \"{name}\"\n        {{");
         let _ = writeln!(s, "            token outputs:surface.connect = </Root/Materials/{name}/Surface.outputs:surface>");
         let _ = writeln!(s, "            def Shader \"Surface\"\n            {{");
@@ -133,11 +133,19 @@ pub fn usda(scene: &ExportScene) -> String {
             let _ = writeln!(s, "{pad}    int[] faceVertexIndices = {}", list(&m.indices));
             let _ = writeln!(s, "{pad}    point3f[] points = {}", vec3s(&m.positions));
             if m.normals.len() == m.positions.len() {
-                let _ = writeln!(s, "{pad}    normal3f[] normals = {} (\n{pad}        interpolation = \"vertex\"\n{pad}    )", vec3s(&m.normals));
+                let _ = writeln!(
+                    s,
+                    "{pad}    normal3f[] normals = {} (\n{pad}        interpolation = \"vertex\"\n{pad}    )",
+                    vec3s(&m.normals)
+                );
             }
             if m.uvs.len() == m.positions.len() {
                 let st: Vec<String> = m.uvs.iter().map(|u| format!("({}, {})", u.x, u.y)).collect();
-                let _ = writeln!(s, "{pad}    texCoord2f[] primvars:st = [{}] (\n{pad}        interpolation = \"vertex\"\n{pad}    )", st.join(", "));
+                let _ = writeln!(
+                    s,
+                    "{pad}    texCoord2f[] primvars:st = [{}] (\n{pad}        interpolation = \"vertex\"\n{pad}    )",
+                    st.join(", ")
+                );
             }
             let _ = writeln!(s, "{pad}    uniform token subdivisionScheme = \"none\"");
             let _ = writeln!(s, "{pad}    rel material:binding = </Root/Materials/{}>", mats[m.material]);

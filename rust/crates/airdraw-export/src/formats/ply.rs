@@ -51,7 +51,8 @@ impl Exporter for Ply {
                 let n = m.normals.get(i).copied().unwrap_or_default();
                 let uv = m.uvs.get(i).copied().unwrap_or_default();
                 if ascii {
-                    let mut line = format!("{} {} {} {} {} {} {} {} {} {}", p.x, p.y, p.z, n.x, n.y, n.z, rgba[0], rgba[1], rgba[2], rgba[3]);
+                    let mut line =
+                        format!("{} {} {} {} {} {} {} {} {} {}", p.x, p.y, p.z, n.x, n.y, n.z, rgba[0], rgba[1], rgba[2], rgba[3]);
                     if with_uv {
                         line += &format!(" {} {}", uv.x, uv.y);
                     }

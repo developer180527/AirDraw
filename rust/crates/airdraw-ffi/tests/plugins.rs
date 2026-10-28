@@ -7,8 +7,7 @@ use std::process::Command;
 
 use airdraw_brush::{ParamValue, Params};
 use airdraw_export::{
-    ExportCurve, ExportMaterial, ExportMesh, ExportNode, ExportScene, ExporterRegistry, MemorySink, UpAxis,
-    scene::SceneMeta,
+    ExportCurve, ExportMaterial, ExportMesh, ExportNode, ExportScene, ExporterRegistry, MemorySink, UpAxis, scene::SceneMeta,
 };
 use airdraw_ffi::abi::*;
 use airdraw_ffi::{HEADER_DIR, PluginExporter};
@@ -34,7 +33,12 @@ fn scene() -> ExportScene {
     };
     ExportScene {
         meta: SceneMeta { name: "test".into(), up: UpAxis::Y, generator: "AirDraw test".into() },
-        nodes: vec![node("Layer 1", None, None, None), node("a", Some(0), Some(0), None), node("b", Some(0), Some(1), None), node("c", Some(0), None, Some(0))],
+        nodes: vec![
+            node("Layer 1", None, None, None),
+            node("a", Some(0), Some(0), None),
+            node("b", Some(0), Some(1), None),
+            node("c", Some(0), None, Some(0)),
+        ],
         meshes: vec![tri(0.0), tri(2.0)],
         materials: vec![ExportMaterial {
             name: "Ink_0".into(),
@@ -247,7 +251,13 @@ fn incompatible_plugin_is_rejected() {
 fn build_sample(dir: &Path) -> Option<PathBuf> {
     let cxx = compiler("c++")?;
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../plugins/sample_engine_exporter/sample_engine_exporter.cpp");
-    let ext = if cfg!(target_os = "macos") { "dylib" } else if cfg!(windows) { "dll" } else { "so" };
+    let ext = if cfg!(target_os = "macos") {
+        "dylib"
+    } else if cfg!(windows) {
+        "dll"
+    } else {
+        "so"
+    };
     let lib = dir.join(format!("libsample_engine_exporter.{ext}"));
     let st = Command::new(cxx)
         .args(["-std=c++17", "-shared", "-fPIC", "-fvisibility=hidden", "-Wall", "-Werror", "-I", HEADER_DIR, "-o"])
@@ -279,11 +289,8 @@ fn cpp_sample_plugin_loads_and_exports() {
     let options: Vec<_> = reg.get("com.example.sample_engine").unwrap().options().iter().map(|o| o.name).collect();
     assert_eq!(options, ["engine_units_per_meter", "normals", "index16", "also_glb"]);
 
-    let opts: Params = [
-        ("engine_units_per_meter".to_string(), ParamValue::Float(100.0)),
-        ("also_glb".to_string(), ParamValue::Bool(true)),
-    ]
-    .into();
+    let opts: Params =
+        [("engine_units_per_meter".to_string(), ParamValue::Float(100.0)), ("also_glb".to_string(), ParamValue::Bool(true))].into();
     let mut sink = MemorySink::new("level1");
     let report = reg.export("com.example.sample_engine", &scene(), &opts, &mut sink).unwrap();
     assert_eq!(report.files, ["level1.sem", "level1_source.glb"]);

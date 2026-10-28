@@ -89,7 +89,8 @@ impl LiveStroke {
     pub fn finish(mut self) -> Option<(Gd<MeshInstance3D>, BrushRef, Vec<InputPoint>, UpdateTiming)> {
         let start = Instant::now();
         let mesh = self.stream.into_mesh(&[]);
-        let mut timing = UpdateTiming { points: self.points.len(), vertices: mesh.positions.len(), build: start.elapsed(), ..Default::default() };
+        let mut timing =
+            UpdateTiming { points: self.points.len(), vertices: mesh.positions.len(), build: start.elapsed(), ..Default::default() };
         self.live_node.queue_free();
         if mesh.is_empty() {
             self.instance.queue_free();
@@ -185,7 +186,8 @@ pub(crate) fn guide_mesh(m: &airdraw_guide::GuideMesh) -> Gd<ArrayMesh> {
     arrays.resize(ArrayType::MAX.ord() as usize, &Variant::nil());
     arrays.set(ArrayType::VERTEX.ord() as usize, &m.positions.iter().map(v3).collect::<PackedVector3Array>().to_variant());
     arrays.set(ArrayType::NORMAL.ord() as usize, &m.normals.iter().map(v3).collect::<PackedVector3Array>().to_variant());
-    arrays.set(ArrayType::TEX_UV.ord() as usize, &m.uvs.iter().map(|u| Vector2::new(u.x, u.y)).collect::<PackedVector2Array>().to_variant());
+    arrays
+        .set(ArrayType::TEX_UV.ord() as usize, &m.uvs.iter().map(|u| Vector2::new(u.x, u.y)).collect::<PackedVector2Array>().to_variant());
     arrays.set(ArrayType::INDEX.ord() as usize, &m.indices.iter().map(|&i| i as i32).collect::<PackedInt32Array>().to_variant());
     let mut mesh = ArrayMesh::new_gd();
     mesh.add_surface_from_arrays(PrimitiveType::TRIANGLES, &arrays);

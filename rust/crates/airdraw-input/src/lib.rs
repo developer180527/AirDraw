@@ -89,31 +89,53 @@ pub enum PenAction {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PenEvent {
-    Down { id: PointerId, tool: PointerTool, sample: PenSample, modifiers: Modifiers },
+    Down {
+        id: PointerId,
+        tool: PointerTool,
+        sample: PenSample,
+        modifiers: Modifiers,
+    },
     /// `samples` are in time order and end with the latest real sample.
     /// `predicted` replaces any previously delivered prediction for this pointer.
-    Move { id: PointerId, samples: Vec<PenSample>, predicted: Vec<PenSample> },
-    Up { id: PointerId, sample: PenSample },
+    Move {
+        id: PointerId,
+        samples: Vec<PenSample>,
+        predicted: Vec<PenSample>,
+    },
+    Up {
+        id: PointerId,
+        sample: PenSample,
+    },
     /// The OS took the contact away (palm rejection, system gesture). Discard the stroke.
-    Cancel { id: PointerId },
+    Cancel {
+        id: PointerId,
+    },
     /// Pen near the screen but not touching.
-    Hover { tool: PointerTool, sample: PenSample },
+    Hover {
+        tool: PointerTool,
+        sample: PenSample,
+    },
     HoverExit,
     Action(PenAction),
     /// Mouse wheel (`precise == false`, delta in notches, +y = away from user) or trackpad
     /// two-finger scroll (`precise == true`, delta in pixels).
-    Scroll { pos: Vec2, delta: Vec2, precise: bool, modifiers: Modifiers },
+    Scroll {
+        pos: Vec2,
+        delta: Vec2,
+        precise: bool,
+        modifiers: Modifiers,
+    },
     /// Trackpad pinch. `factor > 1` means fingers spreading apart.
-    Pinch { pos: Vec2, factor: f32 },
+    Pinch {
+        pos: Vec2,
+        factor: f32,
+    },
 }
 
 impl PenEvent {
     pub fn pointer(&self) -> Option<PointerId> {
         match self {
-            PenEvent::Down { id, .. }
-            | PenEvent::Move { id, .. }
-            | PenEvent::Up { id, .. }
-            | PenEvent::Cancel { id } => Some(*id),
+            PenEvent::Down { id, .. } | PenEvent::Move { id, .. } | PenEvent::Up { id, .. } | PenEvent::Cancel { id } => Some(*id),
             _ => None,
         }
     }

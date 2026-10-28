@@ -54,16 +54,29 @@ pub enum Change {
 /// A reversible edit. Holds what's needed to apply and revert it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Op {
-    Add { index: usize, stroke: Stroke },
+    Add {
+        index: usize,
+        stroke: Stroke,
+    },
     /// Strokes with their indices, ascending.
-    Remove { items: Vec<(usize, Stroke)> },
-    SetBrush { changes: Vec<(StrokeId, BrushRef, BrushRef)> },
-    SetGuide { before: Option<Arc<Guide>>, after: Option<Arc<Guide>> },
+    Remove {
+        items: Vec<(usize, Stroke)>,
+    },
+    SetBrush {
+        changes: Vec<(StrokeId, BrushRef, BrushRef)>,
+    },
+    SetGuide {
+        before: Option<Arc<Guide>>,
+        after: Option<Arc<Guide>>,
+    },
     /// Removes some strokes and adds others in one step: partial erase (strokes → pieces),
     /// transforms (strokes → moved copies) and duplicates (nothing → copies). Changed strokes
     /// get new ids, so a stroke id always means the same points (§3i). `removed` holds indices
     /// before the op and `added` indices after it, both ascending.
-    Replace { removed: Vec<(usize, Stroke)>, added: Vec<(usize, Stroke)> },
+    Replace {
+        removed: Vec<(usize, Stroke)>,
+        added: Vec<(usize, Stroke)>,
+    },
 }
 
 impl Op {
@@ -339,8 +352,7 @@ impl Document {
             return (Vec::new(), Vec::new());
         }
         let base = self.strokes.len();
-        let added: Vec<(usize, Stroke)> =
-            originals
+        let added: Vec<(usize, Stroke)> = originals
             .into_iter()
             .enumerate()
             .map(|(n, s)| {
@@ -624,7 +636,8 @@ pub(crate) mod tests {
         let before = d.strokes().to_vec();
         let p = points(6, 9.0);
         // Caller's order isn't document order: stroke 2 splits in two, 0 moves, 3 goes.
-        let (changes, new) = d.replace_strokes(vec![(s[2], vec![p[..2].to_vec(), p[3..].to_vec()]), (s[0], vec![p.clone()]), (s[3], vec![])]);
+        let (changes, new) =
+            d.replace_strokes(vec![(s[2], vec![p[..2].to_vec(), p[3..].to_vec()]), (s[0], vec![p.clone()]), (s[3], vec![])]);
         assert_eq!(new.len(), 3);
         assert_eq!(ids(&d), vec![new[2], s[1], new[0], new[1]], "pieces take their stroke's place");
         assert_eq!(d.stroke(new[0]).unwrap().brush, ribbon, "pieces keep the brush");
@@ -687,7 +700,8 @@ pub(crate) mod tests {
         let ink = d.intern_brush(&brush("com.airdraw.ink"));
         let s: Vec<_> = (0..3).map(|i| d.add_stroke(ink, points(5, i as f32)).0).collect();
         let before = d.strokes().to_vec();
-        let xf = glam::Affine3A::from_rotation_translation(glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2), Vec3::new(1.0, 2.0, 3.0));
+        let xf =
+            glam::Affine3A::from_rotation_translation(glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2), Vec3::new(1.0, 2.0, 3.0));
         let (changes, moved) = d.transform_strokes(&[s[2], s[0]], xf);
         assert_eq!(changes.len(), 4);
         assert_eq!(ids(&d), vec![moved[1], s[1], moved[0]], "each keeps its place");

@@ -104,7 +104,12 @@ impl Exporter for Svg {
         let _ = writeln!(
             s,
             r#"<svg xmlns="http://www.w3.org/2000/svg" width="{:.3}mm" height="{:.3}mm" viewBox="{:.3} {:.3} {:.3} {:.3}">"#,
-            size.x, size.y, min.x, -(min.y + size.y), size.x, size.y
+            size.x,
+            size.y,
+            min.x,
+            -(min.y + size.y),
+            size.x,
+            size.y
         );
         for l in &lines {
             let m = &scene.materials[l.material];

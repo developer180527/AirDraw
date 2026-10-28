@@ -35,11 +35,8 @@ impl Recents {
     /// Loads the list. A missing or unreadable file gives an empty list: losing history must
     /// never stop the app from starting.
     pub fn load(file: &Path) -> Self {
-        let entries = std::fs::read_to_string(file)
-            .ok()
-            .and_then(|t| toml::from_str::<RecentsFile>(&t).ok())
-            .map(|f| f.recent)
-            .unwrap_or_default();
+        let entries =
+            std::fs::read_to_string(file).ok().and_then(|t| toml::from_str::<RecentsFile>(&t).ok()).map(|f| f.recent).unwrap_or_default();
         Self { file: file.to_path_buf(), entries }
     }
 
@@ -138,11 +135,7 @@ mod tests {
         let got: Vec<_> = r.entries().iter().map(|e| (e.path.as_str(), e.opened_at, e.bookmark.as_deref())).collect();
         assert_eq!(
             got,
-            [
-                ("/elsewhere/Other.airdraw", 5, Some("b3")),
-                ("docs://Sketch 2.airdraw", 4, None),
-                ("docs://Sketch 1.airdraw", 3, None),
-            ]
+            [("/elsewhere/Other.airdraw", 5, Some("b3")), ("docs://Sketch 2.airdraw", 4, None), ("docs://Sketch 1.airdraw", 3, None),]
         );
         r.retarget("/elsewhere/Other.airdraw", "docs://Other.airdraw");
         assert_eq!(r.entries()[0].path, "docs://Other.airdraw");

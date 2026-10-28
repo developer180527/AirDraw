@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use airdraw_brush::{Brush, BrushLibrary, BrushSource, InputPoint, MaterialDesc, MeshBuffers, Shading, StageRegistry};
 use airdraw_doc::{BrushRef, Change, Document, Stroke, StrokeId, read_thumbnail};
+use airdraw_export::{ExporterRegistry, FolderSink, SceneOptions, build_scene};
 use airdraw_guide::Guide;
 use airdraw_look::LookLibrary;
 use airdraw_pick::{Camera, PickIndex};
-use airdraw_export::{ExporterRegistry, FolderSink, SceneOptions, build_scene};
 use godot::classes::base_material_3d::{CullMode, Feature, ShadingMode};
 use godot::classes::mesh::PrimitiveType;
 use godot::classes::{ArrayMesh, Camera3D, INode3D, Material, MeshInstance3D, Node3D, Shader, ShaderMaterial, StandardMaterial3D};
@@ -358,9 +358,7 @@ impl SketchCanvas {
     #[func]
     fn take_live_timings(&mut self) -> VarDictionary {
         let timings = self.timings.as_mut().map(std::mem::take).unwrap_or_default();
-        let ms = |f: fn(&UpdateTiming) -> Duration| -> PackedFloat64Array {
-            timings.iter().map(|t| f(t).as_secs_f64() * 1000.0).collect()
-        };
+        let ms = |f: fn(&UpdateTiming) -> Duration| -> PackedFloat64Array { timings.iter().map(|t| f(t).as_secs_f64() * 1000.0).collect() };
         let mut d = VarDictionary::new();
         d.set("points", &timings.iter().map(|t| t.points as i64).collect::<PackedInt64Array>());
         d.set("vertices", &timings.iter().map(|t| t.vertices as i64).collect::<PackedInt64Array>());
@@ -605,7 +603,12 @@ impl SketchCanvas {
             let label = if strokes == 1000 { "1M".to_string() } else { format!("{}k", strokes) };
             out.push(format!("pick {label} points, eraser move: {} ({hits} hits)", stats(times)));
             let t = Instant::now();
-            let lasso = [glam::Vec2::new(w * 0.3, h * 0.3), glam::Vec2::new(w * 0.7, h * 0.3), glam::Vec2::new(w * 0.7, h * 0.7), glam::Vec2::new(w * 0.3, h * 0.7)];
+            let lasso = [
+                glam::Vec2::new(w * 0.3, h * 0.3),
+                glam::Vec2::new(w * 0.7, h * 0.3),
+                glam::Vec2::new(w * 0.7, h * 0.7),
+                glam::Vec2::new(w * 0.3, h * 0.7),
+            ];
             let n = index.in_lasso(&cam, &lasso).len();
             let lasso_ms = ms(t);
             let t = Instant::now();
@@ -640,7 +643,11 @@ impl SketchCanvas {
             self.end_erase();
             let end_ms = ms(t);
             let mode = if partial { "partial" } else { "whole" };
-            out.push(format!("{mode} erase of a 5k-point stroke, per move: {}; lift {end_ms:.2} ms; strokes after {}", stats(times), self.doc.strokes().len()));
+            out.push(format!(
+                "{mode} erase of a 5k-point stroke, per move: {}; lift {end_ms:.2} ms; strokes after {}",
+                stats(times),
+                self.doc.strokes().len()
+            ));
             self.clear();
         }
         self.new_document();
@@ -716,10 +723,12 @@ impl SketchCanvas {
             return 0;
         }
         let t = camera.get_global_transform();
-        let (lo, hi) = self.selection.iter().filter_map(|id| self.doc.stroke(*id)).flat_map(|s| s.points.iter()).fold(
-            (glam::Vec3::splat(f32::MAX), glam::Vec3::splat(f32::MIN)),
-            |(lo, hi), p| (lo.min(p.pos), hi.max(p.pos)),
-        );
+        let (lo, hi) = self
+            .selection
+            .iter()
+            .filter_map(|id| self.doc.stroke(*id))
+            .flat_map(|s| s.points.iter())
+            .fold((glam::Vec3::splat(f32::MAX), glam::Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(p.pos), hi.max(p.pos)));
         let eye = glam::Vec3::new(t.origin.x, t.origin.y, t.origin.z);
         let right = t.basis.col_a();
         let offset = glam::Vec3::new(right.x, right.y, right.z) * eye.distance((lo + hi) * 0.5) * 0.05;
@@ -745,10 +754,12 @@ impl SketchCanvas {
     /// The middle of the selected strokes' bounds (the origin when nothing is selected).
     #[func]
     fn selection_center(&self) -> Vector3 {
-        let (lo, hi) = self.selection.iter().filter_map(|id| self.doc.stroke(*id)).flat_map(|s| s.points.iter()).fold(
-            (glam::Vec3::splat(f32::MAX), glam::Vec3::splat(f32::MIN)),
-            |(lo, hi), p| (lo.min(p.pos), hi.max(p.pos)),
-        );
+        let (lo, hi) = self
+            .selection
+            .iter()
+            .filter_map(|id| self.doc.stroke(*id))
+            .flat_map(|s| s.points.iter())
+            .fold((glam::Vec3::splat(f32::MAX), glam::Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(p.pos), hi.max(p.pos)));
         if lo.x > hi.x {
             return Vector3::ZERO;
         }
@@ -987,8 +998,8 @@ impl SketchCanvas {
     #[func]
     fn brush_preview(&self, def: VarDictionary) -> VarDictionary {
         let mut out = VarDictionary::new();
-        let compiled = dict_to_def(&def, self.library.registry())
-            .and_then(|d| Brush::compile(d, self.library.registry()).map_err(|e| e.to_string()));
+        let compiled =
+            dict_to_def(&def, self.library.registry()).and_then(|d| Brush::compile(d, self.library.registry()).map_err(|e| e.to_string()));
         match compiled {
             Ok(brush) => {
                 let mesh = brush.build(&preview_stroke());
@@ -1010,8 +1021,8 @@ impl SketchCanvas {
     #[func]
     fn save_brush(&mut self, def: VarDictionary) -> GString {
         let Some(dir) = self.user_brush_dir.clone() else { return "no user brush folder set".into() };
-        let result = dict_to_def(&def, self.library.registry())
-            .and_then(|d| self.library.save(d, &dir).map(|_| ()).map_err(|e| e.to_string()));
+        let result =
+            dict_to_def(&def, self.library.registry()).and_then(|d| self.library.save(d, &dir).map(|_| ()).map_err(|e| e.to_string()));
         match result {
             Ok(()) => {
                 let id = def.get("id").map(|v| v.to::<GString>()).unwrap_or_default();
@@ -1057,9 +1068,8 @@ impl SketchCanvas {
         match self.user_brush_dir.clone() {
             None => errors.push("no user brush folder set"),
             Some(target) => {
-                let mut files: Vec<_> = std::fs::read_dir(dir.to_string())
-                    .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).collect())
-                    .unwrap_or_default();
+                let mut files: Vec<_> =
+                    std::fs::read_dir(dir.to_string()).map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).collect()).unwrap_or_default();
                 files.retain(|p| p.to_string_lossy().ends_with(".brush.toml"));
                 files.sort();
                 for file in files {
@@ -1229,8 +1239,7 @@ impl SketchCanvas {
         match self.exporters.export(&exporter_id.to_string(), &scene, &params, &mut sink) {
             Ok(report) => {
                 let dir = path.parent().unwrap_or(std::path::Path::new(""));
-                let files: PackedStringArray =
-                    report.files.iter().map(|f| GString::from(dir.join(f).to_string_lossy().as_ref())).collect();
+                let files: PackedStringArray = report.files.iter().map(|f| GString::from(dir.join(f).to_string_lossy().as_ref())).collect();
                 let warnings: PackedStringArray = report.warnings.iter().map(|w| GString::from(w.as_str())).collect();
                 result.set("error", "");
                 result.set("files", &files);
@@ -1340,7 +1349,13 @@ impl SketchCanvas {
         }
         let brush = self.brush_for(r);
         let probe: Vec<InputPoint> = (0..40)
-            .map(|i| InputPoint { pos: glam::Vec3::X * (i as f32 * 0.01), normal: glam::Vec3::Z, pressure: 1.0, tilt: None, t: i as f64 * 0.05 })
+            .map(|i| InputPoint {
+                pos: glam::Vec3::X * (i as f32 * 0.01),
+                normal: glam::Vec3::Z,
+                pressure: 1.0,
+                tilt: None,
+                t: i as f64 * 0.05,
+            })
             .collect();
         let widest = brush.centerline(&probe).iter().map(|p| p.width).fold(0.0f32, f32::max);
         let w = (widest * 0.5).max(0.001);
@@ -1510,17 +1525,10 @@ impl SketchCanvas {
         self.signals().brushes_changed().emit();
         (self.library.iter().count() - before) as i64
     }
-
 }
 
 pub(crate) fn input_point(pos: Vector3, normal: Vector3, pressure: f32, t: f64) -> InputPoint {
-    InputPoint {
-        pos: glam::Vec3::new(pos.x, pos.y, pos.z),
-        normal: glam::Vec3::new(normal.x, normal.y, normal.z),
-        pressure,
-        tilt: None,
-        t,
-    }
+    InputPoint { pos: glam::Vec3::new(pos.x, pos.y, pos.z), normal: glam::Vec3::new(normal.x, normal.y, normal.z), pressure, tilt: None, t }
 }
 
 /// An S-curve with a pressure swell, at 120 Hz, for brush previews (fits a ~1 unit view).

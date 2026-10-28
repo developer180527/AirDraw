@@ -64,9 +64,19 @@ impl BrushDef {
 pub enum BrushError {
     Parse(String),
     NewerSchema(u32),
-    UnknownStage { slot: &'static str, kind: String },
-    UnknownParam { stage: String, name: String },
-    BadParam { stage: String, name: String, reason: String },
+    UnknownStage {
+        slot: &'static str,
+        kind: String,
+    },
+    UnknownParam {
+        stage: String,
+        name: String,
+    },
+    BadParam {
+        stage: String,
+        name: String,
+        reason: String,
+    },
     Io(String),
     /// The operation isn't allowed, e.g. deleting a built-in brush.
     NotAllowed(String),
@@ -168,13 +178,9 @@ impl Brush {
 pub fn resolve(r: &StageRef, schema: &[ParamSpec]) -> Result<Params, BrushError> {
     let mut out: Params = schema.iter().map(|s| (s.name.to_string(), s.default.clone())).collect();
     for (name, value) in &r.params {
-        let spec = schema
-            .iter()
-            .find(|s| s.name == name)
-            .ok_or_else(|| BrushError::UnknownParam { stage: r.kind.clone(), name: name.clone() })?;
-        let v = spec
-            .validate(value)
-            .map_err(|reason| BrushError::BadParam { stage: r.kind.clone(), name: name.clone(), reason })?;
+        let spec =
+            schema.iter().find(|s| s.name == name).ok_or_else(|| BrushError::UnknownParam { stage: r.kind.clone(), name: name.clone() })?;
+        let v = spec.validate(value).map_err(|reason| BrushError::BadParam { stage: r.kind.clone(), name: name.clone(), reason })?;
         out.insert(name.clone(), v);
     }
     Ok(out)

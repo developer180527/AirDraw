@@ -27,7 +27,10 @@ pub enum ViewEvent {
     Orbit(Vec2),
     Pan(Vec2),
     /// Multiply the camera distance by `factor` (< 1 zooms in), centered on `at`.
-    Zoom { factor: f32, at: Vec2 },
+    Zoom {
+        factor: f32,
+        at: Vec2,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -286,16 +289,16 @@ impl InputRouter {
             }
             if self.fingers.is_empty()
                 && let Some(tap) = self.tap.take()
-                    && sample.t - tap.start_t <= self.config.tap_max_duration
-                    && tap.travel <= self.config.tap_max_travel
-                {
-                    match tap.max_fingers {
-                        2 => out.push(Routed::Command(Command::Undo)),
-                        3 => out.push(Routed::Command(Command::Redo)),
-                        4 => out.push(Routed::Command(Command::ToggleUi)),
-                        _ => {}
-                    }
+                && sample.t - tap.start_t <= self.config.tap_max_duration
+                && tap.travel <= self.config.tap_max_travel
+            {
+                match tap.max_fingers {
+                    2 => out.push(Routed::Command(Command::Undo)),
+                    3 => out.push(Routed::Command(Command::Redo)),
+                    4 => out.push(Routed::Command(Command::ToggleUi)),
+                    _ => {}
                 }
+            }
             self.pinch_ref = self.pinch();
         }
     }
@@ -416,10 +419,8 @@ mod tests {
     #[test]
     fn two_fingers_pan_and_zoom() {
         let mut r = InputRouter::new(RouterConfig::default());
-        let out = run(
-            &mut r,
-            vec![down(1, PointerTool::Finger, 0., 0., 0.), down(2, PointerTool::Finger, 100., 0., 0.), mv(2, 200., 0., 0.1)],
-        );
+        let out =
+            run(&mut r, vec![down(1, PointerTool::Finger, 0., 0., 0.), down(2, PointerTool::Finger, 100., 0., 0.), mv(2, 200., 0., 0.1)]);
         // Centroid moved 50px right, spread doubled → zoom in by half.
         assert!(out.contains(&Routed::View(ViewEvent::Pan(Vec2::new(50., 0.)))));
         assert!(out.iter().any(|e| matches!(e, Routed::View(ViewEvent::Zoom { factor, .. }) if *factor == 0.5)));
@@ -446,7 +447,12 @@ mod tests {
         let mut r = InputRouter::new(RouterConfig::default());
         let out = run(
             &mut r,
-            vec![down(1, PointerTool::Finger, 0., 0., 0.), down(2, PointerTool::Finger, 50., 0., 0.01), up(1, 0., 0., 0.1), up(2, 50., 0., 0.1)],
+            vec![
+                down(1, PointerTool::Finger, 0., 0., 0.),
+                down(2, PointerTool::Finger, 50., 0., 0.01),
+                up(1, 0., 0., 0.1),
+                up(2, 50., 0., 0.1),
+            ],
         );
         assert_eq!(out, vec![Routed::Command(Command::Undo)]);
         let out = run(
@@ -468,7 +474,12 @@ mod tests {
         let mut r = InputRouter::new(RouterConfig::default());
         let slow = run(
             &mut r,
-            vec![down(1, PointerTool::Finger, 0., 0., 0.), down(2, PointerTool::Finger, 50., 0., 0.), up(1, 0., 0., 1.0), up(2, 50., 0., 1.0)],
+            vec![
+                down(1, PointerTool::Finger, 0., 0., 0.),
+                down(2, PointerTool::Finger, 50., 0., 0.),
+                up(1, 0., 0., 1.0),
+                up(2, 50., 0., 1.0),
+            ],
         );
         assert!(!slow.iter().any(|e| matches!(e, Routed::Command(_))));
         let moved = run(
@@ -506,7 +517,8 @@ mod tests {
     #[test]
     fn finger_draws_mode_and_second_finger_cancels() {
         let mut r = InputRouter::new(RouterConfig { finger_draws: true, ..Default::default() });
-        let out = run(&mut r, vec![down(1, PointerTool::Finger, 0., 0., 0.), mv(1, 5., 0., 0.1), down(2, PointerTool::Finger, 50., 0., 0.2)]);
+        let out =
+            run(&mut r, vec![down(1, PointerTool::Finger, 0., 0., 0.), mv(1, 5., 0., 0.1), down(2, PointerTool::Finger, 50., 0., 0.2)]);
         assert!(matches!(out[0], Routed::Stroke(StrokeEvent::Begin { .. })));
         assert!(matches!(out[1], Routed::Stroke(StrokeEvent::Extend { .. })));
         assert_eq!(out[2], Routed::Stroke(StrokeEvent::Cancel));

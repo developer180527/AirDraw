@@ -34,10 +34,7 @@ pub struct Flat;
 
 impl Stage for Flat {
     fn schema(&self) -> Vec<ParamSpec> {
-        vec![
-            ParamSpec::color("color", "#1E1E24", "Stroke color"),
-            ParamSpec::bool("double_sided", true, "Render back faces"),
-        ]
+        vec![ParamSpec::color("color", "#1E1E24", "Stroke color"), ParamSpec::bool("double_sided", true, "Render back faces")]
     }
 }
 

@@ -1,0 +1,3 @@
+# Matches the code as written: long lines, compact one-liners.
+max_width = 140
+use_small_heuristics = "Max"

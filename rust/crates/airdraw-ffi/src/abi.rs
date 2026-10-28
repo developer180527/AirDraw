@@ -85,8 +85,7 @@ pub struct AdExportScene {
 
 pub type AdWriteFn = unsafe extern "C" fn(ctx: *mut c_void, file_name: *const c_char, data: *const u8, len: usize) -> i32;
 pub type AdReceiveFn = unsafe extern "C" fn(user: *mut c_void, file_name: *const c_char, data: *const u8, len: usize);
-pub type AdExportAsFn =
-    unsafe extern "C" fn(ctx: *mut c_void, exporter_id: *const c_char, receive: AdReceiveFn, user: *mut c_void) -> i32;
+pub type AdExportAsFn = unsafe extern "C" fn(ctx: *mut c_void, exporter_id: *const c_char, receive: AdReceiveFn, user: *mut c_void) -> i32;
 pub type AdWarnFn = unsafe extern "C" fn(ctx: *mut c_void, message: *const c_char);
 
 #[repr(C)]

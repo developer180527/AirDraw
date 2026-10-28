@@ -276,11 +276,8 @@ pub fn write_fbx(scene: &ExportScene) -> Vec<u8> {
             counts.1 += 1;
             let vertices: Vec<f64> = m.positions.iter().flat_map(|p| [p.x as f64, p.y as f64, p.z as f64]).collect();
             // The last index of each polygon is stored as -(index + 1).
-            let polygons: Vec<i32> = m
-                .indices
-                .as_chunks::<3>().0.iter()
-                .flat_map(|t| [t[0] as i32, t[1] as i32, -(t[2] as i32) - 1])
-                .collect();
+            let polygons: Vec<i32> =
+                m.indices.as_chunks::<3>().0.iter().flat_map(|t| [t[0] as i32, t[1] as i32, -(t[2] as i32) - 1]).collect();
             let normals: Vec<f64> = m
                 .indices
                 .iter()
@@ -461,7 +458,19 @@ mod tests {
         let names: Vec<&str> = top.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(
             names,
-            ["FBXHeaderExtension", "FileId", "CreationTime", "Creator", "GlobalSettings", "Documents", "References", "Definitions", "Objects", "Connections", "Takes"]
+            [
+                "FBXHeaderExtension",
+                "FileId",
+                "CreationTime",
+                "Creator",
+                "GlobalSettings",
+                "Documents",
+                "References",
+                "Definitions",
+                "Objects",
+                "Connections",
+                "Takes"
+            ]
         );
         assert_eq!(&b[after..after + 16], &FOOT_ID);
         let objects = top.iter().find(|n| n.name == "Objects").unwrap();

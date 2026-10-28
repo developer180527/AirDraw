@@ -186,8 +186,7 @@ fn build(scene: &ExportScene, opts: &Params, bin_uri: Option<&str>) -> (Value, V
             mesh_of_node[ni] = Some(meshes.len() - 1);
         } else if let Some(ci) = node.curve {
             let c = &scene.curves[ci];
-            let prim =
-                json!({"attributes": {"POSITION": buf.vec3s(&c.points, true)}, "material": c.material, "mode": MODE_LINE_STRIP});
+            let prim = json!({"attributes": {"POSITION": buf.vec3s(&c.points, true)}, "material": c.material, "mode": MODE_LINE_STRIP});
             meshes.push(json!({"name": node.name, "primitives": [prim]}));
             mesh_of_node[ni] = Some(meshes.len() - 1);
         }
@@ -334,7 +333,11 @@ mod tests {
         let text = |id: &str, file: &str| String::from_utf8_lossy(&export(id, &SceneOptions::default()).files[file]).into_owned();
         let obj = text("com.airdraw.obj", "sketch.obj");
         assert!(obj.lines().any(|l| l.starts_with("vt ")));
-        assert!(obj.lines().filter(|l| l.starts_with("f ")).all(|l| l.split_whitespace().skip(1).all(|c| c.split('/').count() == 3 && !c.contains("//"))));
+        assert!(
+            obj.lines()
+                .filter(|l| l.starts_with("f "))
+                .all(|l| l.split_whitespace().skip(1).all(|c| c.split('/').count() == 3 && !c.contains("//")))
+        );
         assert!(text("com.airdraw.ply", "sketch.ply").contains("property float s\nproperty float t\n"));
         assert!(text("com.airdraw.usda", "sketch.usda").contains("texCoord2f[] primvars:st"));
         assert!(text("com.airdraw.fbx", "sketch.fbx").contains("LayerElementUV"));
@@ -358,8 +361,7 @@ mod tests {
     fn curves_are_line_strips() {
         let sink = export("com.airdraw.glb", &SceneOptions { include_curves: true, ..Default::default() });
         let json = check_glb(&sink.files["sketch.glb"]);
-        let lines =
-            json["meshes"].as_array().unwrap().iter().filter(|m| m["primitives"][0]["mode"] == MODE_LINE_STRIP).count();
+        let lines = json["meshes"].as_array().unwrap().iter().filter(|m| m["primitives"][0]["mode"] == MODE_LINE_STRIP).count();
         assert_eq!(lines, 3);
     }
 

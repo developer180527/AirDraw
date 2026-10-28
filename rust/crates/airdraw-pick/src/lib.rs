@@ -377,7 +377,13 @@ fn point_at(points: &[InputPoint], s: f32) -> InputPoint {
         pressure: a.pressure + (b.pressure - a.pressure) * t,
         tilt: match (a.tilt, b.tilt) {
             (Some(x), Some(y)) => Some(x + (y - x) * t),
-            (x, y) => if t < 0.5 { x } else { y },
+            (x, y) => {
+                if t < 0.5 {
+                    x
+                } else {
+                    y
+                }
+            }
         },
         t: a.t + (b.t - a.t) * t as f64,
     }

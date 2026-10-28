@@ -28,7 +28,10 @@ pub struct Hit {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Guide {
     /// Infinite plane through `origin`.
-    Plane { origin: Vec3, normal: Vec3 },
+    Plane {
+        origin: Vec3,
+        normal: Vec3,
+    },
     Sweep(Sweep),
 }
 

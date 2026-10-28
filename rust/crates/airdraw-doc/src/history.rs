@@ -58,9 +58,16 @@ struct HistDef {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 enum OpDef {
-    Add { index: u64, stroke: [u64; 2] },
-    Remove { items: Vec<[u64; 3]> },
-    SetBrush { changes: Vec<[u64; 3]> },
+    Add {
+        index: u64,
+        stroke: [u64; 2],
+    },
+    Remove {
+        items: Vec<[u64; 3]>,
+    },
+    SetBrush {
+        changes: Vec<[u64; 3]>,
+    },
     Replace {
         #[serde(default)]
         removed: Vec<[u64; 3]>,
@@ -171,10 +178,9 @@ pub(crate) fn encode(undo: &[Op], redo: &[Op], live: &[Stroke], brush: &dyn Fn(B
             removed: removed.iter().map(|(i, s)| [*i as u64, s.id.0, b(s.brush)]).collect(),
             added: added.iter().map(|(i, s)| [*i as u64, s.id.0, b(s.brush)]).collect(),
         },
-        Op::SetGuide { before, after } => OpDef::SetGuide {
-            before: before.as_deref().map(GuideDef::new),
-            after: after.as_deref().map(GuideDef::new),
-        },
+        Op::SetGuide { before, after } => {
+            OpDef::SetGuide { before: before.as_deref().map(GuideDef::new), after: after.as_deref().map(GuideDef::new) }
+        }
     };
     let hist = HistDef { undo: undo.iter().map(def).collect(), redo: redo.iter().map(def).collect() };
     let text = toml::to_string(&hist).expect("history always serializes");
@@ -229,7 +235,10 @@ pub(crate) fn decode(data: &[u8], live: &[Stroke], brushes: usize) -> Result<(Ve
                 Op::Replace { removed: items(&removed, "replace")?, added: items(&added, "replace")? }
             }
             OpDef::SetBrush { changes } => Op::SetBrush {
-                changes: changes.iter().map(|&[id, old, new]| Ok((StrokeId(id), brush(old)?, brush(new)?))).collect::<Result<_, DocError>>()?,
+                changes: changes
+                    .iter()
+                    .map(|&[id, old, new]| Ok((StrokeId(id), brush(old)?, brush(new)?)))
+                    .collect::<Result<_, DocError>>()?,
             },
             OpDef::SetGuide { before, after } => Op::SetGuide {
                 before: before.map(GuideDef::into_guide).transpose()?.map(std::sync::Arc::new),

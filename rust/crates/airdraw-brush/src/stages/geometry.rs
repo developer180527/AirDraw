@@ -25,10 +25,7 @@ pub struct Tube;
 
 impl Stage for Tube {
     fn schema(&self) -> Vec<ParamSpec> {
-        vec![
-            ParamSpec::int("sides", 8, 3, 32, "Segments around the tube"),
-            ParamSpec::bool("caps", true, "Close the ends"),
-        ]
+        vec![ParamSpec::int("sides", 8, 3, 32, "Segments around the tube"), ParamSpec::bool("caps", true, "Close the ends")]
     }
 }
 
@@ -478,11 +475,7 @@ mod tests {
 
     fn valid(m: &MeshBuffers) -> bool {
         let n = m.positions.len();
-        !m.is_empty()
-            && m.normals.len() == n
-            && m.uvs.len() == n
-            && m.tangents.len() == n
-            && m.indices.iter().all(|&i| (i as usize) < n)
+        !m.is_empty() && m.normals.len() == n && m.uvs.len() == n && m.tangents.len() == n && m.indices.iter().all(|&i| (i as usize) < n)
     }
 
     /// A gently curving stroke with growing distance and varying width.
@@ -509,7 +502,11 @@ mod tests {
     fn uvs_and_tangents_match_the_surface() {
         let mut dots = defaults(Dots.schema());
         dots.insert("spacing".into(), crate::params::ParamValue::Float(0.2));
-        for (name, g, p) in [("tube", &Tube as &dyn Geometry, defaults(Tube.schema())), ("ribbon", &Ribbon, defaults(Ribbon.schema())), ("dots", &Dots, dots)] {
+        for (name, g, p) in [
+            ("tube", &Tube as &dyn Geometry, defaults(Tube.schema())),
+            ("ribbon", &Ribbon, defaults(Ribbon.schema())),
+            ("dots", &Dots, dots),
+        ] {
             let mut m = MeshBuffers::default();
             g.build(&curve(40), &p, &mut m);
             assert!(valid(&m), "{name}");

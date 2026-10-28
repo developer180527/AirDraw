@@ -53,14 +53,7 @@ impl ParamSpec {
         Self { name, default: ParamValue::Float(default), min: Some(min), max: Some(max), hint: Hint::None, doc }
     }
     pub fn int(name: &'static str, default: i64, min: i64, max: i64, doc: &'static str) -> Self {
-        Self {
-            name,
-            default: ParamValue::Int(default),
-            min: Some(min as f64),
-            max: Some(max as f64),
-            hint: Hint::None,
-            doc,
-        }
+        Self { name, default: ParamValue::Int(default), min: Some(min as f64), max: Some(max as f64), hint: Hint::None, doc }
     }
     pub fn bool(name: &'static str, default: bool, doc: &'static str) -> Self {
         Self { name, default: ParamValue::Bool(default), min: None, max: None, hint: Hint::None, doc }

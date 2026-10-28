@@ -50,7 +50,8 @@ fn projection_matches_the_camera() {
 
 #[test]
 fn eraser_hits_only_what_it_touches() {
-    let i = index(&[x_line(1, 0.0, 0.0, 1.0), x_line(2, 1.0, 0.0, 1.0), line(3, 1, Vec3::new(0.3, -0.3, 4.0), Vec3::new(0.3, -0.3, 6.0), 9)]);
+    let i =
+        index(&[x_line(1, 0.0, 0.0, 1.0), x_line(2, 1.0, 0.0, 1.0), line(3, 1, Vec3::new(0.3, -0.3, 4.0), Vec3::new(0.3, -0.3, 6.0), 9)]);
     let c = cam();
     assert_eq!(i.under_capsule(&c, Vec2::new(500.0, 505.0), Vec2::new(500.0, 505.0), 10.0, true), ids(&[1]));
     assert!(i.under_capsule(&c, Vec2::new(500.0, 400.0), Vec2::new(500.0, 400.0), 10.0, false).is_empty());
@@ -286,12 +287,19 @@ fn timing_on_a_million_points() {
     for id in 0..1000 {
         let (start, dir) = (Vec3::new(rnd() * 1.4, rnd() * 1.4, rnd()), Vec3::new(rnd(), rnd(), rnd() * 0.3).normalize() * 0.0006);
         let points: Vec<InputPoint> = (0..1000)
-            .map(|k| InputPoint { pos: start + dir * k as f32 + Vec3::Y * (k as f32 * 0.02).sin() * 0.02, normal: Vec3::Z, pressure: 0.5, tilt: None, t: k as f64 })
+            .map(|k| InputPoint {
+                pos: start + dir * k as f32 + Vec3::Y * (k as f32 * 0.02).sin() * 0.02,
+                normal: Vec3::Z,
+                pressure: 0.5,
+                tilt: None,
+                t: k as f64,
+            })
             .collect();
         i.insert(&Stroke { id: StrokeId(id), layer: LayerId(1), brush: BrushRef(0), points: points.into() }, HW);
     }
     let c = cam();
-    let moves: Vec<(Vec2, Vec2)> = (0..200).map(|k| (Vec2::new(100.0 + k as f32 * 4.0, 500.0), Vec2::new(104.0 + k as f32 * 4.0, 503.0))).collect();
+    let moves: Vec<(Vec2, Vec2)> =
+        (0..200).map(|k| (Vec2::new(100.0 + k as f32 * 4.0, 500.0), Vec2::new(104.0 + k as f32 * 4.0, 503.0))).collect();
     let t = std::time::Instant::now();
     let mut hits = 0;
     for &(a, b) in &moves {
@@ -303,5 +311,8 @@ fn timing_on_a_million_points() {
     let lasso_ms = t.elapsed().as_secs_f64() * 1000.0;
     let t = std::time::Instant::now();
     let tap = i.nearest(&c, Vec2::splat(500.0), 12.0);
-    println!("eraser move {per_move:.3} ms ({hits} hits), lasso {lasso_ms:.1} ms ({lasso}), tap {:.3} ms ({tap:?})", t.elapsed().as_secs_f64() * 1000.0);
+    println!(
+        "eraser move {per_move:.3} ms ({hits} hits), lasso {lasso_ms:.1} ms ({lasso}), tap {:.3} ms ({tap:?})",
+        t.elapsed().as_secs_f64() * 1000.0
+    );
 }

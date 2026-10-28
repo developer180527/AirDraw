@@ -56,9 +56,8 @@ pub(crate) fn encode(strokes: &[Stroke], brush: impl Fn(&Stroke) -> u32) -> Vec<
         out.push(f);
     }
     let all = || strokes.iter().flat_map(|s| s.points.iter());
-    let normals = || {
-        strokes.iter().zip(&flags).flat_map(|(s, f)| s.points.iter().take(if f & SHARED_NORMAL != 0 { 1 } else { s.points.len() }))
-    };
+    let normals =
+        || strokes.iter().zip(&flags).flat_map(|(s, f)| s.points.iter().take(if f & SHARED_NORMAL != 0 { 1 } else { s.points.len() }));
     put_stream32(&mut out, Predict::Linear, all().map(|p| p.pos.x.to_bits()));
     put_stream32(&mut out, Predict::Linear, all().map(|p| p.pos.y.to_bits()));
     put_stream32(&mut out, Predict::Linear, all().map(|p| p.pos.z.to_bits()));
@@ -279,7 +278,10 @@ mod tests {
         let back = decode(&encode(&s, |s| s.brush.0)).unwrap();
         // Compared as bits: -0.0, subnormals and NaN payloads survive too.
         assert_eq!(bits(&back), bits(&s));
-        assert_eq!(back.iter().map(|s| (s.id, s.layer, s.brush)).collect::<Vec<_>>(), s.iter().map(|s| (s.id, s.layer, s.brush)).collect::<Vec<_>>());
+        assert_eq!(
+            back.iter().map(|s| (s.id, s.layer, s.brush)).collect::<Vec<_>>(),
+            s.iter().map(|s| (s.id, s.layer, s.brush)).collect::<Vec<_>>()
+        );
         assert!(back[1].points.iter().all(|p| p.tilt.is_none()));
         assert_eq!(decode(&encode(&[], |_| 0)).unwrap(), Vec::new());
     }
@@ -320,4 +322,3 @@ mod tests {
         assert!(matches!(decode(&empty), Err(DocError::Corrupt(_))));
     }
 }
-

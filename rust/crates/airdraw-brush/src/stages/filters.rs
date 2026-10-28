@@ -38,14 +38,7 @@ impl Filter for Resample {
     }
 
     fn stream(&self, p: &Params) -> Option<Box<dyn PointStream>> {
-        Some(Box::new(ResampleStream {
-            spacing: p.float("spacing"),
-            seen: 0,
-            head: Vec::new(),
-            kept: 0,
-            held: Vec::new(),
-            last: None,
-        }))
+        Some(Box::new(ResampleStream { spacing: p.float("spacing"), seen: 0, head: Vec::new(), kept: 0, held: Vec::new(), last: None }))
     }
 }
 

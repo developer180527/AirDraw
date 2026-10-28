@@ -7,8 +7,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_foundation::{
-    NSArray, NSData, NSFileManager, NSSearchPathDirectory, NSSearchPathDomainMask, NSSet, NSString, NSURL,
-    NSURLBookmarkCreationOptions, NSURLBookmarkResolutionOptions,
+    NSArray, NSData, NSFileManager, NSSearchPathDirectory, NSSearchPathDomainMask, NSSet, NSString, NSURL, NSURLBookmarkCreationOptions,
+    NSURLBookmarkResolutionOptions,
 };
 use objc2_ui_kit::{UIApplication, UIDocumentPickerDelegate, UIDocumentPickerViewController, UIOpenURLContext, UIScene};
 use objc2_uniform_type_identifiers::UTType;
@@ -210,11 +210,7 @@ fn begin_access(url: &NSURL) -> Option<String> {
 }
 
 fn bookmark_hex(url: &NSURL) -> Option<String> {
-    let data = url.bookmarkDataWithOptions_includingResourceValuesForKeys_relativeToURL_error(
-        NSURLBookmarkCreationOptions(0),
-        None,
-        None,
-    );
+    let data = url.bookmarkDataWithOptions_includingResourceValuesForKeys_relativeToURL_error(NSURLBookmarkCreationOptions(0), None, None);
     data.ok().map(|d| d.to_vec().iter().map(|b| format!("{b:02x}")).collect())
 }
 

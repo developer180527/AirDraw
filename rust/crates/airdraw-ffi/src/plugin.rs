@@ -10,8 +10,7 @@ use std::sync::Arc;
 use airdraw_brush::params::Hint;
 use airdraw_brush::{ParamSpec, ParamValue, Params};
 use airdraw_export::{
-    ExportError, ExportReport, ExportScene, ExportSink, Exporter, ExporterCaps, ExporterInfo, ExporterRegistry, MemorySink,
-    UpAxis,
+    ExportError, ExportReport, ExportScene, ExportSink, Exporter, ExporterCaps, ExporterInfo, ExporterRegistry, MemorySink, UpAxis,
 };
 use serde_json::{Map, Value};
 

@@ -294,9 +294,8 @@ mod tests {
         let mut out: Vec<Arc<Brush>> = BrushLibrary::new(reg.clone()).iter().cloned().collect();
         for (i, (f, d)) in [(FILTERS[0], DYNAMICS[0]), (FILTERS[1], DYNAMICS[1])].into_iter().enumerate() {
             for (j, g) in GEOMETRY.iter().enumerate() {
-                let toml = format!(
-                    "schema = 1\nid = \"test.{i}.{j}\"\nname = \"t\"\n{f}\n{d}\n[geometry]\n{g}\n[material]\ntype = \"solid\"\n"
-                );
+                let toml =
+                    format!("schema = 1\nid = \"test.{i}.{j}\"\nname = \"t\"\n{f}\n{d}\n[geometry]\n{g}\n[material]\ntype = \"solid\"\n");
                 out.push(Arc::new(Brush::compile(BrushDef::from_toml(&toml).unwrap(), &reg).unwrap()));
             }
         }
