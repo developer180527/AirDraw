@@ -1871,6 +1871,65 @@ budget. Deferred until stage composition proves insufficient.
 | 5 | Exporter structure (2026-10-27) | Every exporter is its own crate (`airdraw-export-obj`, `-gltf`, `-fbx`, `-stl`, `-ply`, `-usd`, `-svg`; shared helpers such as the zip writer also separate), wrapping an existing library or handwritten. `airdraw-export` keeps only the scene IR, the `Exporter` trait and the registry. Today's formats are modules in one crate and get split when export work resumes. |
 | 6 | Exports and history (2026-10-27) | Exported files (OBJ, FBX, STL, GLB…) are final builds: no undo history. Only `.airdraw` carries it. |
 
+## 9. Continuous integration (proposed, 2026-10-29)
+
+GitHub Actions on the public repo (`developer180527/AirDraw`): hosted runners are free,
+ARM ones included. One workflow, `.github/workflows/ci.yml`, on pushes to `main` and on
+pull requests; a newer push cancels the older run of the same branch.
+
+### 9a. Engine in CI
+
+`engine/` is not in the repo. AirDraw's two engine patches touch only Apple code (iOS app
+delegate and app-support folder, macOS open-files), so **desktop and Android jobs use the
+official Godot 4.7.2-stable editor and export templates**, downloaded from GitHub
+releases and cached. Only the iOS job needs the patched engine: it clones
+`4.7.2-stable`, applies `patches/godot/*.patch`, builds the iOS templates
+(`scripts/package_ios_templates.sh`) and caches them keyed on the Godot tag plus the
+patches' hash, so the 30–40 min build runs only when the patches change.
+
+### 9b. Jobs
+
+| Job | Runner | Steps |
+|---|---|---|
+| Rust | `ubuntu-24.04` | `cargo fmt --check`, `clippy -D warnings`, workspace tests |
+| Linux x86_64 | `ubuntu-24.04` | build GDExtension, Godot import + script check, **smoke test** |
+| Linux arm64 | `ubuntu-24.04-arm` | same |
+| Windows x86_64 | `windows-2025` | same (tests + build + script check; smoke see 9c) |
+| Windows arm64 | `windows-11-arm` | same |
+| macOS arm64 | `macos-15` | same, plus the Quick Look extension compiles |
+| Android arm64 | `ubuntu-24.04` | `cargo-ndk` build for `arm64-v8a`, export a debug APK (CI-made debug keystore) |
+| iOS | `macos-15` | `build_ios_core.sh`, export the Xcode project, `xcodebuild` for a generic iOS device with signing off |
+
+Every platform also runs the workspace tests natively (the Rust job alone wouldn't catch
+Windows path or ARM-only bugs). APKs and the unsigned iOS `.app` are kept as run
+artifacts for 7 days; no desktop packages yet.
+
+### 9c. The smoke test without a GPU
+
+`draw_smoke_test.tscn` renders (Forward+), so it needs a GPU driver:
+- **Linux:** Mesa's software Vulkan (lavapipe) under `xvfb-run`. Known to work with Godot.
+- **macOS:** GitHub's Apple-silicon runners expose a paravirtual Metal device; expected to work.
+- **Windows:** no GPU and no software Vulkan by default. First try Mesa's prebuilt
+  lavapipe for Windows (x64 and arm64 builds exist); if it doesn't hold, the job runs a
+  headless subset (load/save, Recents, document checks) instead.
+Screenshots (`user://*.png`) upload as artifacts, so layout regressions can be eyeballed
+from any run. A smoke line with `=false` that isn't on an allow-list fails the job.
+
+### 9d. Changes needed in the repo
+
+- `app/airdraw.gdextension`: add `linux.arm64`, `windows.arm64`, `android.arm64` entries;
+  drop the TEMP debug→release line (CI builds release everywhere).
+- Android: an `Android` export preset, and `airdraw-ios`-style platform gating so the
+  Android build has no iOS/macOS-only crates (already `cfg`-gated in `airdraw-ffi`).
+- Smoke test: an exit code (non-zero on any unexpected `false`), so CI doesn't parse logs.
+- Android runs on an emulator and iOS on a simulator need x86_64/simulator builds of the
+  engine and core; **build-only for now**, simulator runs later.
+
+### 9e. Order
+
+1. Rust + Linux x86_64 (incl. smoke). 2. macOS, Linux arm64. 3. Windows x64/arm64.
+4. Android APK. 5. iOS build with cached templates. Each lands green before the next.
+
 ## 8. Current state (prototype)
 
 - Godot 4.7.2-stable built from source: macOS arm64 editor, iOS templates (Metal only,
