@@ -1594,6 +1594,13 @@ Decisions (2026-10-27):
 - Type: Inter (variable, SIL OFL, `app/fonts/`) app-wide via `UiTheme.font(weight,
   display)`; titles use the large optical size. Boot splash and the iOS launch screen show
   `app/splash.png` (the app icon) on the UI background instead of Godot's logo.
+- App icon: `scripts/set_app_icon.sh <file.icon | file.png>`. From an Icon Composer document
+  it renders (Xcode's `ictool`) `app/icon.png` (light: Windows, Linux, Android, iOS default,
+  home mark, splash), `icon_dark.png` (iOS dark) and `icon_tinted.png` (grayscale of dark,
+  iOS tinted), and keeps the document as `platform/apple/AppIcon.icon`, which
+  `build_macos.sh` compiles with `actool` (Assets.car for macOS 26 dark/tinted/glass, .icns
+  for older macOS). iOS gets flattened PNG appearances through Godot's export; the full
+  Liquid Glass rendering on iOS would need the `.icon` in the exported Xcode project.
 - `main.gd` flow: starts on Home (or opens a `.airdraw` passed on the command line, which is
   how Finder launches the Mac app). `+ New` creates `Sketch N.airdraw` in the default folder
   (`Documents/Sketches` on iOS = Files › On My iPad › AirDraw › Sketches; `~/Documents/AirDraw`

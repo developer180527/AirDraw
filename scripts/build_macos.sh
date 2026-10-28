@@ -17,6 +17,20 @@ mkdir -p "$ROOT/build/macos"
   | grep -E "ERROR" || true
 [ -d "$APP" ] || { echo "Godot export failed" >&2; exit 1; }
 
+# App icon (scripts/set_app_icon.sh): compile the Icon Composer document so macOS 26 shows its
+# dark, tinted and glass looks (Assets.car), with an .icns for older macOS.
+ICON="$ROOT/platform/apple/AppIcon.icon"
+if [ -d "$ICON" ]; then
+  ICONS="$ROOT/build/macos/icon" && rm -rf "$ICONS" && mkdir -p "$ICONS"
+  xcrun actool "$ICON" --compile "$ICONS" --app-icon AppIcon --platform macosx --target-device mac \
+    --minimum-deployment-target 12.0 --output-partial-info-plist "$ICONS/partial.plist" >/dev/null
+  cp "$ICONS/Assets.car" "$ICONS/AppIcon.icns" "$APP/Contents/Resources/"
+  rm -f "$APP/Contents/Resources/icon.icns"  # Godot's, from icon.png
+  /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile AppIcon" "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" "$APP/Contents/Info.plist" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Add :CFBundleIconName string AppIcon" "$APP/Contents/Info.plist"
+fi
+
 # Thumbnail extension. Extensions start in NSExtensionMain, not main().
 rm -rf "$WORK" && mkdir -p "$WORK"
 APPEX="$WORK/AirDrawThumbnail.appex"
