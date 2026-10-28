@@ -512,6 +512,42 @@ func _ready() -> void:
 		" pickable_in_step=", canvas.pickable_count() == canvas.stroke_count())
 	# Leave the sketch as it was for the checks below (the erase may have emptied it).
 	_key(KEY_Z, true)
+	# Partial: a drag across a line cuts it into pieces, shown live, kept as one undo step.
+	await _tap(shell.find_button("Erase partial"))
+	var partial_set: bool = session.erase_partial and shell.find_button("Erase partial").button_pressed
+	var row := center.y + 40.0
+	main.set_tool("draw")
+	await _stroke(Vector2(center.x - 150, row), func(t: float) -> Vector2: return Vector2(t * 300.0, 0.0))
+	var before_cut: int = canvas.stroke_count()
+	main.set_tool("erase")
+	var shown := func() -> int:
+		return canvas.get_children().filter(func(c): return c is MeshInstance3D and c.visible and c.mesh != null).size()
+	var shown_before: int = shown.call()
+	await _erase_drag(Vector2(center.x, row - 80), Vector2(center.x + 4, row + 80), func() -> void:
+		# The cut line is hidden and its two pieces shown (other strokes the drag cuts add more).
+		print("SMOKE erase partial_live=", canvas.is_erasing() and canvas.stroke_count() == before_cut,
+			" pieces_shown=", shown.call() > shown_before))
+	var after_cut: int = canvas.stroke_count()
+	_key(KEY_Z, true)
+	var cut_undone: int = canvas.stroke_count()
+	_key(KEY_Z, true, true)
+	print("SMOKE erase partial set=", partial_set, " split=", after_cut > before_cut, " one_undo_step=", cut_undone == before_cut,
+		" redo=", canvas.stroke_count() == after_cut, " pickable_in_step=", canvas.pickable_count() == canvas.stroke_count())
+	_key(KEY_Z, true)
+	# Holding Shift when the drag starts erases whole strokes instead.
+	var shift := InputEventKey.new()
+	shift.keycode = KEY_SHIFT
+	shift.pressed = true
+	Input.parse_input_event(shift)
+	await _erase_drag(Vector2(center.x, row - 80), Vector2(center.x + 4, row + 80), func() -> void: pass)
+	var shift_up := shift.duplicate()
+	shift_up.pressed = false
+	Input.parse_input_event(shift_up)
+	Input.flush_buffered_events()
+	print("SMOKE erase shift_whole=", canvas.stroke_count() < before_cut)
+	_key(KEY_Z, true)
+	await _tap(shell.find_button("Erase whole"))
+	print("SMOKE erase back_to_whole=", not session.erase_partial, " sketch_restored=", canvas.stroke_count() == before_cut)
 	main.call("_pen_action", "doubletap")
 	var back_to_draw: bool = main.get("tool") == "draw"
 	main.call("_pen_action", "doubletap")
@@ -552,6 +588,20 @@ func _stroke(origin: Vector2, path: Callable) -> void:
 		if i % 10 == 0:
 			await get_tree().process_frame
 	_mouse_button(origin + path.call(1.0), false)
+	await get_tree().process_frame
+
+
+## A mouse drag with the current tool from `a` to `b`; `mid` runs before the button is released.
+func _erase_drag(a: Vector2, b: Vector2, mid: Callable) -> void:
+	_mouse_button(a, true)
+	for i in range(1, 31):
+		var ev := InputEventMouseMotion.new()
+		ev.position = a.lerp(b, i / 30.0)
+		ev.button_mask = MOUSE_BUTTON_MASK_LEFT
+		Input.parse_input_event(ev)
+	Input.flush_buffered_events()
+	mid.call()
+	_mouse_button(b, false)
 	await get_tree().process_frame
 
 

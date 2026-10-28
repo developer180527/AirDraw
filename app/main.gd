@@ -46,6 +46,9 @@ func _ready() -> void:
 	if "bench-file-format" in OS.get_cmdline_user_args():
 		get_tree().change_scene_to_file.call_deferred("res://tests/file_format_bench.tscn")
 		return
+	if "bench-erase" in OS.get_cmdline_user_args():
+		get_tree().change_scene_to_file.call_deferred("res://tests/erase_bench.tscn")
+		return
 	Input.use_accumulated_input = false
 	# User-facing folders first (and the one-time iOS Documents migration, which moves user
 	# brushes) so everything below finds files in their new places.
@@ -116,6 +119,7 @@ func _ready() -> void:
 	toolbar.guide_opacity_changed.connect(guides.set_opacity)
 	toolbar.tool_selected.connect(set_tool)
 	toolbar.eraser_size_changed.connect(func(r: float) -> void: session.eraser_radius = r)
+	toolbar.eraser_partial_changed.connect(func(on: bool) -> void: session.erase_partial = on)
 	session.eraser_cursor.connect(toolbar.show_eraser)
 	toolbar.look_requested.connect(func(id: String) -> void:
 		canvas.set_look(id)
@@ -314,6 +318,7 @@ func set_tool(t: String) -> void:
 	session.guide_drawing = t == "guide"
 	session.erase_tool = t == "erase"
 	session.eraser_radius = toolbar.eraser_radius_px()
+	session.erase_partial = toolbar.eraser_partial
 	toolbar.set_tool(t)
 	toolbar.set_guide_drawing(t == "guide")
 	if t == "guide":

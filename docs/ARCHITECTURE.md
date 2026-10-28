@@ -1036,7 +1036,7 @@ numbers) still reports the file as corrupt.
 all, and viewing never rewrites a file.
 History cap: see the revised rule under Undo history.
 
-### 3i. Erase and Select (approved 2026-10-28 with the proposed defaults; steps 1–2 implemented)
+### 3i. Erase and Select (approved 2026-10-28 with the proposed defaults; steps 1–3 implemented)
 
 Two tools are still missing from the rail (§5-3): **Erase** and **Select**. Both need the
 same thing first: knowing which strokes, and which parts of them, are under the pen. Then
@@ -1204,7 +1204,7 @@ A gizmo sits at the selection's centre, sized in screen points:
 |---|---|
 | 1 ✅ | `airdraw-pick` (index, capsule, nearest, lasso, cut, front-only depth) with tests; `Op::Replace` in `airdraw-doc` and the `replace` op in `HIST`, with round-trip and older-build tests |
 | 2 ✅ | Whole-stroke Erase: rail button, context bar, `E`, eraser end, Pencil double-tap, ring cursor, one undo step per drag; smoke checks |
-| 3 | Partial erase with live pieces; `BENCH=erase` on the iPad |
+| 3 ✅ | Partial erase with live pieces; `BENCH=erase` on the iPad (iPad run pending) |
 | 4 | Select: tap, lasso, accent outline, Delete, Duplicate, Re-brush, Select All, long-press and right-click menus |
 | 5 | Transform gizmo: move and rotate, baked on release; scale follows per-stroke size |
 
@@ -1262,6 +1262,39 @@ A gizmo sits at the selection's centre, sized in screen points:
     strokes are timed by the real clock.
   - The router test covers eraser-end strokes.
   - The iPad build is still to be hand-tested.
+
+#### Step 3 results (2026-10-28)
+
+- **Partial erase:** Whole / Partial in the Erase bar, a device setting. Holding Shift when a
+  drag starts does the other one.
+- **The first time the eraser crosses a stroke:**
+  - The stroke is hidden.
+  - `airdraw_pick::cut` splits it into pieces. Each piece gets its own node and goes into the
+    pick index under a temporary id (from 2⁶²).
+- **Later moves:** they cut pieces like any stroke, rebuilding only the piece that was cut.
+  Each original remembers its pieces in order along it.
+- **On lift:** one `replace_strokes` turns each original into its pieces. All pieces gone
+  means the stroke is deleted. It is one undo step.
+- **Cancel, undo, redo or Clear mid-drag:** the pieces are dropped and the originals are shown
+  again.
+- **`BENCH=erase`** (`app/tests/erase_bench.tscn`; `scripts/bench_ipad.sh` runs it on the
+  iPad): it measures picking on 100k- and 1M-point sketches, plus partial and whole erase of a
+  5,000-point Ink stroke on a real canvas, 20 cuts.
+  - Mac (M-series, 1440×900):
+
+| Measure | Mac | Target (iPad) |
+|---|---|---|
+| Eraser move, 100k points | 0.03 ms mean, 0.08 ms p95 | < 1 ms |
+| Eraser move, 1M points | 0.40 ms mean, 1.03 ms p95 | < 4 ms |
+| Partial-erase move with the piece rebuild, 5k-point stroke | 1.69 ms mean, 2.80 ms max | < 4 ms |
+| Lift after 20 cuts (21 strokes built) | 1.97 ms | |
+| Lasso over 40% of the view, 1M points | 3.5–4.6 ms | |
+
+  - The iPad run is still to do. The export needs the iPad connected; last time it was
+    unreachable and the signing step failed.
+- **Smoke test, 4 new lines:** the line is cut into live pieces with nothing committed, splits
+  on lift, is one undo step, and Shift erases whole. The pieces check fails if the pieces are
+  never added to the scene.
 
 #### Open details (proposed defaults)
 

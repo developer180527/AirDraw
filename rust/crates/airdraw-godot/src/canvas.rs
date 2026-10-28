@@ -11,7 +11,7 @@ use airdraw_pick::{Camera, PickIndex};
 use airdraw_export::{ExporterRegistry, FolderSink, SceneOptions, build_scene};
 use godot::classes::base_material_3d::{CullMode, Feature, ShadingMode};
 use godot::classes::mesh::PrimitiveType;
-use godot::classes::{ArrayMesh, INode3D, Material, MeshInstance3D, Node3D, Shader, ShaderMaterial, StandardMaterial3D};
+use godot::classes::{ArrayMesh, Camera3D, INode3D, Material, MeshInstance3D, Node3D, Shader, ShaderMaterial, StandardMaterial3D};
 use godot::prelude::*;
 
 use crate::export_bridge::{def_to_dict, dict_to_def, dict_to_params, slot_from_name, spec_to_dict};
@@ -20,6 +20,34 @@ use crate::live::{LiveStroke, UpdateTiming, mesh_arrays};
 /// Render layers of stroke nodes: the default layer plus layer 20, which only strokes use,
 /// so offscreen cameras (thumbnails) can render strokes without grids or guides.
 const STROKE_LAYERS: u32 = 1 | (1 << 19);
+
+/// Partial-erase pieces shorter than this (metres) are dropped.
+const MIN_PIECE: f32 = 0.001;
+/// Ids of live partial-erase pieces in the pick index: far above any document stroke id.
+const PIECE_IDS: u64 = 1 << 62;
+
+/// An eraser drag in progress (§3i).
+enum Erase {
+    /// Strokes touched so far, hidden until the drag ends.
+    Whole(Vec<StrokeId>),
+    Partial(Partial),
+}
+
+/// A partial erase: the document strokes it has cut (hidden) and their live pieces.
+#[derive(Default)]
+struct Partial {
+    /// Each cut stroke with its current pieces in order along it (none: all erased).
+    originals: Vec<(StrokeId, Vec<StrokeId>)>,
+    pieces: HashMap<StrokeId, Piece>,
+    next: u64,
+}
+
+struct Piece {
+    original: StrokeId,
+    /// Same layer and brush as the original; a temporary id.
+    stroke: Stroke,
+    node: Gd<MeshInstance3D>,
+}
 
 /// Shows a [`Document`] as mesh nodes and edits it. Input code feeds world-space points;
 /// finished strokes go into the document, and undo/redo/load update only the nodes that
@@ -52,8 +80,8 @@ pub struct SketchCanvas {
     pick: PickIndex,
     /// Widest half width per brush snapshot, for picking.
     half_widths: HashMap<BrushRef, f32>,
-    /// Strokes the eraser has touched in the current drag, hidden until it lifts.
-    erasing: Option<Vec<StrokeId>>,
+    /// The eraser drag in progress, if any.
+    erasing: Option<Erase>,
     /// Per-update live-stroke costs, recorded only while benchmarking.
     timings: Option<Vec<UpdateTiming>>,
 }
@@ -351,56 +379,253 @@ impl SketchCanvas {
 
     // ---- Erasing (§3i) -----------------------------------------------------------------------
 
-    /// Starts an eraser drag: strokes it touches hide at once and are removed together, as one
-    /// undo step, by [`Self::end_erase`].
-    pub(crate) fn begin_erase(&mut self) {
+    /// Starts an eraser drag. Whole: strokes it touches hide at once and are removed together
+    /// by [`Self::end_erase`]. Partial: strokes are cut where it passes, shown as live pieces,
+    /// and replaced by their pieces at the end. Either way, one undo step.
+    pub(crate) fn begin_erase(&mut self, partial: bool) {
         self.cancel_stroke();
         self.cancel_erase();
         let skipped = self.doc.layers().iter().filter(|l| !l.visible || l.locked).map(|l| l.id);
         self.pick.set_skipped_layers(skipped);
-        self.erasing = Some(Vec::new());
+        self.erasing = Some(if partial { Erase::Partial(Partial::default()) } else { Erase::Whole(Vec::new()) });
     }
 
     /// Erases along `path` (screen pixels) with an eraser of `radius` pixels: the front strokes
     /// under it. Returns how many strokes this drag has touched so far.
     pub(crate) fn erase_along(&mut self, cam: &Camera, path: &[glam::Vec2], radius: f32) -> usize {
-        if self.erasing.is_none() {
-            return 0;
-        }
         let moves: Vec<(glam::Vec2, glam::Vec2)> = match path {
             [p] => vec![(*p, *p)],
             _ => path.windows(2).map(|w| (w[0], w[1])).collect(),
         };
         for (a, b) in moves {
-            for id in self.pick.under_capsule(cam, a, b, radius, true) {
-                // Hidden strokes no longer hide what's behind them.
-                self.pick.remove(id);
+            let hits = self.pick.under_capsule(cam, a, b, radius, true);
+            match &mut self.erasing {
+                None => return 0,
+                Some(Erase::Whole(touched)) => {
+                    for id in hits {
+                        // Hidden strokes no longer hide what's behind them.
+                        self.pick.remove(id);
+                        if let Some(node) = self.nodes.get_mut(&id) {
+                            node.set_visible(false);
+                        }
+                        touched.push(id);
+                    }
+                }
+                Some(Erase::Partial(_)) => {
+                    for id in hits {
+                        self.cut_under(cam, id, (a, b), radius);
+                    }
+                }
+            }
+        }
+        match &self.erasing {
+            Some(Erase::Whole(touched)) => touched.len(),
+            Some(Erase::Partial(p)) => p.originals.len(),
+            None => 0,
+        }
+    }
+
+    /// Partial erase: cuts stroke or piece `id` along one eraser move. A document stroke is
+    /// hidden and becomes pieces the first time; pieces are cut again on later moves.
+    fn cut_under(&mut self, cam: &Camera, id: StrokeId, along: (glam::Vec2, glam::Vec2), radius: f32) {
+        let Some(Erase::Partial(p)) = &self.erasing else { return };
+        let target = match p.pieces.get(&id) {
+            Some(piece) => Some((piece.stroke.clone(), Some(id))),
+            None => self.doc.stroke(id).cloned().map(|s| (s, None)),
+        };
+        let Some((stroke, piece)) = target else { return };
+        let half_width = self.half_width_for(stroke.brush);
+        let Some(kept) = airdraw_pick::cut(cam, &stroke.points, half_width, &[along], radius, MIN_PIECE) else { return };
+        let original = match piece {
+            Some(_) => self.erasing_partial().pieces[&id].original,
+            None => {
                 if let Some(node) = self.nodes.get_mut(&id) {
                     node.set_visible(false);
                 }
-                self.erasing.as_mut().expect("checked above").push(id);
+                self.erasing_partial().originals.push((id, vec![id]));
+                id
             }
+        };
+        self.pick.remove(id);
+        if let Some(old) = self.erasing_partial().pieces.remove(&id) {
+            let mut node = old.node;
+            node.queue_free();
         }
-        self.erasing.as_ref().map_or(0, Vec::len)
+        // The new pieces, in order, take the cut one's place.
+        let brush = self.brush_for(stroke.brush);
+        let material = self.material_for(stroke.brush);
+        let mut ids = Vec::with_capacity(kept.len());
+        for points in kept {
+            let p = self.erasing_partial();
+            p.next += 1;
+            let piece_id = StrokeId(PIECE_IDS + p.next);
+            let piece = Stroke { id: piece_id, points: points.into(), ..stroke.clone() };
+            let mut node = MeshInstance3D::new_alloc();
+            node.set_layer_mask(STROKE_LAYERS);
+            node.set_material_override(&material);
+            set_mesh(&mut node, &brush.build(&piece.points));
+            self.base_mut().add_child(&node);
+            self.pick.insert(&piece, half_width);
+            self.erasing_partial().pieces.insert(piece_id, Piece { original, stroke: piece, node });
+            ids.push(piece_id);
+        }
+        let p = self.erasing_partial();
+        let order = &mut p.originals.iter_mut().find(|(o, _)| *o == original).expect("registered above").1;
+        let at = order.iter().position(|&x| x == id).expect("cut piece is listed");
+        order.splice(at..=at, ids);
     }
 
-    /// Removes what the drag touched (one undo step). Returns how many strokes went.
+    fn erasing_partial(&mut self) -> &mut Partial {
+        match &mut self.erasing {
+            Some(Erase::Partial(p)) => p,
+            _ => unreachable!("only called during a partial erase"),
+        }
+    }
+
+    /// Commits the drag as one undo step. Returns how many strokes it changed.
     pub(crate) fn end_erase(&mut self) -> usize {
-        let Some(ids) = self.erasing.take() else { return 0 };
-        let changes = self.doc.remove_strokes(&ids);
-        self.apply(changes);
-        ids.len()
+        match self.erasing.take() {
+            None => 0,
+            Some(Erase::Whole(ids)) => {
+                let changes = self.doc.remove_strokes(&ids);
+                self.apply(changes);
+                ids.len()
+            }
+            Some(Erase::Partial(mut p)) => {
+                let replacements: Vec<(StrokeId, Vec<Vec<InputPoint>>)> = p
+                    .originals
+                    .iter()
+                    .map(|(orig, order)| (*orig, order.iter().map(|id| p.pieces[id].stroke.points.to_vec()).collect()))
+                    .collect();
+                for (id, piece) in p.pieces.drain() {
+                    self.pick.remove(id);
+                    let mut node = piece.node;
+                    node.queue_free();
+                }
+                let (changes, _) = self.doc.replace_strokes(replacements);
+                self.apply(changes);
+                p.originals.len()
+            }
+        }
     }
 
     /// Shows what the drag touched again, as if it never happened.
     pub(crate) fn cancel_erase(&mut self) {
-        let Some(ids) = self.erasing.take() else { return };
-        for id in ids {
+        let originals: Vec<StrokeId> = match self.erasing.take() {
+            None => return,
+            Some(Erase::Whole(ids)) => ids,
+            Some(Erase::Partial(mut p)) => {
+                for (id, piece) in p.pieces.drain() {
+                    self.pick.remove(id);
+                    let mut node = piece.node;
+                    node.queue_free();
+                }
+                p.originals.into_iter().map(|(id, _)| id).collect()
+            }
+        };
+        for id in originals {
             if let Some(node) = self.nodes.get_mut(&id) {
                 node.set_visible(true);
             }
             self.index_stroke(id);
         }
+    }
+
+    /// Erase timings on this device (§3i, `BENCH=erase`): picking on synthetic 100k- and
+    /// 1M-point sketches in front of `camera`, then partial and whole erases on a 5,000-point
+    /// stroke in this canvas (live pieces rebuilt, as when erasing). Replaces the document.
+    /// Returns the report, one line per measure.
+    #[func]
+    fn erase_benchmark(&mut self, camera: Gd<Camera3D>) -> GString {
+        use std::time::Instant;
+        let Some(cam) = pick_camera(&camera) else { return "no camera".into() };
+        let to_world = camera.get_global_transform();
+        let world = |p: glam::Vec3| {
+            let v = to_world * Vector3::new(p.x, p.y, p.z);
+            glam::Vec3::new(v.x, v.y, v.z)
+        };
+        let size = camera.get_viewport().map_or(Vector2::new(1000.0, 1000.0), |v| v.get_visible_rect().size);
+        let (w, h) = (size.x, size.y);
+        let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
+        let stats = |mut v: Vec<f64>| {
+            v.sort_by(f64::total_cmp);
+            let mean = v.iter().sum::<f64>() / v.len().max(1) as f64;
+            format!("mean {mean:.3} ms, p95 {:.3} ms, max {:.3} ms", v[v.len() * 95 / 100], v[v.len() - 1])
+        };
+        let mut out = Vec::new();
+        let mut seed = 7u64;
+        let mut rnd = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
+        };
+        // Picking: wavy strokes of 1,000 points filling the view 3–5 m away; swipes across it.
+        let radius = 30.0;
+        for strokes in [100usize, 1000] {
+            let mut index = PickIndex::new();
+            for id in 0..strokes {
+                let start = glam::Vec3::new(rnd() * 1.6, rnd() * 1.1, -4.0 + rnd());
+                let dir = glam::Vec3::new(rnd(), rnd(), rnd() * 0.3).normalize() * 0.0006;
+                let points: Vec<InputPoint> = (0..1000)
+                    .map(|k| {
+                        let local = start + dir * k as f32 + glam::Vec3::Y * (k as f32 * 0.02).sin() * 0.02;
+                        InputPoint { pos: world(local), normal: glam::Vec3::Z, pressure: 0.5, tilt: None, t: k as f64 }
+                    })
+                    .collect();
+                let stroke = Stroke { id: StrokeId(id as u64), layer: airdraw_doc::LayerId(1), brush: BrushRef(0), points: points.into() };
+                index.insert(&stroke, 0.006);
+            }
+            let mut times = Vec::new();
+            let mut hits = 0;
+            for k in 0..200 {
+                let x = w * (0.1 + 0.8 * k as f32 / 200.0);
+                let (a, b) = (glam::Vec2::new(x, h * 0.5), glam::Vec2::new(x + w * 0.004, h * 0.5 + 3.0));
+                let t = Instant::now();
+                hits += index.under_capsule(&cam, a, b, radius, true).len();
+                times.push(ms(t));
+            }
+            let label = if strokes == 1000 { "1M".to_string() } else { format!("{}k", strokes) };
+            out.push(format!("pick {label} points, eraser move: {} ({hits} hits)", stats(times)));
+            let t = Instant::now();
+            let lasso = [glam::Vec2::new(w * 0.3, h * 0.3), glam::Vec2::new(w * 0.7, h * 0.3), glam::Vec2::new(w * 0.7, h * 0.7), glam::Vec2::new(w * 0.3, h * 0.7)];
+            let n = index.in_lasso(&cam, &lasso).len();
+            let lasso_ms = ms(t);
+            let t = Instant::now();
+            let tap = index.nearest(&cam, glam::Vec2::new(w * 0.5, h * 0.5), 12.0);
+            out.push(format!("pick {label} points: lasso {lasso_ms:.2} ms ({n}), tap {:.3} ms ({})", ms(t), tap.is_some()));
+        }
+        // Erasing a real 5,000-point Ink stroke across the whole view, 4 m away.
+        self.new_document();
+        let brush = self.library.get("com.airdraw.ink").unwrap_or_else(|| self.brush.clone());
+        let r = self.doc.intern_brush(&brush.def);
+        self.compiled.insert(r, brush);
+        let long: Vec<InputPoint> = (0..5000)
+            .map(|k| {
+                let f = k as f32 / 4999.0;
+                let local = glam::Vec3::new(-6.0 + 12.0 * f, (f * 40.0).sin() * 0.05, -4.0);
+                InputPoint { pos: world(local), normal: glam::Vec3::Z, pressure: 0.6, tilt: None, t: f as f64 * 4.0 }
+            })
+            .collect();
+        let at_x = |k: usize| w * (0.15 + 0.7 * k as f32 / 20.0);
+        for partial in [true, false] {
+            let (_, changes) = self.doc.add_stroke(r, long.clone());
+            self.apply(changes);
+            self.begin_erase(partial);
+            let mut times = Vec::new();
+            for k in 0..20 {
+                let path = [glam::Vec2::new(at_x(k), h * 0.3), glam::Vec2::new(at_x(k) + 2.0, h * 0.7)];
+                let t = Instant::now();
+                self.erase_along(&cam, &path, 20.0);
+                times.push(ms(t));
+            }
+            let t = Instant::now();
+            self.end_erase();
+            let end_ms = ms(t);
+            let mode = if partial { "partial" } else { "whole" };
+            out.push(format!("{mode} erase of a 5k-point stroke, per move: {}; lift {end_ms:.2} ms; strokes after {}", stats(times), self.doc.strokes().len()));
+            self.clear();
+        }
+        self.new_document();
+        out.join("\n").as_str().into()
     }
 
     #[func]
@@ -812,7 +1037,12 @@ impl SketchCanvas {
                 Change::Removed(id) => self.pick.remove(id),
                 Change::Guide => {}
                 Change::Reset => {
-                    self.erasing = None;
+                    if let Some(Erase::Partial(p)) = self.erasing.take() {
+                        for (_, piece) in p.pieces {
+                            let mut node = piece.node;
+                            node.queue_free();
+                        }
+                    }
                     self.pick.clear();
                 }
             }
@@ -1072,6 +1302,18 @@ fn preview_stroke() -> Vec<InputPoint> {
             }
         })
         .collect()
+}
+
+/// The camera as picking sees it: world → camera, projection, viewport size in pixels.
+pub(crate) fn pick_camera(cam: &Gd<Camera3D>) -> Option<Camera> {
+    let size = cam.get_viewport()?.get_visible_rect().size;
+    let t = cam.get_global_transform().affine_inverse();
+    let a = |v: Vector3| glam::Vec3A::new(v.x, v.y, v.z);
+    let view = glam::Affine3A::from_cols(a(t.basis.col_a()), a(t.basis.col_b()), a(t.basis.col_c()), a(t.origin));
+    let p = cam.get_camera_projection();
+    let c = |v: Vector4| glam::Vec4::new(v.x, v.y, v.z, v.w);
+    let proj = glam::Mat4::from_cols(c(p.cols[0]), c(p.cols[1]), c(p.cols[2]), c(p.cols[3]));
+    Some(Camera::new(view, proj, glam::Vec2::new(size.x, size.y)))
 }
 
 fn set_mesh(node: &mut Gd<MeshInstance3D>, mesh: &MeshBuffers) {

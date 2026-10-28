@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use airdraw_guide::{Guide, Hit, Ray, Sweep, SweepOptions};
 use airdraw_input::{Command, DeviceCaps, DrawTool, InputRouter, PenEvent, PenSample, Routed, RouterConfig, StrokeEvent, ViewEvent};
 use airdraw_platform::{InputSource, MergedInput, Platform, QueueInput, QueueSender};
-use godot::classes::{Camera3D, INode, InputEvent, Node, Os};
+use godot::classes::{Camera3D, INode, Input, InputEvent, Node, Os};
+use godot::global::Key;
 use godot::prelude::*;
 
 use crate::canvas::{SketchCanvas, input_point};
@@ -37,6 +38,10 @@ pub struct SketchSession {
     /// Eraser radius in viewport pixels.
     #[var]
     eraser_radius: f32,
+    /// The eraser cuts strokes where it passes instead of removing them whole. Holding Shift
+    /// when a drag starts does the other one.
+    #[var]
+    erase_partial: bool,
     /// Where the eraser was last, while an eraser drag is on.
     erase_last: Option<glam::Vec2>,
     /// The guide the current stroke started on; it stays on it until the pen lifts.
@@ -74,6 +79,7 @@ impl INode for SketchSession {
             guide_drawing: false,
             erase_tool: false,
             eraser_radius: 12.0,
+            erase_partial: false,
             erase_last: None,
             stroke_guide: None,
             guide_path: Vec::new(),
@@ -317,7 +323,8 @@ impl SketchSession {
         match e {
             StrokeEvent::Begin { sample, .. } => {
                 self.cancel_drawing();
-                self.with_canvas(|c| c.begin_erase());
+                let partial = self.erase_partial != Input::singleton().is_key_pressed(Key::SHIFT);
+                self.with_canvas(|c| c.begin_erase(partial));
                 self.erase_last = Some(sample.pos);
                 self.erase_to(&[sample.pos]);
             }
@@ -356,17 +363,8 @@ impl SketchSession {
         self.signals().eraser_cursor().emit(Vector2::new(end.x, end.y), true);
     }
 
-    /// The camera as picking sees it: world → camera, projection, viewport size in pixels.
     fn pick_camera(&self) -> Option<airdraw_pick::Camera> {
-        let cam = self.camera.as_ref()?;
-        let size = cam.get_viewport()?.get_visible_rect().size;
-        let t = cam.get_global_transform().affine_inverse();
-        let a = |v: Vector3| glam::Vec3A::new(v.x, v.y, v.z);
-        let view = glam::Affine3A::from_cols(a(t.basis.col_a()), a(t.basis.col_b()), a(t.basis.col_c()), a(t.origin));
-        let p = cam.get_camera_projection();
-        let c = |v: Vector4| glam::Vec4::new(v.x, v.y, v.z, v.w);
-        let proj = glam::Mat4::from_cols(c(p.cols[0]), c(p.cols[1]), c(p.cols[2]), c(p.cols[3]));
-        Some(airdraw_pick::Camera::new(view, proj, glam::Vec2::new(size.x, size.y)))
+        crate::canvas::pick_camera(self.camera.as_ref()?)
     }
 
     fn add_guide_point(&mut self, pos: glam::Vec2) {

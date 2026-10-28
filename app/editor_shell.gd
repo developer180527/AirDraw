@@ -18,6 +18,7 @@ signal view_requested(view: String)  ## front, back, side, left, top, bottom, 3d
 signal orbit_requested(delta: Vector2)
 signal look_requested(id: String)
 signal eraser_size_changed(radius_px: float)
+signal eraser_partial_changed(partial: bool)
 signal layout_changed
 
 const SETTINGS := "user://settings.cfg"
@@ -37,6 +38,8 @@ var sheet_open := false
 var tray_collapsed := false
 ## Eraser diameter in points.
 var eraser_size := ERASER_SIZE
+## The eraser cuts strokes where it passes (Partial) instead of removing whole ones.
+var eraser_partial := false
 ## Brush ids, most recent first (the tray; keys 1–9).
 var recent_brushes: Array[String] = []
 
@@ -543,8 +546,20 @@ func _draw_bar() -> void:
 
 
 func _erase_bar() -> void:
+	var group := ButtonGroup.new()
+	for partial in [false, true]:
+		var b := _bar_button("Erase partial" if partial else "Erase whole", "Partial" if partial else "Whole", func() -> void:
+			eraser_partial = partial
+			eraser_partial_changed.emit(partial)
+			_save_settings())
+		b.toggle_mode = true
+		b.button_group = group
+		b.button_pressed = eraser_partial == partial
+		b.tooltip_text = ("Cut strokes where the eraser passes" if partial else "Remove every stroke the eraser touches") + \
+			(" (hold Shift for the other)" if OS.has_feature("pc") or DisplayServer.has_hardware_keyboard() else "")
+	_bar_row.add_child(VSeparator.new())
 	var label := Label.new()
-	label.text = "Erases whole strokes · Size"
+	label.text = "Size"
 	label.theme_type_variation = "Small"
 	_bar_row.add_child(label)
 	var size := HSlider.new()
@@ -891,6 +906,7 @@ func _load_settings() -> void:
 		tray_collapsed = cfg.get_value("ui", "tray_collapsed", false)
 		recent_brushes.assign(cfg.get_value("ui", "recent_brushes", []))
 		eraser_size = clampf(cfg.get_value("ui", "eraser_size", ERASER_SIZE), ERASER_SIZES.x, ERASER_SIZES.y)
+		eraser_partial = cfg.get_value("ui", "eraser_partial", false)
 
 
 func _save_settings() -> void:
@@ -900,4 +916,5 @@ func _save_settings() -> void:
 	cfg.set_value("ui", "tray_collapsed", tray_collapsed)
 	cfg.set_value("ui", "recent_brushes", recent_brushes)
 	cfg.set_value("ui", "eraser_size", eraser_size)
+	cfg.set_value("ui", "eraser_partial", eraser_partial)
 	cfg.save(SETTINGS)
