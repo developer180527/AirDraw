@@ -880,7 +880,9 @@ func _key(code: Key, cmd := false, shift := false) -> void:
 	var ev := InputEventKey.new()
 	ev.keycode = code
 	ev.pressed = true
-	ev.meta_pressed = cmd
+	# The app's shortcuts are Cmd on macOS and Ctrl elsewhere (is_command_or_control_pressed).
+	ev.meta_pressed = cmd and OS.has_feature("macos")
+	ev.ctrl_pressed = cmd and not OS.has_feature("macos")
 	ev.shift_pressed = shift
 	Input.parse_input_event(ev)
 	Input.flush_buffered_events()
