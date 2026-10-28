@@ -1035,6 +1035,188 @@ numbers) still reports the file as corrupt.
 all, and viewing never rewrites a file.
 History cap: see the revised rule under Undo history.
 
+### 3i. Erase and Select (proposed 2026-10-28, awaiting sign-off)
+
+Two tools are still missing from the rail (§5-3): **Erase** and **Select**. Both need the
+same thing first: knowing which strokes, and which parts of them, are under the pen. Then
+Erase removes them and Select lets you move, rotate, duplicate or delete them.
+
+#### What exists today
+
+- Strokes are world-space raw input (`InputPoint`: position, normal, pressure, tilt, time)
+  plus a brush snapshot. There is no per-stroke transform. Meshes are always rebuilt from the
+  points, so changing the points is how a stroke changes.
+- Undo ops are `Add`, `Remove`, `SetBrush`, `SetGuide`. `HIST` stores stroke points once,
+  keyed by stroke id: from `STRK` if the stroke is in the sketch, otherwise from the pool.
+- The session already gets `PointerTool::Eraser` (a Wacom eraser end, for example) and
+  `PenAction::DoubleTap`/`Squeeze`. Both are ignored for now ("Eraser behaves like the brush
+  until erasing is implemented").
+
+#### Picking (`airdraw-pick`, a new crate)
+
+Picking is pure Rust with no Godot dependency, so it can be unit-tested. It is its own crate
+because it is its own subsystem (one crate per subsystem).
+
+- **Input:** the camera (view-projection matrix and viewport size), plus each stroke's points
+  and its *half width*: the brush's largest half width from its geometry stage. Raw points are
+  used instead of the filtered centreline. Filters move points by much less than a stroke's
+  width, and raw points need no brush run.
+- **Index:** a world AABB per stroke, cached and updated from `Change` events. Per query,
+  only strokes whose projected box touches the query region are projected point by point.
+  There is no BVH for now; add one only if the benchmark below needs it.
+- **Queries, all in screen pixels:**
+  - `under_capsule(a, b, radius)`: strokes touched by the eraser moving from sample `a` to
+    `b`. Using capsules, not circles, means a fast stroke can't skip a line.
+  - `nearest(p, tolerance)`: the frontmost stroke at a tap.
+  - `in_lasso(polygon)`: strokes with at least half their points inside.
+  - `cut(stroke, capsules)`: the kept parts of a stroke as point ranges with fractional ends.
+- **Depth:**
+  - The eraser and taps act on the **front** strokes only. At each sample, find the nearest
+    depth among the touched strokes; only strokes within a small band behind it count (the
+    band is a few stroke widths). Otherwise erasing a line on the front of a shape would also
+    delete the one behind it.
+  - Lasso selects **through**, at all depths. You lasso what you see outlined, and you can
+    orbit first.
+
+#### Undo: one new op
+
+```rust
+Op::Replace { removed: Vec<(usize, Stroke)>, added: Vec<(usize, Stroke)> }
+```
+
+One op covers partial erase, transform and duplicate:
+
+| Edit | removed | added |
+|---|---|---|
+| Partial erase | the cut strokes | their kept pieces |
+| Move / rotate / scale | the strokes as they were | the same strokes, moved |
+| Duplicate | — | copies |
+
+- Every changed stroke gets a **new id**. Ids are never reused, so `HIST`'s pool-by-id stays
+  valid and the file format needs only one new op kind (`op = "replace"`). It is not a new
+  format version.
+- An older build that meets `replace` drops the history and still opens the sketch; history
+  is already optional data.
+- Undo of `Replace` is exact: it swaps the stored strokes back. No inverse matrix is
+  involved, so repeated undo and redo never drift.
+- Whole-stroke erase and Delete keep using `Remove`.
+- The selection follows the new ids: the op returns the old → new mapping.
+- The history size cap counts both sides of a `Replace`.
+
+#### Erase
+
+- **Whole stroke (default):**
+  - Any stroke the eraser touches is hidden at once, so it feels like erasing.
+  - Pen-up commits one `Remove` for everything touched by that drag: one undo step.
+  - Cancel (a palm or a gesture taking over) shows them again.
+- **Partial:**
+  - Cuts strokes where the eraser passes. The cut ends are interpolated points at the
+    eraser's edge, with position, normal, pressure and time interpolated too.
+  - Pieces shorter than 2 points or 1 mm are dropped.
+  - While dragging, the original is hidden and its pieces are rebuilt live. Only strokes
+    touched by the latest capsule are recomputed. The kept ranges accumulate per stroke.
+  - Pen-up commits one `Replace`.
+  - Pieces are rebuilt from their own points, so new ends get the brush's taper, like a
+    freshly drawn stroke.
+- **Size:** in screen points (24 pt by default), so it stays the same on screen when zooming.
+  There is a slider in the context bar.
+- **Cursor:** a ring at the pen while erasing. On iPads with Pencil hover it is shown before
+  touching too.
+- **Ways to erase:**
+  - Rail button or `E`.
+  - Pencil double-tap: Draw ⇄ Erase, following the system's Pencil setting.
+  - A pen's eraser end always erases, whatever the tool.
+  - Holding `Shift` while erasing switches between whole and partial.
+- Hidden and locked layers are never touched. Guides aren't strokes, so the eraser leaves them
+  alone (Remove is in the Guide bar).
+
+#### Select
+
+- **Making a selection:**
+  - Tap a stroke to select it. Tapping empty space clears the selection.
+  - Drag a lasso.
+  - `Shift` or a second finger held adds to the selection, `Alt` removes from it.
+  - `⌘A` selects all, `Esc` clears.
+  - A finger long-press on a stroke selects it and opens its menu, with any tool active.
+- **Highlight:** selected strokes get an accent outline, drawn as a `next_pass` with the Ink
+  outline shader in the accent colour. It works with every Look and costs no rebuild.
+- **Not part of the document:** the selection isn't saved and isn't an undo step. Undo keeps
+  whichever selected strokes still exist.
+- **Context bar and menu:**
+  - Move / Rotate / Scale
+  - Duplicate (`⌘D`, the copy is offset a little toward the camera's right)
+  - Delete (`⌫`)
+  - Re-brush with the current brush: the existing `SetBrush` op, which stands in for Recolour
+    until per-stroke colour exists
+  - Select All / Deselect
+
+#### Transform ("joystick")
+
+A gizmo sits at the selection's centre, sized in screen points:
+
+| Handle | Drag does |
+|---|---|
+| Centre pad | Move in the view plane, at the selection's depth |
+| Depth bar | Push or pull along the view direction |
+| Ring | Rotate about the view axis |
+| Two smaller arcs | Rotate about the world up axis and the view's right axis |
+| Corner dot | Uniform scale about the centre |
+
+- **During a drag:** only the stroke nodes' `transform` changes, which is O(1) per stroke with
+  no rebuild.
+- **On release:**
+  - The matrix is baked into each selected stroke's points. Positions are transformed and
+    normals rotated.
+  - One `Replace` is committed, and the affected meshes are rebuilt.
+  - The rebuild is needed because brush geometry isn't guaranteed to be equivariant under
+    rotation. For example, a tube's start frame uses a fixed reference axis.
+- **Scale and width:** strokes have no size of their own yet, so scaling would change a
+  sketch's proportions (lengths grow, line widths don't). Scale should ship with per-stroke
+  size, the next roadmap item: scaling then multiplies it. Until then the gizmo has Move and
+  Rotate only.
+- **Snapping:** with `Shift`, rotation snaps to 15° and moves snap to the grid.
+
+#### Desktop and keyboard
+
+| Input | Action |
+|---|---|
+| `E` / `V` | Erase / Select |
+| Click / drag (Select) | Pick / lasso, with `Shift` to add and `Alt` to remove |
+| `⌘A`, `Esc`, `⌘D`, `⌫` | Select all, deselect, duplicate, delete |
+| `Shift` while erasing | Whole ⇄ partial |
+| Right-click a stroke | Select it and open its menu |
+
+#### Performance targets (iPad, measured with a new `BENCH=erase` scene)
+
+| Case | Target |
+|---|---|
+| Pick per eraser move, 100k-point sketch | < 1 ms |
+| Pick per eraser move, 1M-point sketch | < 4 ms |
+| Partial-erase move cutting a 5k-point stroke | < 4 ms including the piece rebuild |
+| Transform drag | no rebuilds, 120 fps |
+| Release after transforming 50k points | < 50 ms |
+
+#### Rollout
+
+| Step | Deliverable |
+|---|---|
+| 1 | `airdraw-pick` (index, capsule, nearest, lasso, cut, front-only depth) with tests; `Op::Replace` in `airdraw-doc` and the `replace` op in `HIST`, with round-trip and older-build tests |
+| 2 | Whole-stroke Erase: rail button, context bar, `E`, eraser end, Pencil double-tap, ring cursor, one undo step per drag; smoke checks |
+| 3 | Partial erase with live pieces; `BENCH=erase` on the iPad |
+| 4 | Select: tap, lasso, accent outline, Delete, Duplicate, Re-brush, Select All, long-press and right-click menus |
+| 5 | Transform gizmo: move and rotate, baked on release; scale follows per-stroke size |
+
+#### Open details (proposed defaults)
+
+1. **Eraser depth:** front strokes only (proposed) vs everything under the pen.
+2. **Lasso rule:** at least half of a stroke's points inside (proposed) vs touching vs fully
+   inside.
+3. **Default eraser mode:** whole stroke (proposed: fewer surprises, and the cheapest to
+   undo) vs partial.
+4. **Partial-erase ends:** taper like new strokes (proposed) vs cut flat.
+5. **Scale:** wait for per-stroke size (proposed) vs ship now with line widths unchanged.
+
+
 ---
 
 ## 4. Export system (`airdraw-export`)
@@ -1320,7 +1502,7 @@ has hidden shortcuts and no hover, tooltips or right-click.
 ```
 
 - **Tool rail, four tools:** Draw, Erase, Select, Guide. Erase and Select appear when they're
-  built. Left-handed mode mirrors the rail, brush strip and context bar.
+  built (design: §3i). Left-handed mode mirrors the rail, brush strip and context bar.
 - **Context bar** (bottom center, one row, scrolls if narrow):
 
 | Tool | Context bar |
