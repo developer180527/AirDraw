@@ -35,6 +35,7 @@ define_class!(
         #[unsafe(method(touchesBegan:withEvent:))]
         fn touches_began(&self, touches: &NSSet<UITouch>, event: &UIEvent) {
             let _: () = unsafe { msg_send![super(self), touchesBegan: touches, withEvent: event] };
+            wake_loop();
             let Some(view) = self.view() else { return };
             for touch in touches.iter() {
                 let id = touch_id(&touch);
@@ -51,6 +52,7 @@ define_class!(
         #[unsafe(method(touchesMoved:withEvent:))]
         fn touches_moved(&self, touches: &NSSet<UITouch>, event: &UIEvent) {
             let _: () = unsafe { msg_send![super(self), touchesMoved: touches, withEvent: event] };
+            wake_loop();
             let Some(view) = self.view() else { return };
             for touch in touches.iter() {
                 // Coalesced touches hold every sample since the last event (240 Hz Pencil
@@ -74,6 +76,7 @@ define_class!(
         #[unsafe(method(touchesEnded:withEvent:))]
         fn touches_ended(&self, touches: &NSSet<UITouch>, event: &UIEvent) {
             let _: () = unsafe { msg_send![super(self), touchesEnded: touches, withEvent: event] };
+            wake_loop();
             let Some(view) = self.view() else { return };
             for touch in touches.iter() {
                 let id = touch_id(&touch);
@@ -86,6 +89,7 @@ define_class!(
         #[unsafe(method(touchesCancelled:withEvent:))]
         fn touches_cancelled(&self, touches: &NSSet<UITouch>, event: &UIEvent) {
             let _: () = unsafe { msg_send![super(self), touchesCancelled: touches, withEvent: event] };
+            wake_loop();
             for touch in touches.iter() {
                 let id = touch_id(&touch);
                 self.ivars().active.borrow_mut().remove(&id);
@@ -146,16 +150,19 @@ define_class!(
         /// iPadOS < 17.5.
         #[unsafe(method(pencilInteractionDidTap:))]
         fn did_tap_legacy(&self, _interaction: &UIPencilInteraction) {
+            wake_loop();
             self.tapped();
         }
 
         #[unsafe(method(pencilInteraction:didReceiveTap:))]
         fn did_tap(&self, _interaction: &UIPencilInteraction, _tap: &UIPencilInteractionTap) {
+            wake_loop();
             self.tapped();
         }
 
         #[unsafe(method(pencilInteraction:didReceiveSqueeze:))]
         fn did_squeeze(&self, _interaction: &UIPencilInteraction, squeeze: &UIPencilInteractionSqueeze) {
+            wake_loop();
             if squeeze.phase() == UIPencilInteractionPhase::Ended {
                 self.ivars().push(PenEvent::Action(PenAction::Squeeze));
             }
@@ -165,6 +172,7 @@ define_class!(
     impl PencilHandler {
         #[unsafe(method(hover:))]
         fn hover(&self, rec: &UIHoverGestureRecognizer) {
+            wake_loop();
             let state = rec.state();
             if state == UIGestureRecognizerState::Began || state == UIGestureRecognizerState::Changed {
                 let Some(view) = rec.view() else { return };
@@ -203,6 +211,22 @@ impl PencilHandler {
 thread_local! {
     /// Godot's viewport size in pixels (UIKit callbacks and Godot share the main thread).
     static VIEWPORT: Cell<Option<Vec2>> = const { Cell::new(None) };
+    /// Godot's view, told about input that reaches the app's own handlers.
+    static GODOT_VIEW: RefCell<Option<Retained<UIView>>> = const { RefCell::new(None) };
+}
+
+/// Input arrived: AirDraw's engine patch slows Godot's loop when the app is idle (race to
+/// idle, docs/ARCHITECTURE.md §10) and this brings it back to full rate at once. Pencil hover,
+/// squeeze and double-tap and file results reach only the app's handlers, so Godot can't see
+/// them itself. A no-op on an engine without the patch.
+pub(crate) fn wake_loop() {
+    GODOT_VIEW.with(|v| {
+        if let Some(view) = &*v.borrow()
+            && view.respondsToSelector(sel!(airdrawNoteActivity))
+        {
+            let _: () = unsafe { msg_send![&**view, airdrawNoteActivity] };
+        }
+    });
 }
 
 pub fn set_viewport_size(width: f32, height: f32) {
@@ -225,6 +249,7 @@ pub fn attach() -> Option<QueueInput> {
     #[allow(deprecated)]
     let window = app.keyWindow().or_else(|| app.windows().firstObject())?;
     let view = window.rootViewController()?.view()?;
+    GODOT_VIEW.with(|v| *v.borrow_mut() = Some(view.clone()));
 
     let input = QueueInput::new(IPAD_PENCIL_CAPS);
     let tx = input.sender();

@@ -623,6 +623,8 @@ func _ready() -> void:
 	var gizmo = shell._gizmo
 	await _settle()
 	var gz_shown: bool = gizmo.visible and canvas.selection_count() == 1
+	# Race to idle (§10): an untouched canvas with a selection and its gizmo draws nothing.
+	var idle_selection_frames: int = await _idle_frames()
 	var on_ui := func(p: Vector2) -> bool: return shell.ui_rects().any(func(r: Rect2) -> bool: return r.has_point(p))
 	# The handles are UI; inside the ring and between handles strokes stay reachable.
 	var gz_in_rects: bool = on_ui.call(gizmo._at) and on_ui.call(gizmo._at + Vector2(gizmo.RING * gizmo.ui_scale, 0)) \
@@ -678,6 +680,22 @@ func _ready() -> void:
 	_key(KEY_Z, true)
 	await _click(Vector2(center.x, sel_row), MOUSE_BUTTON_LEFT)
 	var gz_undone: bool = canvas.selection_count() == 1 and canvas.selection_center().is_equal_approx(c0)
+	# The same with a finger or Pencil (iPad: touches don't become mouse events), then undo.
+	var touch_at: Vector2 = gizmo._at
+	_touch(0, touch_at, true)
+	for i in range(1, 21):
+		var drag := InputEventScreenDrag.new()
+		drag.index = 0
+		drag.position = touch_at + Vector2(0, 60) * (i / 20.0)
+		Input.parse_input_event(drag)
+	Input.flush_buffered_events()
+	Input.flush_buffered_events()
+	_touch(0, touch_at + Vector2(0, 60), false)
+	await _settle()
+	var gz_touch_moved: bool = rig.camera.unproject_position(canvas.selection_center()).distance_to(touch_at + Vector2(0, 60)) < 2.0
+	_key(KEY_Z, true)
+	await _settle()
+	gz_moved = gz_moved and gz_touch_moved
 	_key(KEY_ESCAPE)
 	print("SMOKE gizmo shown=", gz_shown, " in_ui_rects=", gz_in_rects, " mid_drag_unbaked=", gz_mid_unbaked, " moved_under_pen=", gz_moved,
 		" turn_keeps_center=", gz_turn_keeps_center, " depth_pushes=", gz_pushed, " arc_turns=", gz_yawed, " turned_upright=", gz_turned, " hides=", gz_hidden_without_selection,
@@ -698,6 +716,9 @@ func _ready() -> void:
 	var names := []
 	for e in main.get("app_files").recents():
 		names.append(e.name)
+	var idle_home_frames: int = await _idle_frames()
+	print("SMOKE idle low_processor=", OS.low_processor_usage_mode, " home_draws_nothing=", idle_home_frames == 0,
+		" selection_draws_nothing=", idle_selection_frames == 0, " frames=", [idle_home_frames, idle_selection_frames])
 	var cards = home.cards()
 	var with_thumbs: int = cards.filter(func(c): return c.get_node("Box/Tile/Thumb").texture != null).size()
 	print("SMOKE home_visible=", home.visible, " recents=", names, " cards=", cards.size(), " with_thumbnails=", with_thumbs)
@@ -799,6 +820,14 @@ func _shot(path: String) -> void:
 	for i in 4:
 		await get_tree().process_frame
 	get_viewport().get_texture().get_image().save_png(path)
+
+
+## Frames drawn over half a second once things settle (tweens, toasts, deferred layout).
+func _idle_frames() -> int:
+	await get_tree().create_timer(1.5).timeout
+	var before := Engine.get_frames_drawn()
+	await get_tree().create_timer(0.5).timeout
+	return Engine.get_frames_drawn() - before
 
 
 ## Lets deferred layout run, so controls are where a user would see them.

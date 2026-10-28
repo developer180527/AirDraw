@@ -50,6 +50,7 @@ fn handle_contexts(contexts: &NSSet<UIOpenURLContext>) {
         if let Some(path) = begin_access(&url) {
             let bookmark = bookmark_hex(&url);
             EVENTS.with(|e| e.borrow_mut().push(FileEvent::Picked { path, bookmark }));
+            crate::uikit::wake_loop();
         }
     }
 }
@@ -95,12 +96,14 @@ define_class!(
             if EXPORTING.with(|x| x.replace(false)) {
                 let name = urls.firstObject().and_then(|u| u.lastPathComponent()).map(|n| n.to_string()).unwrap_or_default();
                 EVENTS.with(|e| e.borrow_mut().push(FileEvent::Exported { name }));
+                crate::uikit::wake_loop();
             } else if let Some(url) = urls.firstObject() {
                 let event = match begin_access(&url) {
                     Some(path) => FileEvent::Picked { path, bookmark: bookmark_hex(&url) },
                     None => FileEvent::Cancelled,
                 };
                 EVENTS.with(|e| e.borrow_mut().push(event));
+                crate::uikit::wake_loop();
             }
             DELEGATE.with(|d| d.borrow_mut().take());
         }
@@ -109,6 +112,7 @@ define_class!(
         fn cancelled(&self, _picker: &UIDocumentPickerViewController) {
             let event = if EXPORTING.with(|x| x.replace(false)) { FileEvent::ExportCancelled } else { FileEvent::Cancelled };
             EVENTS.with(|e| e.borrow_mut().push(event));
+            crate::uikit::wake_loop();
             DELEGATE.with(|d| d.borrow_mut().take());
         }
     }

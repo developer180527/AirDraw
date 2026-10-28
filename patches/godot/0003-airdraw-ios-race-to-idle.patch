@@ -1,0 +1,195 @@
+diff --git a/drivers/apple_embedded/godot_view_apple_embedded.h b/drivers/apple_embedded/godot_view_apple_embedded.h
+index 7d5d161..91afcc0 100644
+--- a/drivers/apple_embedded/godot_view_apple_embedded.h
++++ b/drivers/apple_embedded/godot_view_apple_embedded.h
+@@ -66,6 +66,9 @@ class String;
+ - (void)startRendering;
+ - (void)stopRendering;
+ 
++// AirDraw: input arrived while the loop may be idle-throttled; restores full rate at once.
++- (void)airdrawNoteActivity;
++
+ @end
+ 
+ // Implemented in subclasses
+diff --git a/drivers/apple_embedded/godot_view_apple_embedded.mm b/drivers/apple_embedded/godot_view_apple_embedded.mm
+index ffd22c3..9b5b932 100644
+--- a/drivers/apple_embedded/godot_view_apple_embedded.mm
++++ b/drivers/apple_embedded/godot_view_apple_embedded.mm
+@@ -30,7 +30,9 @@
+ 
+ #import "godot_view_apple_embedded.h"
+ 
++#include "core/config/engine.h"
+ #include "core/config/project_settings.h"
++#include "core/os/os.h"
+ #include "core/os/keyboard.h"
+ #include "core/string/ustring.h"
+ #import "drivers/apple_embedded/display_layer_apple_embedded.h"
+@@ -45,6 +47,14 @@ static const float earth_gravity = 9.80665;
+ @interface GDTView () {
+ 	UITouch *godot_touches[max_touches];
+ 	CGFloat last_edr_headroom;
++
++	// AirDraw: race to idle (see -airdrawUpdateIdle).
++	int airdraw_idle_rate;
++	uint64_t airdraw_idle_after_usec;
++	uint64_t airdraw_frames_drawn;
++	uint64_t airdraw_last_activity_usec;
++	BOOL airdraw_throttled;
++	BOOL airdraw_in_draw;
+ }
+ 
+ @property(assign, nonatomic) BOOL isActive;
+@@ -121,6 +131,11 @@ static const float earth_gravity = 9.80665;
+ - (void)godot_commonInit {
+ 	self.preferredFrameRate = 60;
+ 	self.useCADisplayLink = bool(GLOBAL_DEF("display.AppleEmbedded/use_cadisplaylink", true)) ? YES : NO;
++	// AirDraw: slow the display link to this rate when nothing is drawn and no input arrives
++	// for idle_after_msec (0 = never), and keep the motion sensors off unless the app uses them.
++	airdraw_idle_rate = int(GLOBAL_DEF("display.AppleEmbedded/idle_frame_rate", 0));
++	airdraw_idle_after_usec = uint64_t(int(GLOBAL_DEF("display.AppleEmbedded/idle_after_msec", 500))) * 1000;
++	const bool device_motion = bool(GLOBAL_DEF("display.AppleEmbedded/device_motion", true));
+ 	last_edr_headroom = 0.0;
+ 
+ #if !defined(VISIONOS_ENABLED)
+@@ -136,7 +151,7 @@ static const float earth_gravity = 9.80665;
+ 	self.multipleTouchEnabled = YES;
+ 
+ 	// Configure and start accelerometer
+-	if (!self.motionManager) {
++	if (device_motion && !self.motionManager) {
+ 		self.motionManager = [[CMMotionManager alloc] init];
+ 		if (self.motionManager.deviceMotionAvailable) {
+ 			self.motionManager.deviceMotionUpdateInterval = 1.0 / 70.0;
+@@ -204,6 +219,7 @@ static const float earth_gravity = 9.80665;
+ 	if (self.useCADisplayLink) {
+ 		self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(drawView)];
+ 		self.displayLink.preferredFramesPerSecond = self.preferredFrameRate;
++		airdraw_throttled = NO; // AirDraw: a new link starts at full rate.
+ 
+ 		// Setup DisplayLink in main thread
+ 		[self.displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
+@@ -212,7 +228,68 @@ static const float earth_gravity = 9.80665;
+ 	}
+ }
+ 
++// AirDraw: one loop iteration, never nested (input handled while it pumps the run loop can
++// ask for a frame), then the idle check.
+ - (void)drawView {
++	if (airdraw_in_draw) {
++		return;
++	}
++	airdraw_in_draw = YES;
++	[self airdrawDrawView];
++	airdraw_in_draw = NO;
++	[self airdrawUpdateIdle];
++}
++
++// AirDraw: while nothing is drawn (low-processor mode skips unchanged frames), no touch is down
++// and no input arrives, the loop still ticks at the display rate; after idle_after_msec slow it
++// to idle_frame_rate. Timers keep running at that rate.
++- (void)airdrawUpdateIdle {
++	if (airdraw_idle_rate <= 0 || !self.displayLink || !OS::get_singleton()) {
++		return;
++	}
++	const uint64_t now = OS::get_singleton()->get_ticks_usec();
++	const uint64_t drawn = Engine::get_singleton()->get_frames_drawn();
++	bool touch_down = false;
++	for (int i = 0; i < max_touches; i++) {
++		touch_down = touch_down || godot_touches[i] != nullptr;
++	}
++	if (drawn != airdraw_frames_drawn || touch_down) {
++		// Something is changing on screen (an animation a timer started, say): full rate.
++		airdraw_frames_drawn = drawn;
++		airdraw_last_activity_usec = now;
++		if (airdraw_throttled) {
++			airdraw_throttled = NO;
++			self.displayLink.preferredFramesPerSecond = self.preferredFrameRate;
++		}
++	}
++	if (!airdraw_throttled && now - airdraw_last_activity_usec > airdraw_idle_after_usec) {
++		airdraw_throttled = YES;
++		self.displayLink.preferredFramesPerSecond = airdraw_idle_rate;
++	}
++}
++
++// AirDraw: input arrived (Godot's touches and keys here; the app's own Pencil, hover and file
++// handlers send this message too). Back to full rate, and run an iteration now rather than at
++// the next idle tick.
++- (void)airdrawNoteActivity {
++	if (OS::get_singleton()) {
++		airdraw_last_activity_usec = OS::get_singleton()->get_ticks_usec();
++	}
++	if (!airdraw_throttled) {
++		return;
++	}
++	airdraw_throttled = NO;
++	if (self.displayLink) {
++		self.displayLink.preferredFramesPerSecond = self.preferredFrameRate;
++	}
++	if (!airdraw_in_draw) {
++		dispatch_async(dispatch_get_main_queue(), ^{
++			[self drawView];
++		});
++	}
++}
++
++- (void)airdrawDrawView {
+ 	if (!self.isActive) {
+ 		print_verbose("Draw view not active!");
+ 		return;
+@@ -354,6 +431,7 @@ static const float earth_gravity = 9.80665;
+ }
+ 
+ - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
++	[self airdrawNoteActivity];
+ 	for (UITouch *touch in touches) {
+ 		int tid = [self getTouchIDForTouch:touch];
+ 		ERR_FAIL_COND(tid == -1);
+@@ -363,6 +441,7 @@ static const float earth_gravity = 9.80665;
+ }
+ 
+ - (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event {
++	[self airdrawNoteActivity];
+ 	for (UITouch *touch in touches) {
+ 		int tid = [self getTouchIDForTouch:touch];
+ 		ERR_FAIL_COND(tid == -1);
+@@ -375,6 +454,7 @@ static const float earth_gravity = 9.80665;
+ }
+ 
+ - (void)touchesEnded:(NSSet *)touches withEvent:(UIEvent *)event {
++	[self airdrawNoteActivity];
+ 	for (UITouch *touch in touches) {
+ 		int tid = [self getTouchIDForTouch:touch];
+ 		ERR_FAIL_COND(tid == -1);
+@@ -385,6 +465,7 @@ static const float earth_gravity = 9.80665;
+ }
+ 
+ - (void)touchesCancelled:(NSSet *)touches withEvent:(UIEvent *)event {
++	[self airdrawNoteActivity];
+ 	for (UITouch *touch in touches) {
+ 		int tid = [self getTouchIDForTouch:touch];
+ 		ERR_FAIL_COND(tid == -1);
+diff --git a/drivers/apple_embedded/godot_view_controller.mm b/drivers/apple_embedded/godot_view_controller.mm
+index a1866bc..54d7dfe 100644
+--- a/drivers/apple_embedded/godot_view_controller.mm
++++ b/drivers/apple_embedded/godot_view_controller.mm
+@@ -60,6 +60,8 @@
+ 
+ - (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
+ 	[super pressesBegan:presses withEvent:event];
++	// AirDraw: wake an idle-throttled loop.
++	[self.godotView airdrawNoteActivity];
+ 
+ 	if (!DisplayServerAppleEmbedded::get_singleton() || DisplayServerAppleEmbedded::get_singleton()->is_keyboard_active()) {
+ 		return;
+@@ -95,6 +97,8 @@
+ 
+ - (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
+ 	[super pressesEnded:presses withEvent:event];
++	// AirDraw: wake an idle-throttled loop.
++	[self.godotView airdrawNoteActivity];
+ 
+ 	if (!DisplayServerAppleEmbedded::get_singleton() || DisplayServerAppleEmbedded::get_singleton()->is_keyboard_active()) {
+ 		return;

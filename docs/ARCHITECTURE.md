@@ -1933,7 +1933,7 @@ from any run. A smoke line with `=false` that isn't on an allow-list fails the j
 1. Rust + Linux x86_64 (incl. smoke). 2. macOS, Linux arm64. 3. Windows x64/arm64.
 4. Android APK. 5. iOS build with cached templates. Each lands green before the next.
 
-## 10. Efficiency: race to idle (proposed, 2026-10-29)
+## 10. Efficiency: race to idle (approved 2026-10-29; steps 1–5 implemented)
 
 Goal: when nothing changes on screen, AirDraw does (almost) no work, so the CPU, GPU and
 display pipeline can drop to their low-power states; when something does change, it runs at
@@ -1986,13 +1986,41 @@ left is the loop ticking 120×/s with nothing to do (iOS drives it from CADispla
    - The smoke test checks that an untouched home screen and canvas draw 0 frames over a
      second (CI catches anything that starts redrawing forever).
    - `BENCH=idle` stays as the on-device measurement.
+### 10c. Implemented
+
+- `project.godot`: `application/run/low_processor_mode=true`, `audio/driver/driver="Dummy"`,
+  `[display.AppleEmbedded] idle_frame_rate=10, idle_after_msec=500, device_motion=false`.
+- `patches/godot/0003-airdraw-ios-race-to-idle.patch` (GDTView): after 500 ms with no frame
+  drawn, no touch down and no input, CADisplayLink drops to 10 Hz (timers keep running,
+  ≤ 100 ms late). Godot's touches and keys, and AirDraw's own Pencil hover/squeeze/tap and
+  file-picker handlers (`airdraw-ios` sends `airdrawNoteActivity` to the view; ObjC, so the
+  linker can't strip it), restore full rate and run an iteration at once; a drawn frame (an
+  animation a timer started) restores it too. Also: Godot started CoreMotion at 70 Hz
+  unconditionally; `device_motion=false` keeps the sensors off.
+- Gizmo redraws only when it moved or its state changed. The smoke test checks that an
+  untouched home screen and a canvas with a selection draw 0 frames (the old gizmo: 73).
+- `live_stroke_bench.gd` turns low-processor mode off: it awaits `frame_post_draw`, which
+  an unchanged scene never emits under low-processor mode.
+
+Results (iPad, `BENCH=idle` + Activity Monitor):
+
+| Phase | Frames/s | Loop ticks/s | AirDraw CPU | backboardd | audiomxd |
+|---|---|---|---|---|---|
+| Home, untouched | 0 | 8 | **0 %** (was 22 %) | 2–4 % (was 16 %) | 0 % (was 12 %) |
+| Canvas, untouched | 0 | 10 | **0 %** (was 22 %) | 2–4 % | 0 % |
+| Canvas, orbiting | 120 | 120 | 35 % | 17 % | 0 % |
+
+`BENCH=live-stroke` per-update cost unchanged (Ink 0.29–0.59 ms, Ribbon 0.21–0.62 ms
+medians). Not measured by any bench: touch-to-screen latency of the first input after idle
+(the wake runs an iteration immediately; checked by hand).
+
 6. **Later, measured separately:** the cost of a frame while orbiting/drawing (36 %: finish
    each frame faster: GPU timing isn't exposed on Metal here, so Instruments' Metal trace),
    and the 455 MB footprint.
 
 ## 8. Current state (prototype)
 
-- Godot 4.7.2-stable built from source: macOS arm64 editor, iOS templates (Metal only,
+- Godot 4.7.2-stable built from source with `patches/godot/0001–0003`: macOS arm64 editor, iOS templates (Metal only,
   `vulkan=no`, MoltenVK refs stripped by `scripts/package_ios_templates.sh`).
 - Rust workspace `rust/`: `airdraw-input` (stylus model), `airdraw-platform` (contract),
   `airdraw-brush` (stage-based brush engine, 4 built-in brushes, user brush folder),

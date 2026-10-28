@@ -19,6 +19,9 @@ var summary: FileAccess
 
 
 func _ready() -> void:
+	# Drawing redraws every frame anyway; and the awaits on frame_post_draw below need a frame
+	# even when nothing changed, which low-processor mode (the app's default) wouldn't draw.
+	OS.low_processor_usage_mode = false
 	summary = FileAccess.open("user://live_stroke_bench.txt", FileAccess.WRITE)
 	var env := WorldEnvironment.new()
 	env.environment = Environment.new()

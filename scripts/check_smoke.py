@@ -14,7 +14,8 @@ smoke = [line for line in log if line.startswith("SMOKE")]
 problems = [line for line in log if "SCRIPT ERROR" in line or "Parse Error" in line]
 for line in smoke:
     # "reopened=… home_visible=false" is the canvas showing again: expected.
-    line = line.replace("strokes=6 home_visible=false", "home_visible_after_reopen=false")
+    if line.startswith("SMOKE reopened="):
+        line = line.replace("home_visible=false", "home_visible_after_reopen=false")
     for key in re.findall(r"(\w+)=false", line):
         if key not in EXPECTED_FALSE:
             problems.append(f"{key}=false in: {line}")

@@ -49,6 +49,7 @@ func refresh() -> void:
 	if _handle == Handle.NONE and canvas:
 		_center = canvas.selection_center()
 	_follow()
+	queue_redraw()
 
 
 ## Drops a drag in progress, putting the strokes back (selection gone, tool switched).
@@ -94,7 +95,8 @@ func _follow() -> void:
 	if at.distance_to(_at) > 0.5:
 		_at = at
 		moved.emit()
-	queue_redraw()
+		# Only when it moved: an idle gizmo mustn't keep the app drawing (race to idle, §10).
+		queue_redraw()
 
 
 func _has_point(point: Vector2) -> bool:
@@ -125,23 +127,14 @@ func _bar_rect() -> Rect2:
 	return Rect2(_at + Vector2(ARC + 14.0, -36.0) * s, Vector2(12.0, 72.0) * s)
 
 
+## Mouse, and touch or Pencil on iPad (touches don't become mouse events in AirDraw).
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if event.pressed:
-			_handle = _hit(event.position)
-			if _handle == Handle.NONE:
-				return
-			_start = event.position
-			_start_center = _at
-			_depth = -(camera.global_transform.affine_inverse() * _center).z
-			_xf = Transform3D.IDENTITY
-		elif _handle != Handle.NONE:
-			var xf := _xf
-			_handle = Handle.NONE
-			_xf = Transform3D.IDENTITY
-			canvas.commit_selection_transform(xf)
-			refresh()
-		accept_event()
+		if _press(event.position, event.pressed):
+			accept_event()
+	elif event is InputEventScreenTouch and event.index == 0:
+		if _press(event.position, event.pressed):
+			accept_event()
 	elif event is InputEventMouseMotion:
 		if _handle == Handle.NONE:
 			var h := _hit(event.position)
@@ -149,10 +142,40 @@ func _gui_input(event: InputEvent) -> void:
 				_hover = h
 				queue_redraw()
 			return
-		_xf = _transform_for(event.position, event.shift_pressed)
-		canvas.preview_selection_transform(_xf)
-		_follow()
+		_drag(event.position, event.shift_pressed)
 		accept_event()
+	elif event is InputEventScreenDrag and event.index == 0 and _handle != Handle.NONE:
+		_drag(event.position, Input.is_key_pressed(KEY_SHIFT))
+		accept_event()
+
+
+## Starts or ends a drag; true when the event was the gizmo's.
+func _press(at: Vector2, pressed: bool) -> bool:
+	if pressed:
+		_handle = _hit(at)
+		if _handle == Handle.NONE:
+			return false
+		_start = at
+		_start_center = _at
+		_depth = -(camera.global_transform.affine_inverse() * _center).z
+		_xf = Transform3D.IDENTITY
+		queue_redraw()
+		return true
+	if _handle == Handle.NONE:
+		return false
+	var xf := _xf
+	_handle = Handle.NONE
+	_xf = Transform3D.IDENTITY
+	canvas.commit_selection_transform(xf)
+	refresh()
+	queue_redraw()
+	return true
+
+
+func _drag(at: Vector2, snap: bool) -> void:
+	_xf = _transform_for(at, snap)
+	canvas.preview_selection_transform(_xf)
+	_follow()
 
 
 ## The transform a drag from the press to `p` asks for.
