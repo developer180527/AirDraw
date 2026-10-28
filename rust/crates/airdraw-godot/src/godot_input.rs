@@ -42,6 +42,8 @@ pub struct GodotInput {
     /// The tablet pen's eraser end is towards the tablet (seen on its last motion, hover
     /// included): its press erases.
     pen_inverted: bool,
+    /// Mouse buttons whose press came here (not to the GUI): only their drags are strokes.
+    held: u64,
 }
 
 impl GodotInput {
@@ -49,7 +51,7 @@ impl GodotInput {
     /// Such motion must keep flowing when it passes over UI, which would otherwise swallow it.
     pub fn is_active_motion(&self, event: &Gd<InputEvent>) -> bool {
         if let Ok(e) = event.clone().try_cast::<InputEventMouseMotion>() {
-            return e.get_button_mask().ord() != 0;
+            return e.get_button_mask().ord() & self.held != 0;
         }
         if let Ok(e) = event.clone().try_cast::<InputEventScreenDrag>() {
             return !self.skip_touch && self.touches.contains_key(&e.get_index());
@@ -64,6 +66,13 @@ impl GodotInput {
     pub fn convert(&mut self, event: &Gd<InputEvent>, tx: &QueueSender) -> bool {
         let t = now();
         if let Ok(e) = event.clone().try_cast::<InputEventMouseButton>() {
+            if let Some(&(_, _, bit)) = MOUSE_BUTTONS.iter().find(|(_, gd, _)| *gd == e.get_button_index()) {
+                if e.is_pressed() {
+                    self.held |= bit.ord();
+                } else {
+                    self.held &= !bit.ord();
+                }
+            }
             return mouse_button(&e, t, self.pen_inverted, tx);
         }
         if let Ok(e) = event.clone().try_cast::<InputEventMouseMotion>() {

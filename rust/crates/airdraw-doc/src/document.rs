@@ -356,6 +356,31 @@ impl Document {
         (self.commit(Op::Replace { removed: Vec::new(), added }), new_ids)
     }
 
+    /// Moves strokes by `xf` (positions transformed, normals rotated with it), each keeping its
+    /// place, layer and brush but getting a new id. One undo step. Returns the changes and the
+    /// moved strokes' new ids, in the order given. `xf` should be rigid (move and rotate):
+    /// strokes have no size of their own yet (§3i).
+    pub fn transform_strokes(&mut self, ids: &[StrokeId], xf: glam::Affine3A) -> (Vec<Change>, Vec<StrokeId>) {
+        let rot = glam::Mat3::from(xf.matrix3);
+        let replacements = ids
+            .iter()
+            .filter_map(|id| {
+                let s = self.stroke(*id)?;
+                let moved = s
+                    .points
+                    .iter()
+                    .map(|p| InputPoint {
+                        pos: xf.transform_point3(p.pos),
+                        normal: (rot * p.normal).try_normalize().unwrap_or(p.normal),
+                        ..*p
+                    })
+                    .collect();
+                Some((*id, vec![moved]))
+            })
+            .collect();
+        self.replace_strokes(replacements)
+    }
+
     pub fn clear(&mut self) -> Vec<Change> {
         let ids: Vec<StrokeId> = self.strokes.iter().map(|s| s.id).collect();
         self.remove_strokes(&ids)
@@ -654,6 +679,27 @@ pub(crate) mod tests {
         let (_, moved) = d.duplicate_strokes(&[s[1]], Vec3::X);
         let (a, b) = (&d.stroke(s[1]).unwrap().points, &d.stroke(moved[0]).unwrap().points);
         assert!(a.iter().zip(b.iter()).all(|(p, q)| q.pos == p.pos + Vec3::X && q.pressure == p.pressure));
+    }
+
+    #[test]
+    fn transforms_bake_into_points_as_one_step() {
+        let mut d = Document::new();
+        let ink = d.intern_brush(&brush("com.airdraw.ink"));
+        let s: Vec<_> = (0..3).map(|i| d.add_stroke(ink, points(5, i as f32)).0).collect();
+        let before = d.strokes().to_vec();
+        let xf = glam::Affine3A::from_rotation_translation(glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2), Vec3::new(1.0, 2.0, 3.0));
+        let (changes, moved) = d.transform_strokes(&[s[2], s[0]], xf);
+        assert_eq!(changes.len(), 4);
+        assert_eq!(ids(&d), vec![moved[1], s[1], moved[0]], "each keeps its place");
+        let (a, b) = (&before[0].points, &d.stroke(moved[1]).unwrap().points);
+        for (p, q) in a.iter().zip(b.iter()) {
+            assert!(q.pos.distance(xf.transform_point3(p.pos)) < 1e-6);
+            assert!(q.normal.distance(Vec3::new(1.0, 0.0, 0.0)) < 1e-6, "Z turned a quarter about Y is X");
+            assert_eq!((q.pressure, q.tilt, q.t), (p.pressure, p.tilt, p.t));
+        }
+        d.undo();
+        assert_eq!(d.strokes(), &before[..], "undo is exact");
+        assert!(d.transform_strokes(&[StrokeId(77)], xf).0.is_empty());
     }
 
     #[test]

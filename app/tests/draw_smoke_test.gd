@@ -615,6 +615,73 @@ func _ready() -> void:
 	print("SMOKE select menu_right_click=", sel_menu_by_click, " menu_delete=", sel_menu_deleted, " menu_long_press=", sel_menu_by_hold,
 		" backspace=", sel_backspace, " rebrush=", sel_rebrushed, " restored=", canvas.stroke_count() == sel_strokes,
 		" pickable_in_step=", canvas.pickable_count() == canvas.stroke_count())
+	# Transform gizmo (§3i step 5): drag the pad to move, the ring to turn; each drag bakes
+	# into the strokes as one undo step; mid-drag nothing is recorded.
+	main.set_tool("select")
+	await get_tree().create_timer(0.3).timeout
+	await _click(Vector2(center.x, sel_row), MOUSE_BUTTON_LEFT)
+	var gizmo = shell._gizmo
+	await _settle()
+	var gz_shown: bool = gizmo.visible and canvas.selection_count() == 1
+	var on_ui := func(p: Vector2) -> bool: return shell.ui_rects().any(func(r: Rect2) -> bool: return r.has_point(p))
+	# The handles are UI; inside the ring and between handles strokes stay reachable.
+	var gz_in_rects: bool = on_ui.call(gizmo._at) and on_ui.call(gizmo._at + Vector2(gizmo.RING * gizmo.ui_scale, 0)) \
+		and not on_ui.call(gizmo._at + Vector2(0, gizmo.RING * gizmo.ui_scale * 0.6))
+	var c0: Vector3 = canvas.selection_center()
+	var at0: Vector2 = gizmo._at
+	var undo_before: int = canvas.stroke_count()
+	_mouse_button(at0, true)
+	for i in range(1, 21):
+		var ev := InputEventMouseMotion.new()
+		ev.position = at0 + Vector2(80, 0) * (i / 20.0)
+		ev.button_mask = MOUSE_BUTTON_MASK_LEFT
+		Input.parse_input_event(ev)
+	Input.flush_buffered_events()
+	var gz_mid_unbaked: bool = canvas.selection_center().is_equal_approx(c0) and not canvas.is_erasing() and shell._lasso.points.is_empty()
+	_mouse_button(at0 + Vector2(80, 0), false)
+	await _settle()
+	var c1: Vector3 = canvas.selection_center()
+	var gz_moved: bool = rig.camera.unproject_position(c1).distance_to(at0 + Vector2(80, 0)) < 2.0 and canvas.selection_count() == 1 \
+		and canvas.stroke_count() == undo_before
+	# A quarter turn clockwise on the ring: the horizontal line stands up.
+	var at1: Vector2 = gizmo._at
+	var r: float = gizmo.RING * gizmo.ui_scale
+	_mouse_button(at1 + Vector2(r, 0), true)
+	for i in range(1, 21):
+		var ev := InputEventMouseMotion.new()
+		ev.position = at1 + Vector2.from_angle(PI / 2 * i / 20.0) * r
+		ev.button_mask = MOUSE_BUTTON_MASK_LEFT
+		Input.parse_input_event(ev)
+	Input.flush_buffered_events()
+	_mouse_button(at1 + Vector2(0, r), false)
+	await _settle()
+	await _shot("user://gizmo_turned.png")
+	var gz_turn_keeps_center: bool = canvas.selection_center().distance_to(c1) < 0.01
+	# Depth bar up pushes away; the top arc (Shift: 15° steps) turns about world up.
+	var eye: Vector3 = rig.camera.global_position
+	var far_before: float = eye.distance_to(canvas.selection_center())
+	var depth_bar: Rect2 = gizmo._bar_rect()
+	await _gizmo_drag(depth_bar.get_center(), depth_bar.get_center() + Vector2(0, -40))
+	var gz_pushed: bool = eye.distance_to(canvas.selection_center()) > far_before + 0.05
+	var box_before: AABB = canvas.strokes_aabb()
+	var yaw_at: Vector2 = gizmo._at + Vector2.from_angle(deg_to_rad(-90.0)) * gizmo.ARC * gizmo.ui_scale
+	await _gizmo_drag(yaw_at, yaw_at + Vector2(157, 0))
+	var gz_yawed: bool = not canvas.strokes_aabb().is_equal_approx(box_before) and canvas.selection_count() == 1
+	_key(KEY_Z, true)
+	_key(KEY_Z, true)
+	_key(KEY_ESCAPE)
+	var gz_hidden_without_selection: bool = not gizmo.visible
+	await _click(at1 + Vector2(0, -100), MOUSE_BUTTON_LEFT)
+	var gz_turned: bool = canvas.selection_count() == 1
+	_key(KEY_ESCAPE)
+	_key(KEY_Z, true)
+	_key(KEY_Z, true)
+	await _click(Vector2(center.x, sel_row), MOUSE_BUTTON_LEFT)
+	var gz_undone: bool = canvas.selection_count() == 1 and canvas.selection_center().is_equal_approx(c0)
+	_key(KEY_ESCAPE)
+	print("SMOKE gizmo shown=", gz_shown, " in_ui_rects=", gz_in_rects, " mid_drag_unbaked=", gz_mid_unbaked, " moved_under_pen=", gz_moved,
+		" turn_keeps_center=", gz_turn_keeps_center, " depth_pushes=", gz_pushed, " arc_turns=", gz_yawed, " turned_upright=", gz_turned, " hides=", gz_hidden_without_selection,
+		" undo_restores=", gz_undone, " pickable_in_step=", canvas.pickable_count() == canvas.stroke_count())
 	main.set_tool("draw")
 	main.set_tool("erase")
 	main.call("_pen_action", "doubletap")
@@ -683,6 +750,19 @@ func _click(pos: Vector2, button: MouseButton) -> void:
 		Input.parse_input_event(ev)
 	Input.flush_buffered_events()
 	await get_tree().process_frame
+
+
+## A mouse drag on the gizmo from `a` to `b`.
+func _gizmo_drag(a: Vector2, b: Vector2) -> void:
+	_mouse_button(a, true)
+	for i in range(1, 21):
+		var ev := InputEventMouseMotion.new()
+		ev.position = a.lerp(b, i / 20.0)
+		ev.button_mask = MOUSE_BUTTON_MASK_LEFT
+		Input.parse_input_event(ev)
+	Input.flush_buffered_events()
+	_mouse_button(b, false)
+	await _settle()
 
 
 func _shot(path: String) -> void:

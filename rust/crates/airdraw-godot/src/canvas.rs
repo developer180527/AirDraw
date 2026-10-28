@@ -742,6 +742,48 @@ impl SketchCanvas {
         changed
     }
 
+    /// The middle of the selected strokes' bounds (the origin when nothing is selected).
+    #[func]
+    fn selection_center(&self) -> Vector3 {
+        let (lo, hi) = self.selection.iter().filter_map(|id| self.doc.stroke(*id)).flat_map(|s| s.points.iter()).fold(
+            (glam::Vec3::splat(f32::MAX), glam::Vec3::splat(f32::MIN)),
+            |(lo, hi), p| (lo.min(p.pos), hi.max(p.pos)),
+        );
+        if lo.x > hi.x {
+            return Vector3::ZERO;
+        }
+        let c = (lo + hi) * 0.5;
+        Vector3::new(c.x, c.y, c.z)
+    }
+
+    /// Shows the selection moved by `xf` while the gizmo is dragged: only the nodes move, nothing
+    /// is rebuilt or recorded. Identity puts them back.
+    #[func]
+    fn preview_selection_transform(&mut self, xf: Transform3D) {
+        for id in &self.selection {
+            if let Some(node) = self.nodes.get_mut(id) {
+                node.set_transform(xf);
+            }
+        }
+    }
+
+    /// Bakes `xf` into the selected strokes' points (one undo step) and keeps them selected.
+    /// Returns false if `xf` doesn't move anything.
+    #[func]
+    fn commit_selection_transform(&mut self, xf: Transform3D) -> bool {
+        self.preview_selection_transform(Transform3D::IDENTITY);
+        let a = |v: Vector3| glam::Vec3A::new(v.x, v.y, v.z);
+        let affine = glam::Affine3A::from_cols(a(xf.basis.col_a()), a(xf.basis.col_b()), a(xf.basis.col_c()), a(xf.origin));
+        if self.selection.is_empty() || affine.abs_diff_eq(glam::Affine3A::IDENTITY, 1e-6) {
+            return false;
+        }
+        let ids = std::mem::take(&mut self.selection);
+        let (changes, moved) = self.doc.transform_strokes(&ids, affine);
+        self.apply(changes);
+        self.set_selection(moved);
+        true
+    }
+
     fn skip_hidden_layers(&mut self) {
         let skipped = self.doc.layers().iter().filter(|l| !l.visible || l.locked).map(|l| l.id);
         self.pick.set_skipped_layers(skipped);

@@ -89,6 +89,7 @@ var _guide_path: Line2D
 var _eraser_ring: Control  ## the eraser's outline at the pen
 var _eraser_at := Vector2.ZERO
 var _lasso: Line2D  ## the Select tool's lasso while it's drawn
+var _gizmo: TransformGizmo  ## moves and turns the selection (Select tool)
 var _stroke_menu: PanelContainer  ## right-click / long-press menu for selected strokes
 var _selected := 0  ## selected strokes, for the Select bar
 var _press_at := Vector2.INF  ## where a right-click or a lone finger went down
@@ -125,6 +126,12 @@ func setup(p_canvas: SketchCanvas, camera: Camera3D) -> void:
 	_cube.view_requested.connect(view_requested.emit)
 	_cube.orbit_requested.connect(orbit_requested.emit)
 	_root.add_child(_cube)
+	_gizmo = TransformGizmo.new()
+	_gizmo.canvas = canvas
+	_gizmo.camera = camera
+	# Deferred: it can move while the session is dispatching a tap (and UI regions go to it).
+	_gizmo.moved.connect(func() -> void: layout_changed.emit.call_deferred())
+	_root.add_child(_gizmo)
 	_build_toast()
 	_build_menu()
 	_guide_path = Line2D.new()
@@ -150,8 +157,10 @@ func setup(p_canvas: SketchCanvas, camera: Camera3D) -> void:
 	_root.add_child(_lasso)
 	canvas.selection_changed.connect(func(n: int) -> void:
 		_selected = n
+		_sync_gizmo()
 		if tool == "select":
 			_rebuild_bar())
+	canvas.strokes_changed.connect(func(_n: int) -> void: _gizmo.refresh())
 
 	canvas.brushes_changed.connect(_rebuild_brushes)
 	canvas.brush_changed.connect(func(id: String) -> void:
@@ -220,6 +229,8 @@ func ui_rects() -> Array[Rect2]:
 	for c: Control in [_gallery, _title, _tools, _actions, _rail, _bar, _cube, _sheet]:
 		if c.visible:
 			rects.append(c.get_global_rect())
+	if _gizmo.visible:
+		rects.append_array(_gizmo.areas())
 	return rects
 
 
@@ -231,6 +242,7 @@ func set_title(text: String, dirty: bool) -> void:
 ## Highlights the current tool and shows its context bar.
 func set_tool(p_tool: String) -> void:
 	tool = p_tool
+	_sync_gizmo()
 	if tool != "erase":
 		show_eraser(_eraser_at, false)
 	# set_pressed_no_signal doesn't release the group's other buttons, so set each one.
@@ -271,6 +283,18 @@ func show_eraser(pos: Vector2, shown: bool) -> void:
 	_eraser_at = pos
 	_eraser_ring.visible = shown
 	_eraser_ring.queue_redraw()
+
+
+## The gizmo shows with the Select tool while something is selected.
+func _sync_gizmo() -> void:
+	if _gizmo == null:
+		return
+	var show := tool == "select" and _selected > 0 and not ui_hidden
+	if not show:
+		_gizmo.cancel()
+	_gizmo.visible = show
+	_gizmo.refresh()
+	layout_changed.emit.call_deferred()
 
 
 ## The Select tool's lasso, in screen pixels (empty clears it).
@@ -315,8 +339,9 @@ func close_sheet() -> void:
 func toggle_ui() -> void:
 	ui_hidden = not ui_hidden
 	for c in _root.get_children():
-		if c != _toast and c != _guide_path and c != _menu and c != _scrim and c != _eraser_ring and c != _lasso and c != _stroke_menu:
+		if c != _toast and c != _guide_path and c != _menu and c != _scrim and c != _eraser_ring and c != _lasso and c != _stroke_menu and c != _gizmo:
 			c.visible = not ui_hidden
+	_sync_gizmo()
 	close_menu()
 	if ui_hidden:
 		layout_changed.emit.call_deferred()
@@ -872,6 +897,7 @@ func _layout() -> void:
 	_theme = UiTheme.build(_s)
 	_root.theme = _theme
 	_cube.ui_scale = _s
+	_gizmo.ui_scale = _s
 	portrait = screen.y > screen.x or screen.x / _s < 760
 	var m := 12 * _s
 	var hand_left := not left_handed

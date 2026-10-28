@@ -1036,7 +1036,7 @@ numbers) still reports the file as corrupt.
 all, and viewing never rewrites a file.
 History cap: see the revised rule under Undo history.
 
-### 3i. Erase and Select (approved 2026-10-28 with the proposed defaults; steps 1–4 implemented)
+### 3i. Erase and Select (approved 2026-10-28 with the proposed defaults; steps 1–5 implemented; scale waits for per-stroke size)
 
 Two tools are still missing from the rail (§5-3): **Erase** and **Select**. Both need the
 same thing first: knowing which strokes, and which parts of them, are under the pen. Then
@@ -1160,7 +1160,7 @@ A gizmo sits at the selection's centre, sized in screen points:
 |---|---|
 | Centre pad | Move in the view plane, at the selection's depth |
 | Depth bar | Push or pull along the view direction |
-| Ring | Rotate about the view axis |
+| Ring | Rotate about the line of sight to the selection (see step 5 results) |
 | Two smaller arcs | Rotate about the world up axis and the view's right axis |
 | Corner dot | Uniform scale about the centre |
 
@@ -1206,7 +1206,7 @@ A gizmo sits at the selection's centre, sized in screen points:
 | 2 ✅ | Whole-stroke Erase: rail button, context bar, `E`, eraser end, Pencil double-tap, ring cursor, one undo step per drag; smoke checks |
 | 3 ✅ | Partial erase with live pieces; `BENCH=erase` on the iPad |
 | 4 ✅ | Select: tap, lasso, accent outline, Delete, Duplicate, Re-brush, Select All, long-press and right-click menus |
-| 5 | Transform gizmo: move and rotate, baked on release; scale follows per-stroke size |
+| 5 ✅ | Transform gizmo: move and rotate, baked on release; scale follows per-stroke size |
 
 #### Step 1 results (2026-10-28)
 
@@ -1332,6 +1332,43 @@ A gizmo sits at the selection's centre, sized in screen points:
   - the right-click and long-press menus, Delete from the menu, `⌫`, Re-brush
 - **Learned while testing:** a mouse click 4 ms after a touch lifts is dropped by the router
   as the OS's copy of that touch. That is correct, so the test waits.
+
+#### Step 5 results (2026-10-28)
+
+- **Gizmo:** `app/transform_gizmo.gd` is a Control drawn at the selection's centre.
+  - It shows with the Select tool while something is selected.
+  - Only its handles take input (`_has_point`): the centre pad moves, a bar beside the ring
+    pushes and pulls, the ring turns, the top arc turns about world up, and the left arc
+    turns about the view's right axis.
+  - Shift snaps turns to 15°. Snapping moves to a grid isn't done: the app has no grid step
+    yet.
+- **The ring turns about the line of sight from the eye to the selection,** not the camera's
+  forward axis. About the forward axis, a selection away from the middle of the view leaned
+  about 15° under perspective (seen in a screenshot). About the line of sight it turns flat
+  around the gizmo.
+- **Moving** uses `Camera3D.project_position` at the selection's depth, so the selection
+  stays under the pointer. In the smoke test an 80 px drag lands exactly 80 px over.
+- **Dragging:** only the selected nodes' transforms change
+  (`preview_selection_transform`), so nothing is rebuilt or recorded.
+- **On release:** `commit_selection_transform` → `Document::transform_strokes`. Positions are
+  transformed and normals rotated, as one `Replace` with new ids. The meshes are rebuilt and
+  the moved strokes stay selected.
+- **Fixed on the way:**
+  - The session claimed every mouse drag with a button held, including ones the GUI started,
+    so the gizmo never saw motion. `GodotInput` now tracks the buttons whose press reached
+    it (`held`).
+  - The gizmo first reported its whole bounding square as UI. That blocked taps and lassos
+    near the selection, and since regions update a frame late, the test caught it. It now
+    reports small rects per handle (pad, bar, squares along the ring and arcs).
+  - A `layout_changed` emitted while the session was dispatching a tap re-entered it. It is
+    now deferred.
+- **Smoke test:** 1 new line, 93 in all; the older 82 are unchanged. It covers:
+  - the handles are UI while the middle of the ring isn't
+  - nothing is baked mid-drag and no lasso starts
+  - moving lands under the pointer
+  - the turn keeps the centre, the line stands upright, the depth bar pushes away, the arc
+    turns
+  - the gizmo hides without a selection, and undo restores
 
 #### Open details (proposed defaults)
 
