@@ -23,6 +23,7 @@ airdraw-platform = { path = "crates/airdraw-platform" }
 airdraw-brush = { path = "crates/airdraw-brush" }
 airdraw-doc = { path = "crates/airdraw-doc" }
 airdraw-guide = { path = "crates/airdraw-guide" }
+airdraw-pick = { path = "crates/airdraw-pick" }
 airdraw-look = { path = "crates/airdraw-look" }
 airdraw-export = { path = "crates/airdraw-export" }
 airdraw-ios = { path = "crates/airdraw-ios" }

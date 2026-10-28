@@ -1,0 +1,10 @@
+[package]
+name = "airdraw-pick"
+description = "Stroke picking in screen space: what the eraser touches, taps, lassos and cuts (§3i)."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+airdraw-brush.workspace = true
+airdraw-doc.workspace = true
+glam.workspace = true

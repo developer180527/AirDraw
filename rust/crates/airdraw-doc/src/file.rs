@@ -837,6 +837,113 @@ mod tests {
         assert!(meta(&with).matches("[[brushes]]").count() >= meta(&without).matches("[[brushes]]").count());
     }
 
+    /// Splits, moves and duplicates, with some of it undone: every kind of `replace`.
+    fn replaced_doc() -> Document {
+        let mut d = Document::new();
+        let ink = d.intern_brush(&brush("com.airdraw.ink"));
+        let ribbon = d.intern_brush(&brush("com.airdraw.ribbon"));
+        let (a, _) = d.add_stroke(ink, points(30, 0.0));
+        let (b, _) = d.add_stroke(ribbon, points(20, 1.0));
+        let p = d.stroke(a).unwrap().points.to_vec();
+        let (_, pieces) = d.replace_strokes(vec![(a, vec![p[..10].to_vec(), p[14..].to_vec()])]);
+        let moved: Vec<InputPoint> = d.stroke(b).unwrap().points.iter().map(|q| InputPoint { pos: q.pos + Vec3::X, ..*q }).collect();
+        d.replace_strokes(vec![(b, vec![moved])]);
+        d.duplicate_strokes(&pieces);
+        d.set_brush(&pieces, ribbon);
+        d.undo();
+        d.undo();
+        d
+    }
+
+    #[test]
+    fn replace_survives_save_and_open() {
+        let d = replaced_doc();
+        let bytes = d.to_bytes();
+        let text = String::from_utf8_lossy(&sections(&bytes).get(HIST).unwrap().data).into_owned();
+        assert!(text.contains("op = \"replace\"") && text.contains("removed = [") && text.contains("added = ["));
+        let mut back = Document::from_bytes(&bytes).unwrap();
+        let mut orig = d.clone();
+        assert_eq!(state(&back), state(&orig));
+        while orig.can_redo() {
+            orig.redo();
+            back.redo();
+            assert_eq!(state(&back), state(&orig));
+        }
+        while orig.can_undo() {
+            orig.undo();
+            back.undo();
+            assert_eq!(state(&back), state(&orig));
+        }
+        assert!(back.strokes().is_empty());
+        assert_eq!(Document::from_bytes(&bytes).unwrap().to_bytes(), bytes, "deterministic");
+    }
+
+    #[test]
+    fn unknown_or_bad_replace_drops_only_the_history() {
+        let d = replaced_doc();
+        let mut all = sections(&d.to_bytes()).sections;
+        let hist = all.pop().unwrap();
+        let len = u32::from_le_bytes(hist.data[..4].try_into().unwrap()) as usize;
+        let text = String::from_utf8(hist.data[4..4 + len].to_vec()).unwrap();
+        let reopen = |t: String| {
+            let mut data = (t.len() as u32).to_le_bytes().to_vec();
+            data.extend_from_slice(t.as_bytes());
+            data.extend_from_slice(&hist.data[4 + len..]);
+            let mut w = d.file_head(FORMAT_VERSION);
+            let mut secs = all.clone();
+            secs.push(Section { id: HIST, required: false, data });
+            airdraw_pack::write(&mut w, &secs, codecs(), WriteOptions { codec: WRITE_CODEC, level: Level::Fast }).unwrap();
+            Document::from_bytes(&w).unwrap()
+        };
+        // An op this build doesn't know is what an older build sees in a `replace`.
+        let unknown = text.replace("op = \"replace\"", "op = \"teleport\"");
+        let misplaced = text.replacen("added = [[0,", "added = [[5,", 1);
+        assert_ne!(misplaced, text);
+        // The same in the redo steps (the duplicate goes on top, at 3 and 4; 5 is past the end).
+        let (undo_part, redo_part) = text.split_at(text.find("[[redo]]").unwrap());
+        let misplaced_redo = format!("{undo_part}{}", redo_part.replacen("added = [[3, 6, 0], [4,", "added = [[5, 6, 0], [6,", 1));
+        assert_ne!(misplaced_redo, text);
+        for bad in [unknown, misplaced, misplaced_redo] {
+            let back = reopen(bad);
+            assert_eq!(state(&back), state(&d), "the sketch itself still opens");
+            assert!(!back.can_undo() && !back.can_redo());
+        }
+        assert!(reopen(text).can_undo(), "the untouched section still works");
+    }
+
+    #[test]
+    fn history_cap_counts_what_replace_takes_out() {
+        // A 1.6 MB stroke cut down to a short piece: the sketch was that big a step ago, so
+        // the whole history fits the budget.
+        let mut d = Document::new();
+        let ink = d.intern_brush(&brush("com.airdraw.ink"));
+        d.add_stroke(ink, points(300, 0.0));
+        let (big, _) = d.add_stroke(ink, points(40_000, 1.0));
+        d.replace_strokes(vec![(big, vec![points(2, 1.0)])]);
+        let mut back = Document::from_bytes(&d.to_bytes()).unwrap();
+        for _ in 0..3 {
+            assert!(back.can_undo());
+            back.undo();
+        }
+        assert!(!back.can_undo() && back.strokes().is_empty());
+    }
+
+    #[test]
+    fn history_cap_counts_what_a_redone_replace_adds() {
+        // Redoing a duplicate of a 1.6 MB stroke makes the sketch 3.2 MB: both redo steps fit.
+        let mut d = Document::new();
+        let ink = d.intern_brush(&brush("com.airdraw.ink"));
+        d.add_stroke(ink, points(300, 0.0));
+        let (big, _) = d.add_stroke(ink, points(40_000, 1.0));
+        d.duplicate_strokes(&[big]);
+        d.undo();
+        d.undo();
+        let mut back = Document::from_bytes(&d.to_bytes()).unwrap();
+        back.redo();
+        back.redo();
+        assert_eq!(back.strokes().len(), 3);
+    }
+
     #[test]
     fn saving_with_history_is_deterministic() {
         let bytes = edited_doc().to_bytes();

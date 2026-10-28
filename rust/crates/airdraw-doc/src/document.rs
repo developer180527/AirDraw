@@ -59,6 +59,11 @@ pub(crate) enum Op {
     Remove { items: Vec<(usize, Stroke)> },
     SetBrush { changes: Vec<(StrokeId, BrushRef, BrushRef)> },
     SetGuide { before: Option<Arc<Guide>>, after: Option<Arc<Guide>> },
+    /// Removes some strokes and adds others in one step: partial erase (strokes → pieces),
+    /// transforms (strokes → moved copies) and duplicates (nothing → copies). Changed strokes
+    /// get new ids, so a stroke id always means the same points (§3i). `removed` holds indices
+    /// before the op and `added` indices after it, both ascending.
+    Replace { removed: Vec<(usize, Stroke)>, added: Vec<(usize, Stroke)> },
 }
 
 impl Op {
@@ -67,6 +72,7 @@ impl Op {
         match self {
             Op::Add { stroke, .. } => Box::new(std::iter::once(stroke)),
             Op::Remove { items } => Box::new(items.iter().map(|(_, s)| s)),
+            Op::Replace { removed, added } => Box::new(removed.iter().chain(added).map(|(_, s)| s)),
             Op::SetBrush { .. } | Op::SetGuide { .. } => Box::new(std::iter::empty()),
         }
     }
@@ -273,8 +279,7 @@ impl Document {
 
     /// Appends a stroke on the active layer.
     pub fn add_stroke(&mut self, brush: BrushRef, points: Vec<InputPoint>) -> (StrokeId, Vec<Change>) {
-        let id = StrokeId(self.next_stroke);
-        self.next_stroke += 1;
+        let id = self.new_id();
         let stroke = Stroke { id, layer: self.active_layer, brush, points: points.into() };
         let changes = self.commit(Op::Add { index: self.strokes.len(), stroke });
         (id, changes)
@@ -287,6 +292,57 @@ impl Document {
             return Vec::new();
         }
         self.commit(Op::Remove { items })
+    }
+
+    /// Replaces each stroke with new ones made of the given points, in its place and with its
+    /// layer and brush: no pieces deletes it, one moves it, several split it. One undo step.
+    /// Returns the changes and each new stroke's id, in the order given.
+    pub fn replace_strokes(&mut self, replacements: Vec<(StrokeId, Vec<Vec<InputPoint>>)>) -> (Vec<Change>, Vec<StrokeId>) {
+        let mut seen = std::collections::HashSet::new();
+        let mut targets: Vec<(usize, Stroke, Vec<Vec<InputPoint>>)> = replacements
+            .into_iter()
+            .filter_map(|(id, pieces)| {
+                let i = self.strokes.iter().position(|s| s.id == id && seen.insert(id))?;
+                Some((i, self.strokes[i].clone(), pieces))
+            })
+            .collect();
+        if targets.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        // New ids in the caller's order; positions in document order.
+        let mut ids = Vec::new();
+        for (_, _, pieces) in &targets {
+            ids.push((0..pieces.len()).map(|_| self.new_id()).collect::<Vec<_>>());
+        }
+        let mut order: Vec<usize> = (0..targets.len()).collect();
+        order.sort_by_key(|&k| targets[k].0);
+        let (mut removed, mut added) = (Vec::new(), Vec::new());
+        let mut shift = 0isize;
+        for k in order {
+            let (index, stroke, pieces) = (targets[k].0, targets[k].1.clone(), std::mem::take(&mut targets[k].2));
+            let at = (index as isize + shift) as usize;
+            for (n, (points, &id)) in pieces.into_iter().zip(&ids[k]).enumerate() {
+                added.push((at + n, Stroke { id, points: points.into(), ..stroke.clone() }));
+            }
+            shift += ids[k].len() as isize - 1;
+            removed.push((index, stroke));
+        }
+        let changes = self.commit(Op::Replace { removed, added });
+        (changes, ids.into_iter().flatten().collect())
+    }
+
+    /// Copies strokes (same layer, brush and points) on top of the sketch, in document order.
+    /// One undo step. Returns the changes and the copies' ids.
+    pub fn duplicate_strokes(&mut self, ids: &[StrokeId]) -> (Vec<Change>, Vec<StrokeId>) {
+        let originals: Vec<Stroke> = self.strokes.iter().filter(|s| ids.contains(&s.id)).cloned().collect();
+        if originals.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let base = self.strokes.len();
+        let added: Vec<(usize, Stroke)> =
+            originals.into_iter().enumerate().map(|(n, s)| (base + n, Stroke { id: self.new_id(), ..s })).collect();
+        let new_ids = added.iter().map(|(_, s)| s.id).collect();
+        (self.commit(Op::Replace { removed: Vec::new(), added }), new_ids)
     }
 
     pub fn clear(&mut self) -> Vec<Change> {
@@ -310,6 +366,11 @@ impl Document {
             return Vec::new();
         }
         self.commit(Op::SetGuide { before: self.guide.clone(), after: guide.map(Arc::new) })
+    }
+
+    fn new_id(&mut self) -> StrokeId {
+        self.next_stroke += 1;
+        StrokeId(self.next_stroke - 1)
     }
 
     pub fn undo(&mut self) -> Vec<Change> {
@@ -345,12 +406,11 @@ impl Document {
                 self.strokes.insert((*index).min(self.strokes.len()), stroke.clone());
                 vec![Change::Added(stroke.id)]
             }
-            Op::Remove { items } => {
-                // Remove from the back so earlier indices stay valid.
-                for (i, _) in items.iter().rev() {
-                    self.strokes.remove(*i);
-                }
-                items.iter().map(|(_, s)| Change::Removed(s.id)).collect()
+            Op::Remove { items } => self.take(items),
+            Op::Replace { removed, added } => {
+                let mut changes = self.take(removed);
+                changes.extend(self.put(added));
+                changes
             }
             Op::SetBrush { changes } => self.set_refs(changes.iter().map(|&(id, _, new)| (id, new))),
             Op::SetGuide { after, .. } => {
@@ -366,11 +426,11 @@ impl Document {
                 self.strokes.retain(|s| s.id != stroke.id);
                 vec![Change::Removed(stroke.id)]
             }
-            Op::Remove { items } => {
-                for (i, s) in items {
-                    self.strokes.insert((*i).min(self.strokes.len()), s.clone());
-                }
-                items.iter().map(|(_, s)| Change::Added(s.id)).collect()
+            Op::Remove { items } => self.put(items),
+            Op::Replace { removed, added } => {
+                let mut changes = self.take(added);
+                changes.extend(self.put(removed));
+                changes
             }
             Op::SetBrush { changes } => self.set_refs(changes.iter().map(|&(id, old, _)| (id, old))),
             Op::SetGuide { before, .. } => {
@@ -378,6 +438,22 @@ impl Document {
                 vec![Change::Guide]
             }
         }
+    }
+
+    /// Removes strokes at ascending indices, from the back so earlier indices stay valid.
+    fn take(&mut self, items: &[(usize, Stroke)]) -> Vec<Change> {
+        for (i, _) in items.iter().rev() {
+            self.strokes.remove(*i);
+        }
+        items.iter().map(|(_, s)| Change::Removed(s.id)).collect()
+    }
+
+    /// Inserts strokes at ascending indices (each index is where it ends up).
+    fn put(&mut self, items: &[(usize, Stroke)]) -> Vec<Change> {
+        for (i, s) in items {
+            self.strokes.insert((*i).min(self.strokes.len()), s.clone());
+        }
+        items.iter().map(|(_, s)| Change::Added(s.id)).collect()
     }
 
     fn set_refs(&mut self, refs: impl Iterator<Item = (StrokeId, BrushRef)>) -> Vec<Change> {
@@ -497,6 +573,73 @@ pub(crate) mod tests {
         d.undo();
         assert_eq!(d.stroke(id).unwrap().brush, ink);
         assert!(d.set_brush(&[id], ink).is_empty(), "no-op re-brush records nothing");
+    }
+
+    fn ids(d: &Document) -> Vec<StrokeId> {
+        d.strokes().iter().map(|s| s.id).collect()
+    }
+
+    #[test]
+    fn replace_splits_moves_and_deletes_in_place() {
+        let mut d = Document::new();
+        let ink = d.intern_brush(&brush("com.airdraw.ink"));
+        let ribbon = d.intern_brush(&brush("com.airdraw.ribbon"));
+        let s: Vec<_> = (0..4).map(|i| d.add_stroke(if i == 2 { ribbon } else { ink }, points(6, i as f32)).0).collect();
+        let before = d.strokes().to_vec();
+        let p = points(6, 9.0);
+        // Caller's order isn't document order: stroke 2 splits in two, 0 moves, 3 goes.
+        let (changes, new) = d.replace_strokes(vec![(s[2], vec![p[..2].to_vec(), p[3..].to_vec()]), (s[0], vec![p.clone()]), (s[3], vec![])]);
+        assert_eq!(new.len(), 3);
+        assert_eq!(ids(&d), vec![new[2], s[1], new[0], new[1]], "pieces take their stroke's place");
+        assert_eq!(d.stroke(new[0]).unwrap().brush, ribbon, "pieces keep the brush");
+        assert_eq!(&*d.stroke(new[1]).unwrap().points, &p[3..]);
+        assert_eq!(&changes[..3], &[Change::Removed(s[0]), Change::Removed(s[2]), Change::Removed(s[3])]);
+        assert_eq!(changes.len(), 6);
+        // One undo step, exact both ways.
+        let after = d.strokes().to_vec();
+        d.undo();
+        assert_eq!(d.strokes(), &before[..]);
+        d.redo();
+        assert_eq!(d.strokes(), &after[..]);
+        // Ids are never reused.
+        let (fresh, _) = d.add_stroke(ink, points(2, 0.0));
+        assert!(fresh.0 > new.iter().map(|i| i.0).max().unwrap());
+        assert_eq!(d.replace_strokes(vec![(StrokeId(999), vec![])]), (vec![], vec![]), "unknown strokes: no edit");
+    }
+
+    #[test]
+    fn pieces_after_a_split_land_after_its_pieces() {
+        let mut d = Document::new();
+        let ink = d.intern_brush(&brush("com.airdraw.ink"));
+        let s: Vec<_> = (0..3).map(|i| d.add_stroke(ink, points(4, i as f32)).0).collect();
+        let (_, new) = d.replace_strokes(vec![(s[0], vec![points(2, 5.0), points(2, 6.0), points(2, 7.0)]), (s[2], vec![points(2, 8.0)])]);
+        assert_eq!(ids(&d), vec![new[0], new[1], new[2], s[1], new[3]]);
+        d.undo();
+        assert_eq!(ids(&d), s);
+    }
+
+    #[test]
+    fn replace_ignores_a_stroke_named_twice() {
+        let mut d = Document::new();
+        let ink = d.intern_brush(&brush("com.airdraw.ink"));
+        let (a, _) = d.add_stroke(ink, points(4, 0.0));
+        let (_, new) = d.replace_strokes(vec![(a, vec![points(3, 1.0)]), (a, vec![points(3, 2.0)])]);
+        assert_eq!(ids(&d), new);
+        assert_eq!(new.len(), 1);
+    }
+
+    #[test]
+    fn duplicates_go_on_top_and_undo_in_one_step() {
+        let mut d = Document::new();
+        let ink = d.intern_brush(&brush("com.airdraw.ink"));
+        let s: Vec<_> = (0..3).map(|i| d.add_stroke(ink, points(4, i as f32)).0).collect();
+        let (changes, copies) = d.duplicate_strokes(&[s[2], s[0]]);
+        assert_eq!(changes, copies.iter().map(|&c| Change::Added(c)).collect::<Vec<_>>());
+        assert_eq!(ids(&d), [s.clone(), copies.clone()].concat());
+        assert_eq!(d.stroke(copies[0]).unwrap().points, d.stroke(s[0]).unwrap().points, "document order");
+        d.undo();
+        assert_eq!(ids(&d), s);
+        assert!(d.duplicate_strokes(&[]).0.is_empty());
     }
 
     #[test]

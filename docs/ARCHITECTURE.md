@@ -909,7 +909,8 @@ Mac (M4 Pro), real sketches copied off the iPad:
 #### Undo history (`HIST`)
 
 - **Stored:** the full undo **and** redo stacks (≤ 1000 ops), so reopening is the same as
-  never having closed the app. Ops as today: `Add`, `Remove`, `SetBrush`, `SetGuide`.
+  never having closed the app. Ops: `Add`, `Remove`, `SetBrush`, `SetGuide`, and `Replace`
+  (added for Erase and Select, §3i).
 - **No duplicated strokes:** strokes in the history refer to strokes by id. A stroke that's
   still in the sketch is stored once (in `STRK`); only strokes that history alone holds
   (deleted ones, undone adds) go into a `HIST` stroke pool, with the same point encoding.
@@ -1035,7 +1036,7 @@ numbers) still reports the file as corrupt.
 all, and viewing never rewrites a file.
 History cap: see the revised rule under Undo history.
 
-### 3i. Erase and Select (proposed 2026-10-28, awaiting sign-off)
+### 3i. Erase and Select (approved 2026-10-28 with the proposed defaults; step 1 implemented)
 
 Two tools are still missing from the rail (§5-3): **Erase** and **Select**. Both need the
 same thing first: knowing which strokes, and which parts of them, are under the pen. Then
@@ -1071,10 +1072,11 @@ because it is its own subsystem (one crate per subsystem).
   - `in_lasso(polygon)`: strokes with at least half their points inside.
   - `cut(stroke, capsules)`: the kept parts of a stroke as point ranges with fractional ends.
 - **Depth:**
-  - The eraser and taps act on the **front** strokes only. At each sample, find the nearest
-    depth among the touched strokes; only strokes within a small band behind it count (the
-    band is a few stroke widths). Otherwise erasing a line on the front of a shape would also
-    delete the one behind it.
+  - The eraser and taps act on the **front** strokes only. At each eraser position, find the
+    nearest depth among the strokes under the eraser; only strokes within a small band behind
+    it count (the band is a few stroke widths). Otherwise erasing a line on the front of a
+    shape would also delete the one behind it. A stroke behind is still erased where the
+    eraser passes over it with nothing in front (see step 1 results).
   - Lasso selects **through**, at all depths. You lasso what you see outlined, and you can
     orbit first.
 
@@ -1200,11 +1202,34 @@ A gizmo sits at the selection's centre, sized in screen points:
 
 | Step | Deliverable |
 |---|---|
-| 1 | `airdraw-pick` (index, capsule, nearest, lasso, cut, front-only depth) with tests; `Op::Replace` in `airdraw-doc` and the `replace` op in `HIST`, with round-trip and older-build tests |
+| 1 ✅ | `airdraw-pick` (index, capsule, nearest, lasso, cut, front-only depth) with tests; `Op::Replace` in `airdraw-doc` and the `replace` op in `HIST`, with round-trip and older-build tests |
 | 2 | Whole-stroke Erase: rail button, context bar, `E`, eraser end, Pencil double-tap, ring cursor, one undo step per drag; smoke checks |
 | 3 | Partial erase with live pieces; `BENCH=erase` on the iPad |
 | 4 | Select: tap, lasso, accent outline, Delete, Duplicate, Re-brush, Select All, long-press and right-click menus |
 | 5 | Transform gizmo: move and rotate, baked on release; scale follows per-stroke size |
+
+#### Step 1 results (2026-10-28)
+
+- **`airdraw-pick`** (pure Rust, 16 tests, every one checked to fail on a deliberately broken
+  version of the code): `PickIndex` with `insert`/`remove`/`set_skipped_layers`,
+  `under_capsule`, `nearest`, `in_lasso`, and `cut`. Cut ends land on the eraser's edge
+  within 0.02 px, and untouched points are bit-identical to the originals.
+- **Front-only, made exact:** the eraser is checked at positions every quarter radius along
+  each move, and each stroke also at the position nearest where it touches, so nothing
+  between positions is missed. A first version grouped contacts into bins along the move
+  instead, and it got one case wrong: swiping across a front line and a visible line just
+  behind it spared the second one. Now a line behind is spared only while the front line is
+  under the eraser too.
+- **`Op::Replace`** with `Document::replace_strokes` (pieces take their stroke's place, one
+  undo step) and `Document::duplicate_strokes` (copies on top). `HIST` stores it as
+  `op = "replace"` with `removed` and `added` lists. The file checks, round trip,
+  determinism, the size cap in both directions, and damaged or unknown ops (what an older
+  build sees) all have tests. A bad `replace` drops only the history.
+- **Timing (Mac, release build, 1M points in 1,000 strokes):** eraser move 0.41 ms with front
+  only, tap 0.19 ms, lasso over 40% of the view 3.5 ms. `cargo test --release -p
+  airdraw-pick -- --ignored --nocapture` reruns it. The iPad figures come with `BENCH=erase`
+  in step 3.
+- Nothing in the app uses it yet (step 2).
 
 #### Open details (proposed defaults)
 

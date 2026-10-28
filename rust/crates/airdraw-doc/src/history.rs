@@ -17,6 +17,10 @@
 //! op = "set_brush"
 //! changes = [[4, 1, 0]]     # stroke id, old brush, new brush
 //! [[undo]]
+//! op = "replace"            # partial erase, transform, duplicate (§3i)
+//! removed = [[2, 5, 0]]     # index before, stroke id, brush
+//! added = [[2, 11, 0], [3, 12, 0]]  # index after, stroke id, brush
+//! [[undo]]
 //! op = "set_guide"
 //! after = { kind = "plane", origin = [0, 0, 0], normal = [0, 0, 1] }
 //! ```
@@ -57,6 +61,12 @@ enum OpDef {
     Add { index: u64, stroke: [u64; 2] },
     Remove { items: Vec<[u64; 3]> },
     SetBrush { changes: Vec<[u64; 3]> },
+    Replace {
+        #[serde(default)]
+        removed: Vec<[u64; 3]>,
+        #[serde(default)]
+        added: Vec<[u64; 3]>,
+    },
     SetGuide {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         before: Option<GuideDef>,
@@ -80,13 +90,15 @@ fn stroke_bytes(s: &Stroke) -> usize {
 pub(crate) fn kept(undo: &[Op], redo: &[Op], live: &[Stroke]) -> (usize, usize) {
     let live_ids: HashSet<StrokeId> = live.iter().map(|s| s.id).collect();
     let live_bytes: usize = live.iter().map(stroke_bytes).sum();
+    let bytes = |items: &[(usize, Stroke)]| items.iter().map(|(_, s)| stroke_bytes(s) as i64).sum::<i64>();
     // Sketch size at every state the history can reach: undoing from now, redoing from now.
     let mut peak = live_bytes;
     let mut size = live_bytes as i64;
     for op in undo.iter().rev() {
         size += match op {
             Op::Add { stroke, .. } => -(stroke_bytes(stroke) as i64),
-            Op::Remove { items } => items.iter().map(|(_, s)| stroke_bytes(s) as i64).sum(),
+            Op::Remove { items } => bytes(items),
+            Op::Replace { removed, added } => bytes(removed) - bytes(added),
             _ => 0,
         };
         peak = peak.max(size.max(0) as usize);
@@ -95,7 +107,8 @@ pub(crate) fn kept(undo: &[Op], redo: &[Op], live: &[Stroke]) -> (usize, usize) 
     for op in redo.iter().rev() {
         size += match op {
             Op::Add { stroke, .. } => stroke_bytes(stroke) as i64,
-            Op::Remove { items } => -items.iter().map(|(_, s)| stroke_bytes(s) as i64).sum::<i64>(),
+            Op::Remove { items } => -bytes(items),
+            Op::Replace { removed, added } => bytes(added) - bytes(removed),
             _ => 0,
         };
         peak = peak.max(size.max(0) as usize);
@@ -154,6 +167,10 @@ pub(crate) fn encode(undo: &[Op], redo: &[Op], live: &[Stroke], brush: &dyn Fn(B
         Op::Add { index, stroke } => OpDef::Add { index: *index as u64, stroke: [stroke.id.0, b(stroke.brush)] },
         Op::Remove { items } => OpDef::Remove { items: items.iter().map(|(i, s)| [*i as u64, s.id.0, b(s.brush)]).collect() },
         Op::SetBrush { changes } => OpDef::SetBrush { changes: changes.iter().map(|&(id, old, new)| [id.0, b(old), b(new)]).collect() },
+        Op::Replace { removed, added } => OpDef::Replace {
+            removed: removed.iter().map(|(i, s)| [*i as u64, s.id.0, b(s.brush)]).collect(),
+            added: added.iter().map(|(i, s)| [*i as u64, s.id.0, b(s.brush)]).collect(),
+        },
         Op::SetGuide { before, after } => OpDef::SetGuide {
             before: before.as_deref().map(GuideDef::new),
             after: after.as_deref().map(GuideDef::new),
@@ -190,14 +207,26 @@ pub(crate) fn decode(data: &[u8], live: &[Stroke], brushes: usize) -> Result<(Ve
         let s = points.get(&StrokeId(id)).ok_or_else(|| bad(format!("missing stroke {id}")))?;
         Ok(Stroke { brush: brush(b)?, ..(*s).clone() })
     };
+    let items = |items: &[[u64; 3]], what: &str| -> Result<Vec<(usize, Stroke)>, DocError> {
+        if !items.windows(2).all(|w| w[0][0] < w[1][0]) {
+            return Err(bad(format!("{what} needs ascending indices")));
+        }
+        items.iter().map(|&[i, id, b]| Ok((i as usize, stroke(id, b)?))).collect()
+    };
     let op = |d: OpDef| -> Result<Op, DocError> {
         Ok(match d {
             OpDef::Add { index, stroke: [id, b] } => Op::Add { index: index as usize, stroke: stroke(id, b)? },
-            OpDef::Remove { items } => {
-                if items.is_empty() || !items.windows(2).all(|w| w[0][0] < w[1][0]) {
-                    return Err(bad("remove needs ascending indices".into()));
+            OpDef::Remove { items: list } => {
+                if list.is_empty() {
+                    return Err(bad("remove of nothing".into()));
                 }
-                Op::Remove { items: items.iter().map(|&[i, id, b]| Ok((i as usize, stroke(id, b)?))).collect::<Result<_, DocError>>()? }
+                Op::Remove { items: items(&list, "remove")? }
+            }
+            OpDef::Replace { removed, added } => {
+                if removed.is_empty() && added.is_empty() {
+                    return Err(bad("replace of nothing".into()));
+                }
+                Op::Replace { removed: items(&removed, "replace")?, added: items(&added, "replace")? }
             }
             OpDef::SetBrush { changes } => Op::SetBrush {
                 changes: changes.iter().map(|&[id, old, new]| Ok((StrokeId(id), brush(old)?, brush(new)?))).collect::<Result<_, DocError>>()?,
@@ -223,53 +252,66 @@ pub(crate) fn decode(data: &[u8], live: &[Stroke], brushes: usize) -> Result<(Ve
 /// Membership is a hash set, so undoing a Clear of a huge sketch stays linear.
 fn check(undo: &[Op], redo: &[Op], live: &[Stroke]) -> Result<(), String> {
     let start: Vec<StrokeId> = live.iter().map(|s| s.id).collect();
-    let (mut ids, mut has) = (start.clone(), start.iter().copied().collect::<HashSet<_>>());
+    let mut st = Ids { has: start.iter().copied().collect(), ids: start.clone() };
     for op in undo.iter().rev() {
         match op {
             // Undoing returns to the state right after the op, so an added stroke must be
             // exactly where it was added (or redo would put it back elsewhere).
-            Op::Add { index, stroke } => {
-                if ids.get(*index) != Some(&stroke.id) {
-                    return Err(format!("undo add: stroke {} isn't at {index}", stroke.id.0));
-                }
-                ids.remove(*index);
-                has.remove(&stroke.id);
+            Op::Add { index, stroke } => st.take(&[(*index, stroke.clone())], "undo add")?,
+            Op::Remove { items } => st.put(items, "undo remove")?,
+            Op::Replace { removed, added } => {
+                st.take(added, "undo replace")?;
+                st.put(removed, "undo replace")?;
             }
-            Op::Remove { items } => {
-                for (i, s) in items {
-                    if *i > ids.len() || !has.insert(s.id) {
-                        return Err(format!("undo remove: can't put stroke {} back at {i}", s.id.0));
-                    }
-                    ids.insert(*i, s.id);
-                }
-            }
-            Op::SetBrush { changes } => present(&has, changes.iter().map(|c| c.0), "undo re-brush")?,
+            Op::SetBrush { changes } => present(&st.has, changes.iter().map(|c| c.0), "undo re-brush")?,
             Op::SetGuide { .. } => {}
         }
     }
-    let (mut ids, mut has) = (start.clone(), start.into_iter().collect::<HashSet<_>>());
+    let mut st = Ids { has: start.iter().copied().collect(), ids: start };
     for op in redo.iter().rev() {
         match op {
-            Op::Add { index, stroke } => {
-                if *index > ids.len() || !has.insert(stroke.id) {
-                    return Err(format!("redo add: can't add stroke {} at {index}", stroke.id.0));
-                }
-                ids.insert(*index, stroke.id);
+            Op::Add { index, stroke } => st.put(&[(*index, stroke.clone())], "redo add")?,
+            Op::Remove { items } => st.take(items, "redo remove")?,
+            Op::Replace { removed, added } => {
+                st.take(removed, "redo replace")?;
+                st.put(added, "redo replace")?;
             }
-            Op::Remove { items } => {
-                for (i, s) in items.iter().rev() {
-                    if ids.get(*i) != Some(&s.id) {
-                        return Err(format!("redo remove: stroke {} isn't at {i}", s.id.0));
-                    }
-                    ids.remove(*i);
-                    has.remove(&s.id);
-                }
-            }
-            Op::SetBrush { changes } => present(&has, changes.iter().map(|c| c.0), "redo re-brush")?,
+            Op::SetBrush { changes } => present(&st.has, changes.iter().map(|c| c.0), "redo re-brush")?,
             Op::SetGuide { .. } => {}
         }
     }
     Ok(())
+}
+
+/// Stroke ids in sketch order, replayed by [`check`].
+struct Ids {
+    ids: Vec<StrokeId>,
+    has: HashSet<StrokeId>,
+}
+
+impl Ids {
+    /// Strokes at ascending indices must be exactly there; removed from the back.
+    fn take(&mut self, items: &[(usize, Stroke)], what: &str) -> Result<(), String> {
+        for (i, s) in items.iter().rev() {
+            if self.ids.get(*i) != Some(&s.id) {
+                return Err(format!("{what}: stroke {} isn't at {i}", s.id.0));
+            }
+            self.ids.remove(*i);
+            self.has.remove(&s.id);
+        }
+        Ok(())
+    }
+
+    /// Strokes go in at ascending indices, each one new to the sketch.
+    fn put(&mut self, items: &[(usize, Stroke)], what: &str) -> Result<(), String> {
+        for (i, s) in items {
+            if *i > self.ids.len() || !self.has.insert(s.id) {
+                return Err(format!("{what}: can't put stroke {} at {i}", s.id.0));
+            }
+            self.ids.insert(*i, s.id);
+        }
+        Ok(())
+    }
 }
 
 fn present(has: &HashSet<StrokeId>, wanted: impl Iterator<Item = StrokeId>, what: &str) -> Result<(), String> {
