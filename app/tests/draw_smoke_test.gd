@@ -698,10 +698,40 @@ func _ready() -> void:
 	var names := []
 	for e in main.get("app_files").recents():
 		names.append(e.name)
-	var cards = home._grid.get_children()
-	var with_thumbs: int = cards.filter(func(c): return c.get_child(0).get_child(0).texture != null).size()
+	var cards = home.cards()
+	var with_thumbs: int = cards.filter(func(c): return c.get_node("Box/Tile/Thumb").texture != null).size()
 	print("SMOKE home_visible=", home.visible, " recents=", names, " cards=", cards.size(), " with_thumbnails=", with_thumbs)
 	get_viewport().get_texture().get_image().save_png("user://home.png")
+	var landscape_columns: int = home._grid.columns
+	var win_home := get_window()
+	var home_size := win_home.size
+	win_home.size = Vector2i(820, 1180)
+	await _shot("user://home_portrait.png")
+	var portrait_columns: int = home._grid.columns
+	var row_fills: bool = absf(cards[0].size.x * portrait_columns + home._grid.get_theme_constant("h_separation") * (portrait_columns - 1) - home._grid.size.x) < 2.0
+	win_home.size = home_size
+	await _settle()
+	print("SMOKE home_layout landscape_columns=", landscape_columns, " portrait_columns=", portrait_columns, " row_fills=", row_fills, " new_card_first=", home._grid.get_child(0).name == "NewSketch")
+
+	# Recents: one file under two spellings of its path (an older build's absolute
+	# /private/… path and the relative form) is one entry after tidying, and one card.
+	var app_files = main.get("app_files")
+	var dup := AppPaths.sketches().path_join("Dup.airdraw")
+	DirAccess.copy_absolute(main.get("documents").resolve(app_files.recents()[0]), dup)
+	app_files.touch_recent("/private" + dup, "")
+	app_files.touch_recent(AppPaths.store(dup), "")
+	app_files.touch_recent("/private" + dup, "")
+	var spellings_before: int = app_files.recents().size()
+	main.get("documents").tidy_recents()
+	var dup_entries: int = app_files.recents().filter(func(e): return e.name == "Dup").size()
+	print("SMOKE recents_dedupe stored_relative=", AppPaths.store("/private" + dup) == AppPaths.store(dup) and AppPaths.store(dup).begins_with(AppPaths.PREFIX),
+		" tidied_to_one=", dup_entries == 1 and app_files.recents().size() == spellings_before - 1,
+		" one_card=", main.get("documents").recent_items().size() == spellings_before - 1)
+	app_files.remove_recent(AppPaths.store(dup))
+	DirAccess.remove_absolute(dup)
+	main.show_home()
+	await _settle()
+	cards = home.cards()
 	await _tap(cards[1])
 	await get_tree().process_frame
 	print("SMOKE reopened=", main.get("doc_path").get_file(), " strokes=", canvas.stroke_count(), " home_visible=", home.visible)

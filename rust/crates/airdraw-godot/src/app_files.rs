@@ -131,6 +131,13 @@ impl AppFiles {
         self.with_recents(|r| r.remove(&path.to_string()));
     }
 
+    /// Renames a Recents entry to another form of the same file's path (see
+    /// `Recents::retarget`) and saves the list.
+    #[func]
+    fn retarget_recent(&mut self, from: GString, to: GString) {
+        self.with_recents(|r| r.retarget(&from.to_string(), &to.to_string()));
+    }
+
     fn with_recents(&mut self, f: impl FnOnce(&mut Recents)) {
         if let Some(r) = &mut self.recents {
             f(r);

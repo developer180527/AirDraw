@@ -34,9 +34,21 @@ static func import_dir() -> String:
 	return root.path_join("Import")
 
 
-## Absolute path → how Recents stores it.
+## An app container's Documents folder on iOS, under any install (the ID changes with every
+## reinstall) and either spelling of /var (the Files picker returns /private/var/…).
+static var _ios_documents := RegEx.create_from_string("^(?:/private)?/var/mobile/Containers/Data/Application/[0-9A-Fa-f-]+/Documents/(.+)$")
+
+
+## Absolute path → how Recents stores it: files in the app's Documents folder relative to
+## it, however their path is spelled, so one file is always one entry.
 static func store(path: String) -> String:
-	return PREFIX + path.substr(root.length() + 1) if path.begins_with(root + "/") else path
+	for base in [root, "/private" + root, root.trim_prefix("/private")]:
+		if not root.is_empty() and path.begins_with(base + "/"):
+			return PREFIX + path.substr(base.length() + 1)
+	var m := _ios_documents.search(path)
+	if m and root.contains("/Containers/Data/Application/"):
+		return PREFIX + m.get_string(1)
+	return path
 
 
 ## Stored path → absolute path (also accepts legacy user:// entries).

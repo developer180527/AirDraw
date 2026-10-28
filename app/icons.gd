@@ -26,6 +26,8 @@ const _PATHS := {
 	"nib_flat": '<path d="M8 4h8l-1 4v12H9V8z"/><path d="M8 4h8" stroke-width="3"/>',
 	"nib_dots": '<circle cx="6" cy="12" r="1.8" fill="white"/><circle cx="12" cy="12" r="1.8" fill="white"/><circle cx="18" cy="12" r="1.8" fill="white"/><path d="M4 18c4 2 12 2 16 0"/>',
 	"chevron_up": '<path d="m6 15 6-6 6 6"/>',
+	"plus": '<path d="M12 5v14M5 12h14"/>',
+	"folder": '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.5h7.5A2.5 2.5 0 0 1 21 10v7.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/>',
 }
 
 static var _cache := {}

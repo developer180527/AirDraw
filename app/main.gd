@@ -106,6 +106,7 @@ func _ready() -> void:
 	documents.opened.connect(_show_canvas)
 	documents.status.connect(_set_status)
 	add_child(documents)
+	documents.tidy_recents()
 
 	toolbar = EditorShell.new()
 	add_child(toolbar)

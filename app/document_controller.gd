@@ -73,7 +73,9 @@ func open_path(path: String, bookmark: String) -> bool:
 	close()
 	doc_path = path
 	doc_bookmark = bookmark
-	app_files.touch_recent(AppPaths.store(path), bookmark)
+	var stored := AppPaths.store(path)
+	# Files in the app's own Documents are always reachable: no bookmark to go stale.
+	app_files.touch_recent(stored, "" if stored.begins_with(AppPaths.PREFIX) else bookmark)
 	opened.emit()
 	return true
 
@@ -200,11 +202,29 @@ func _drop_pending_copy() -> void:
 		_pending_copy = ""
 
 
-## Home screen cards: [{entry, texture, exists}], newest first.
+## Older builds stored files in the app's Documents by absolute path, which goes stale with
+## every reinstall: each reinstall and re-open added another entry for the same sketch.
+## Rewrites those entries to the relative form, merging duplicates (the newest stays).
+func tidy_recents() -> void:
+	for entry in app_files.recents():
+		var stored := AppPaths.store(entry.path)
+		if stored != entry.path:
+			app_files.retarget_recent(entry.path, stored)
+
+
+## Home screen cards: [{entry, texture, exists}], newest first; one card per file, even if
+## Recents lists it twice under different paths.
 func recent_items() -> Array:
 	var items := []
+	var seen := {}
 	for entry in app_files.recents():
 		var path := resolve(entry)
+		var key: String = AppPaths.store(path) if not path.is_empty() else entry.path
+		if seen.has(key):
+			if not path.is_empty() and not entry.bookmark.is_empty():
+				app_files.release_file(path)
+			continue
+		seen[key] = true
 		var texture: Texture2D = null
 		if not path.is_empty():
 			var png: PackedByteArray = canvas.thumbnail_of(path)

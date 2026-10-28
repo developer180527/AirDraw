@@ -1584,10 +1584,16 @@ Decisions (2026-10-27):
 
 ### 5-1. Implemented home screen and app flow
 
-- `app/home_screen.gd`: `+ New`, `Open…`, Recents grid (embedded thumbnail, name, when
-  opened; "Not found" for moved/deleted files). Tap opens; long-press/right-click: Remove
-  from Recents, Show in Files/Finder (`shareddocuments://` on iOS). Same scaled theme as
-  the canvas.
+- `app/home_screen.gd`: header (app mark, title, outlined **Open**, accent **New Sketch**
+  pill), then a **Recent** grid led by a New Sketch card. Cards: square preview with
+  rounded corners on paper, name, when opened ("Not found" for moved/deleted files), and a
+  ⋯ menu (also long-press/right-click): Open, Show in Files/Finder (`shareddocuments://`
+  on iOS), Remove from Recents. Columns follow the width (min card 210 pt: 3 in portrait,
+  4–5 in landscape on iPad) and cards stretch so rows fill it; content stops widening at
+  1680 pt. Same scaled theme as the canvas.
+- Type: Inter (variable, SIL OFL, `app/fonts/`) app-wide via `UiTheme.font(weight,
+  display)`; titles use the large optical size. Boot splash and the iOS launch screen show
+  `app/splash.png` (the app icon) on the UI background instead of Godot's logo.
 - `main.gd` flow: starts on Home (or opens a `.airdraw` passed on the command line, which is
   how Finder launches the Mac app). `+ New` creates `Sketch N.airdraw` in the default folder
   (`Documents/Sketches` on iOS = Files › On My iPad › AirDraw › Sketches; `~/Documents/AirDraw`
@@ -1595,8 +1601,13 @@ Decisions (2026-10-27):
   (no New/Open/Save). Autosave: every 15 s when dirty, on app pause/focus loss, before quit,
   and when switching documents; each save re-renders the preview.
 - `airdraw_doc::Recents` (TOML in user data, max 50, survives corruption). Files inside the
-  app's own folder are stored as `user://` paths because the iOS container path changes on
-  reinstall; picked files keep a security-scoped bookmark.
+  app's Documents are stored relative (`airdraw-docs://…`) because the iOS container path
+  changes on reinstall, and without a bookmark; `AppPaths.store` recognises them however
+  the path is spelled (`/private/var/…` from the Files picker, or an earlier install's
+  container). Other picked files keep a security-scoped bookmark. Older builds stored
+  absolute paths, so each reinstall + reopen added a duplicate; at startup
+  `DocumentController.tidy_recents` rewrites those (`Recents::retarget`, newest wins), and
+  the home screen shows one card per resolved file.
 - `AppFiles` (Rust Godot node): native iOS picker (`UIDocumentPickerViewController`, opens
   originals in place) with bookmarks and access release (`airdraw-ios/src/files.rs`);
   desktop uses Godot's native file dialog. Recents API for GDScript.
