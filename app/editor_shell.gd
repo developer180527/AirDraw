@@ -559,7 +559,6 @@ func _build_menu() -> void:
 	_stroke_menu.add_child(rows)
 	for a in SELECTION_ACTIONS:
 		_menu_item(rows, "Menu " + a[1], a[1], selection_action.emit.bind(a[0])).tooltip_text = Shortcuts.tooltip(a[1], a[2])
-	_root.add_child(_stroke_menu)
 
 
 func _menu_item(parent: Control, name: String, text: String, on_press: Callable) -> Button:

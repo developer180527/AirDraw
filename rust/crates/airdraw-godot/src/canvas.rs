@@ -109,7 +109,9 @@ impl INode3D for SketchCanvas {
         for entry in crate::static_plugins::STATIC_PLUGINS {
             match unsafe { airdraw_ffi::PluginExporter::from_entry(*entry) } {
                 Ok(p) => exporters.register(p),
-                Err(e) => godot_warn!("Built-in exporter plugin rejected: {e}"),
+                Err(e) => {
+                    godot_warn!("Built-in exporter plugin rejected: {e}");
+                }
             }
         }
         Self {

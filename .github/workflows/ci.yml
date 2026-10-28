@@ -85,6 +85,12 @@ jobs:
           sudo apt-get install -yq --no-install-recommends xvfb mesa-vulkan-drivers libvulkan1 \
             libxcursor1 libxinerama1 libxrandr2 libxi6 libgl1 libfontconfig1
 
+      # The smoke test exports through the sample C++ plugin, loaded from user://test_plugins.
+      - name: Build sample exporter plugin
+        run: |
+          echo "USERDATA=$HOME/.local/share/godot/app_userdata/AirDraw" >> "$GITHUB_ENV"
+          scripts/build_sample_plugin.sh "$HOME/.local/share/godot/app_userdata/AirDraw/test_plugins"
+
       - name: Import project
         run: timeout 600 "$GODOT" --headless --path app --import 2>&1 | grep -E "ERROR|error" || true
       - name: Smoke test
@@ -92,12 +98,13 @@ jobs:
           xvfb-run -a -s "-screen 0 1920x1200x24" timeout 1200 \
             "$GODOT" --path app --rendering-driver vulkan res://tests/draw_smoke_test.tscn > smoke.log 2>&1 || true
           python3 scripts/check_smoke.py smoke.log
+      - name: Collect screenshots
+        if: always()
+        run: mkdir -p smoke && cp smoke.log "$USERDATA"/*.png smoke/ 2>/dev/null || true
       - name: Upload smoke log and screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: smoke-${{ matrix.godot_bin }}
           retention-days: 7
-          path: |
-            smoke.log
-            ~/.local/share/godot/app_userdata/AirDraw/*.png
+          path: smoke/

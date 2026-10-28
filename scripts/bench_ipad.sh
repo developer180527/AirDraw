@@ -3,10 +3,11 @@
 #   live-stroke (default): app/tests/live_stroke_bench.tscn
 #   file-format:           app/tests/file_format_bench.tscn (the iPad's own sketches + a 1M-point one)
 #   erase:                 app/tests/erase_bench.tscn (eraser picking and partial erase)
+#   idle:                  app/tests/idle_bench.gd in the real app (frames and GPU when idle)
 # Exports a debug build that includes tests/ (normal exports exclude it), installs it over the
 # dev app, launches it with the bench argument, waits for it and copies the CSV it writes
 # (Godot's print doesn't reach the devicectl console, and iOS apps can't quit themselves).
-# Usage: [BENCH=file-format|erase] [LOOK=com.airdraw.toon] scripts/bench_ipad.sh [device-udid-or-name]
+# Usage: [BENCH=file-format|erase|idle] [LOOK=com.airdraw.toon] [BENCH_ARGS="…"] scripts/bench_ipad.sh [device-udid-or-name]
 #        (default: live-stroke on the first connected iPad)
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -15,7 +16,8 @@ case "$BENCH" in
   live-stroke) RESULTS="live_stroke_bench.csv live_stroke_bench.txt"; WAIT=90 ;;
   file-format) RESULTS="file_format_bench.txt"; WAIT=30 ;;
   erase) RESULTS="erase_bench.txt"; WAIT=20 ;;
-  *) echo "Unknown BENCH '$BENCH' (live-stroke, file-format, erase)" >&2; exit 1 ;;
+  idle) RESULTS="idle_bench.txt"; WAIT=45 ;;
+  *) echo "Unknown BENCH '$BENCH' (live-stroke, file-format, erase, idle)" >&2; exit 1 ;;
 esac
 GODOT="$ROOT/engine/godot/bin/godot.macos.editor.arm64"
 DEVICE="${1:-$(xcrun devicectl list devices 2>/dev/null | awk '/iPad/ && (/available/ || /connected/) && /physical/ {for (i=1;i<=NF;i++) if ($i ~ /^[0-9A-F]{8}-[0-9A-F]{16}$/) {print $i; exit}}')}"
@@ -40,7 +42,7 @@ INSTALL="$ROOT/build/ios/AirDrawBench.ipa"
 [ -e "$INSTALL" ] || { echo "Export failed" >&2; exit 1; }
 xcrun devicectl device install app --device "$DEVICE" "$INSTALL" | tail -1
 xcrun devicectl device process launch --terminate-existing --device "$DEVICE" \
-  com.venugopal.airdraw ++ "bench-$BENCH" ${LOOK:+look "$LOOK"} >/dev/null
+  com.venugopal.airdraw ++ "bench-$BENCH" ${LOOK:+look "$LOOK"} ${BENCH_ARGS:-} >/dev/null
 echo "Benchmark '$BENCH' running on the iPad (keep it unlocked)..."
 # The summary file is written last; wait for it (up to 5 minutes) instead of a fixed time.
 DONE="${RESULTS##* }"

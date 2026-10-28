@@ -1933,6 +1933,63 @@ from any run. A smoke line with `=false` that isn't on an allow-list fails the j
 1. Rust + Linux x86_64 (incl. smoke). 2. macOS, Linux arm64. 3. Windows x64/arm64.
 4. Android APK. 5. iOS build with cached templates. Each lands green before the next.
 
+## 10. Efficiency: race to idle (proposed, 2026-10-29)
+
+Goal: when nothing changes on screen, AirDraw does (almost) no work, so the CPU, GPU and
+display pipeline can drop to their low-power states; when something does change, it runs at
+full rate and finishes fast.
+
+### 10a. Baseline (iPad, M5, 120 Hz; `BENCH=idle` + Instruments Activity Monitor)
+
+`app/tests/idle_bench.gd` runs inside the real app (`bench-idle` launch argument): home
+screen, an open sketch left alone, a slow orbit, the sketch left alone again; it logs frames
+drawn and loop ticks per second. Instruments gives CPU per process.
+
+| Phase | Frames/s | AirDraw CPU | backboardd (compositor) | audiomxd |
+|---|---|---|---|---|
+| Home, untouched | **120** | **22 %** | 16 % | 12 % |
+| Canvas, untouched | **120** | **22 %** | 16 % | 12 % |
+| Canvas, orbiting | 120 | 36 % | 17 % | 12 % |
+
+The app redraws every display refresh forever; the compositor pays for each frame, and an
+audio output runs although AirDraw plays no sound. Memory footprint: ~455 MB.
+
+Experiment, low-processor mode on (Godot draws only when the scene changed):
+
+| Phase | Frames/s | AirDraw CPU | backboardd | audiomxd |
+|---|---|---|---|---|
+| Home, untouched | **0** | **2 %** | 4–5 % | 10 % |
+| Canvas, untouched | **0** | **2 %** | 4–5 % | 10 % |
+| Canvas, orbiting | 120 | 37 % | 17 % | 12 % |
+
+Nothing in the app forces redraws while idle (Mac shows the same: 0 frames/s idle). The 2 %
+left is the loop ticking 120×/s with nothing to do (iOS drives it from CADisplayLink).
+
+### 10b. Plan
+
+1. **Low-processor mode** (`application/run/low_processor_mode`): draw only on change.
+   Desktop keeps Godot's 6.9 ms idle sleep (≤ 7 ms extra latency for the first event after
+   idle, then full rate).
+2. **No audio driver** (`audio/driver/driver = "Dummy"`): frees the audio daemon (~10 %).
+   Revisit if AirDraw ever plays sounds.
+3. **Redraw only on change** in our own per-frame code: the transform gizmo redraws every
+   frame while a selection exists (`_follow` → `queue_redraw` unconditionally); audit the
+   eraser ring, hover cursor, view cube and brush previews the same way, and the 1 s macOS
+   open-files poll (event-driven where the OS allows).
+4. **Engine patch 0003 (iOS): sleep the display link when idle.** After N ticks with no
+   input, no scene change and no running tween, pause CADisplayLink; touches, Pencil hover
+   and squeeze/tap, keyboard, app-lifecycle and file events resume it in the same run-loop
+   turn, so the first frame after idle is no later than today. Expected: 2 % → ~0 %.
+5. **Guards:**
+   - Pencil latency: `BENCH=live-stroke` before/after must match (drawing changes the
+     scene every frame, so it always renders at full rate).
+   - The smoke test checks that an untouched home screen and canvas draw 0 frames over a
+     second (CI catches anything that starts redrawing forever).
+   - `BENCH=idle` stays as the on-device measurement.
+6. **Later, measured separately:** the cost of a frame while orbiting/drawing (36 %: finish
+   each frame faster: GPU timing isn't exposed on Metal here, so Instruments' Metal trace),
+   and the 455 MB footprint.
+
 ## 8. Current state (prototype)
 
 - Godot 4.7.2-stable built from source: macOS arm64 editor, iOS templates (Metal only,

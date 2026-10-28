@@ -189,6 +189,10 @@ func _ready() -> void:
 			documents.open_path(arg, "")
 			return
 	show_home()
+	if "bench-idle" in OS.get_cmdline_user_args():
+		var bench: Node = load("res://tests/idle_bench.gd").new()
+		bench.main = self
+		add_child(bench)
 
 
 ## macOS: sketches opened from Finder while AirDraw runs (queued by AirDraw's engine patch;
