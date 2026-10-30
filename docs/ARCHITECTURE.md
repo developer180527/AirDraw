@@ -154,6 +154,13 @@ a lock-free SPSC ring buffer replaces it if a backend ever delivers from another
 
 - Pen → active tool (brush / eraser / select)
 - Finger → camera (orbit, pan, pinch zoom), 2-finger tap undo, 3-finger tap redo
+- **Zoom (`app/orbit_camera.gd`)** goes toward the pinch centre or mouse cursor: the point
+  under it stays under it, so you zoom into what you point at. Pinching in past the closest
+  distance (0.2) moves the whole rig forward instead of stopping. Until 2026-10-31 zoom only
+  shrank the distance to a fixed pivot and stopped at 0.2, so getting close to work away from
+  the pivot (typical on a drawn 3D guide) hit a wall; pan, scaled by that distance, then
+  barely moved and fingers seemed blocked (found with on-device input logs: input and
+  rendering were fine).
 - Mouse → button-mapped
 - Pencil squeeze / double-tap → user-assigned action
 - Palm rejection: finger touches ignored while a pen is down
@@ -626,7 +633,7 @@ struct Guide { shape: GuideShape, opacity: f32 }
 | Step | Deliverable |
 |---|---|
 | 1 ✅ | `airdraw-guide`: `Guide` (plane, sweep), `Sweep::from_view`, ray tests (hits, normals, both sides, edge-on from the drawing view, depth from the side, nearest layer, degenerate input) |
-| 2 ✅ | Session projects onto the active guide (a stroke keeps the guide it started on; misses draw nothing; hit normals go into the stroke); rail **Draw guide** button (one-shot, `G` on desktop) with a live orange path; drawn guide shown with section lines and an orange start edge; Remove in the Guide panel; choosing a preset plane replaces the drawn guide; undo/redo via `SetGuide`. The smoke test drives it end to end. |
+| 2 ✅ | Session projects onto the active guide (a stroke keeps the guide it started on; misses draw nothing; hit normals go into the stroke; **since 2026-10-31** a stroke stays on the fold it's drawing on (`Guide::intersect_near`: of all hits, the one nearest the previous point), and where the pen leaves the guide or jumps to a far part of it (more than 10× the world distance its screen movement covers, at least 30 px' worth) the stroke breaks into pieces instead of bridging with a straight line; the pieces are one undo step (`Document::add_strokes`, an `Op::Replace`)); rail **Draw guide** button (one-shot, `G` on desktop) with a live orange path; drawn guide shown with section lines and an orange start edge; Remove in the Guide panel; choosing a preset plane replaces the drawn guide; undo/redo via `SetGuide`. The smoke test drives it end to end. |
 | 3 ✅ | `.airdraw` format 3 saves the drawn guide; it's shown again on open (smoke test: save, new, reopen). Display (translucent, section lines, orange start line) shipped in step 2. **Opacity:** an Opacity slider in the Guide bar, 0 (hidden, still drawable) to 0.9; default 0.1. A **device setting** (`user://settings.cfg`, `[guide] opacity`), not part of the sketch or `Guide` as sketched above: it's how you like to see guides, and a file must not change because someone viewed it differently (§3h). Applies to preset planes and drawn guides. The Feather-style slide-on-the-close-button gesture waits for the active-guide pill |
 | 4 | **Bend** |
 | 5 | **Shapes** (cube, pyramid, sphere, tube + segments) with the joystick gizmo |
@@ -1382,6 +1389,95 @@ A gizmo sits at the selection's centre, sized in screen points:
 
 
 ---
+
+### 3j. Per-stroke colour and size (proposed, 2026-10-29)
+
+Today a stroke's colour and width come only from its brush: drawing a red Ink line needs a
+red Ink brush. Feather (and every sketching app) picks colour and size separately from the
+brush. This adds both, per stroke, and unlocks Scale in the selection gizmo (§3i).
+
+#### Model: a style on each stroke, on top of its brush
+
+```rust
+pub struct StrokeStyle {
+    /// sRGB RGBA8; None = the brush's own colour.
+    pub color: Option<[u8; 4]>,
+    /// Width multiplier on the brush's widths (1 = as the brush draws). 0.1–10.
+    pub size: f32,
+}
+pub struct Stroke { id, layer, brush: BrushRef, style: StrokeStyle, points }
+```
+
+- **Size is relative to the brush**, not an absolute width: Ink stays thinner than Marker at
+  the same slider position, a brush's pressure curve and taper keep their shape, and
+  Scale in the gizmo is "multiply positions and size by s". It multiplies each point's
+  width after the brush's dynamics (`width` and `taper` are the only stages that set
+  width; geometry reads it), in the finished and the live (streamed) pipeline alike, so the
+  live stroke and the rebuilt one still match exactly.
+- **Colour replaces the brush colour** in the material; roughness, metallic, emission,
+  shading and the Look stay the brush's. RGBA8 keeps files small and exact.
+- The brush snapshot table is untouched: a red Ink and a blue Ink share one snapshot.
+
+#### Edits and history
+
+- `Op::SetStyle { ids, old: Vec<StrokeStyle>, new }`: recolour / resize a selection as one
+  undo step (like `SetBrush`). Re-brushing keeps the style.
+- Partial-erase pieces and gizmo moves (`Replace`) carry the stroke's style; Scale is a
+  `Replace` whose new strokes have `size × s`.
+- `HIST` stores styles with its stroke pool and `SetStyle` steps; same checks as today
+  (an unknown or bad op drops only the history).
+
+#### File: format 5, `STYL` section (required)
+
+Styles live in a new section listing only strokes that differ from the default
+(`color = None, size = 1`): stroke index, flags, RGBA8, size. A sketch drawn with brush
+colours only has an empty `STYL`, so it's no bigger. Required, not optional: an older
+AirDraw must refuse the file ("made with a newer AirDraw") rather than open it, drop the
+colours and save over them. Formats 1–4 open with default styles.
+
+#### Rendering
+
+Materials are cached per `(brush, colour)` instead of per brush (`material_for`); the
+number of distinct colours in a sketch is small, and strokes sharing both share a
+material, as now. The Look shaders don't change (`albedo` is already a uniform).
+
+#### UI (iPad first)
+
+- **Current style:** one current colour for all brushes (the usual model; switching brush
+  keeps your colour), and a size per brush (Ink small, Marker big), both remembered in
+  settings. "Brush colour" is a choice in the palette that clears the override.
+- **Context bar** (bottom): a colour swatch and a size control join the brush name:
+  `[● swatch] [brush] [size ——●——] [Edit]`. The size slider shows a live dot at the
+  real on-screen width for the current zoom.
+- **Colour popover** from the swatch: recent colours (8), a curated palette (24, dark to
+  light, plus black/white), a hue/saturation/value picker, and Brush colour. Picking
+  applies to new strokes, and, while something is selected, to the selection too (one
+  undo step each pick-gesture).
+- **Selection:** the Select bar and stroke menu get Colour and Size; the gizmo gets a
+  **scale handle** (corner of the ring, drag out/in; Shift snaps to 10 %).
+- **Eyedropper** (later): long-press a stroke with the Select tool → take its colour/size.
+
+#### Export
+
+Each `(brush, colour)` becomes one export material (`ExportMaterial.base_color` from the
+override); "merge" groups by it. Sizes are already in the geometry. SVG uses the colour.
+
+#### Steps
+
+| Step | Deliverable |
+|---|---|
+| 1 | `StrokeStyle` on `Stroke`; size in both pipelines; `SetStyle`; `Replace` carries style; format 5 + `STYL`; `HIST` styles; tests (exact rebuild with size, round trip, history, old formats) |
+| 2 | Canvas: current style for new strokes, `(brush, colour)` materials, set style on selection; export materials per colour |
+| 3 | UI: swatch + colour popover (recents, palette, picker), size slider, per-brush size; Select bar / stroke menu Colour and Size; smoke checks |
+| 4 | Gizmo scale handle; smoke check |
+| 5 | iPad check: Pencil + palette, size slider feel |
+
+#### Decisions needed
+
+1. Size relative to the brush (proposed) or an absolute width in mm?
+2. One current colour for all brushes (proposed) or a colour per brush?
+3. Size range 0.1×–10× (proposed)?
+4. Picking a colour with a selection: recolour the selection too (proposed), or only new strokes?
 
 ## 4. Export system (`airdraw-export`)
 

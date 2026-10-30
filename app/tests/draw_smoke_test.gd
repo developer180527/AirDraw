@@ -64,6 +64,27 @@ func _ready() -> void:
 	var yaw_before: float = rig.yaw
 	await _touch_stroke(0, center, Vector2(120, 0), Vector2.ZERO, 0.0)
 	print("SMOKE finger_orbited=", rig.yaw != yaw_before, " strokes=", canvas.stroke_count())
+	# Zoom goes toward the pinch point (it stays under the fingers), and pinching in past the
+	# closest distance keeps moving forward instead of stopping at the orbit pivot.
+	var cam: Camera3D = rig.camera
+	var at := center + Vector2(300, -150)
+	var fwd := -cam.global_transform.basis.z
+	var ray_o := cam.project_ray_origin(at)
+	var ray_d := cam.project_ray_normal(at)
+	var under: Vector3 = ray_o + ray_d * ((rig.global_position - ray_o).dot(fwd) / ray_d.dot(fwd))
+	rig.zoom(0.6, at)
+	var stays := cam.unproject_position(under).distance_to(at) < 1.0
+	var moved_last := 0.0
+	for i in 40:
+		var p0 := cam.global_position
+		rig.zoom(0.8, center)
+		moved_last = cam.global_position.distance_to(p0)
+	print("SMOKE zoom point_stays_under_fingers=", stays, " keeps_moving_past_pivot=", moved_last > 0.01,
+		" at_min=", is_equal_approx(rig.distance, rig.min_distance))
+	rig.global_position = Vector3.ZERO
+	rig.distance = 3.0
+	rig.set_view("3d")
+	await get_tree().create_timer(0.4).timeout
 	# ...and a quick two-finger tap undoes.
 	_touch(0, center, true)
 	_touch(1, center + Vector2(80, 0), true)
@@ -276,6 +297,19 @@ func _ready() -> void:
 	var depth: float = canvas.strokes_aabb().size.z
 	print("SMOKE guide stroke_added=", canvas.stroke_count() == guide_before + 1, " drawn_on_guide_depth_ok=", depth > 0.5)
 	await _shot("user://guide_top.png")
+	# A stroke that runs off the guide's edge and comes back breaks into two pieces (no
+	# straight line through the air between them), and one undo takes back both.
+	var before_break: int = canvas.stroke_count()
+	await _stroke(center + Vector2(100, -40), func(t: float) -> Vector2:
+		return Vector2(700.0 * t, 0.0) if t < 0.5 else Vector2(700.0 * (1.0 - t), 80.0 * (t - 0.5) * 2.0))
+	var pieces: int = canvas.stroke_count() - before_break
+	await _shot("user://guide_break.png")
+	_key(KEY_Z, true)
+	var one_undo: bool = canvas.stroke_count() == before_break
+	_key(KEY_Z, true, true)
+	var one_redo: bool = canvas.stroke_count() == before_break + pieces
+	_key(KEY_Z, true)
+	print("SMOKE guide off_edge_pieces=", pieces, " one_undo=", one_undo, " one_redo=", one_redo)
 	rig.set_view("3d")
 	await get_tree().create_timer(0.5).timeout
 	await _shot("user://guide_3d.png")

@@ -64,7 +64,14 @@ pub struct SketchSession {
     /// Stroke begun by the router but not yet started on the canvas: the down sample may lack
     /// pressure, so the canvas stroke starts with the first move.
     pending_begin: Option<PenSample>,
+    /// The canvas has a live piece of the current pen stroke.
     drawing: bool,
+    /// The current pen stroke has finished pieces on the canvas (it broke where the pen left
+    /// the guide or jumped across it); they're committed with the rest at pen-up.
+    broken: bool,
+    /// The last point that landed on the guide, and where it was on screen: the next sample
+    /// stays on the same fold of the guide, and a far jump from it breaks the stroke.
+    last_hit: Option<(glam::Vec3, glam::Vec2)>,
     last_pressure: f32,
     /// A native touch backend (UIKit on iPad) is feeding input.
     native: bool,
@@ -100,6 +107,8 @@ impl INode for SketchSession {
             router: InputRouter::new(RouterConfig::default()),
             pending_begin: None,
             drawing: false,
+            broken: false,
+            last_hit: None,
             last_pressure: 1.0,
             native: false,
         }
@@ -287,6 +296,7 @@ impl SketchSession {
                 self.cancel_drawing();
                 self.pending_begin = Some(sample);
                 self.last_pressure = 1.0;
+                self.last_hit = None;
                 self.stroke_guide = Some(self.active_guide());
             }
             StrokeEvent::Extend { samples, predicted } => {
@@ -300,10 +310,11 @@ impl SketchSession {
             }
             StrokeEvent::End { sample } => {
                 // A click without movement makes no stroke.
-                if self.pending_begin.take().is_none() && self.drawing {
+                if self.pending_begin.take().is_none() && (self.drawing || self.broken) {
                     self.feed(&[sample], &[]);
                     self.with_canvas(|c| c.end_stroke());
                     self.drawing = false;
+                    self.broken = false;
                 }
             }
             StrokeEvent::Cancel => self.cancel_drawing(),
@@ -472,46 +483,99 @@ impl SketchSession {
 
     fn cancel_drawing(&mut self) {
         self.pending_begin = None;
-        if self.drawing {
+        if self.drawing || self.broken {
             self.with_canvas(|c| c.cancel_stroke());
             self.drawing = false;
+            self.broken = false;
         }
     }
 
     /// Projects samples onto the stroke's guide and hands them to the canvas in one batch (one
-    /// mesh update), together with the predicted tail. Samples that miss the guide are
-    /// dropped, so a stroke draws only where the guide is.
+    /// mesh update), together with the predicted tail. Each sample lands on the fold of the
+    /// guide the stroke is on (nearest the previous point). Where the pen leaves the guide, or
+    /// the next point lands far from the last one (another part of a curved guide), the stroke
+    /// breaks: the piece so far ends and the next point starts a new one, instead of a
+    /// straight line through the air joining them. The pieces are one stroke for undo.
     fn feed(&mut self, samples: &[PenSample], predicted: &[PenSample]) {
-        let mut points = Vec::with_capacity(samples.len());
+        let mut batch = Vec::with_capacity(samples.len());
         for s in samples {
-            let Some(hit) = self.project(s.pos) else { continue };
+            let hit = self.project(s.pos);
+            let jumped = hit.is_some_and(|h| self.is_jump(h.point, s.pos));
+            if hit.is_none() || jumped {
+                self.flush(&mut batch, &[]);
+                if self.drawing {
+                    self.with_canvas(|c| c.break_stroke());
+                    self.drawing = false;
+                    self.broken = true;
+                }
+                self.last_hit = None;
+            }
+            let Some(hit) = hit else { continue };
             if let Some(pr) = s.pressure {
                 self.last_pressure = pr;
             }
-            points.push((hit, self.last_pressure, s.t));
+            let point = input_point(gv3(hit.point), gv3(hit.normal), self.last_pressure, s.t);
+            if self.drawing {
+                batch.push(point);
+            } else {
+                self.with_canvas(|c| c.begin_stroke(gv3(hit.point), gv3(hit.normal), point.pressure, s.t));
+                self.drawing = true;
+            }
+            self.last_hit = Some((hit.point, s.pos));
         }
-        let tail: Vec<_> = predicted
-            .iter()
-            .filter_map(|s| {
-                let hit = self.project(s.pos)?;
-                Some(input_point(gv3(hit.point), gv3(hit.normal), s.pressure.unwrap_or(self.last_pressure), s.t))
-            })
-            .collect();
-        let mut rest = points.as_slice();
-        if !self.drawing {
-            let Some((&(hit, pressure, t), others)) = rest.split_first() else { return };
-            self.with_canvas(|c| c.begin_stroke(gv3(hit.point), gv3(hit.normal), pressure, t));
-            self.drawing = true;
-            rest = others;
+        // The predicted tail continues from the last real point and stops where it would break.
+        let mut tail = Vec::new();
+        let mut prev = self.last_hit;
+        for s in predicted {
+            let Some(hit) = self.stroke_guide.as_ref().zip(self.ray(s.pos)).and_then(|(g, r)| g.intersect_near(r, prev.map(|p| p.0)))
+            else {
+                break;
+            };
+            if prev.is_some_and(|p| self.jump_between(p, hit.point, s.pos)) {
+                break;
+            }
+            tail.push(input_point(gv3(hit.point), gv3(hit.normal), s.pressure.unwrap_or(self.last_pressure), s.t));
+            prev = Some((hit.point, s.pos));
         }
-        let batch: Vec<_> = rest.iter().map(|&(h, pr, t)| input_point(gv3(h.point), gv3(h.normal), pr, t)).collect();
-        self.with_canvas(|c| c.extend_stroke(&batch, &tail));
+        self.flush(&mut batch, &tail);
     }
 
-    /// Screen position → hit on the current stroke's guide, or `None` if the ray misses it
-    /// or meets it out of reach (pen near a plane's horizon).
+    /// Sends collected points (and the predicted tail) to the live piece, if there is one.
+    fn flush(&mut self, batch: &mut Vec<airdraw_brush::InputPoint>, tail: &[airdraw_brush::InputPoint]) {
+        if self.drawing && (!batch.is_empty() || !tail.is_empty()) {
+            let points = std::mem::take(batch);
+            self.with_canvas(|c| c.extend_stroke(&points, tail));
+        }
+        batch.clear();
+    }
+
+    /// Screen position → hit on the current stroke's guide (on the fold nearest the last point),
+    /// or `None` if the ray misses it or meets it out of reach (pen near a plane's horizon).
     fn project(&self, pos: glam::Vec2) -> Option<Hit> {
-        self.stroke_guide.as_ref()?.intersect_in_reach(self.ray(pos)?)
+        self.stroke_guide.as_ref()?.intersect_near(self.ray(pos)?, self.last_hit.map(|h| h.0))
+    }
+
+    /// Whether `point` (under the pen at `screen`) is too far from the last point for the pen's
+    /// movement on screen: the pen crossed to another part of the guide.
+    fn is_jump(&self, point: glam::Vec3, screen: glam::Vec2) -> bool {
+        self.last_hit.is_some_and(|last| self.jump_between(last, point, screen))
+    }
+
+    /// A jump is more than ten times the world distance the pen's screen movement covers at
+    /// that depth (and at least 30 pixels' worth): steep parts of a guide stretch movement, but
+    /// not that much; a crossing to another fold moves much further.
+    fn jump_between(&self, from: (glam::Vec3, glam::Vec2), point: glam::Vec3, screen: glam::Vec2) -> bool {
+        let (last, last_screen) = from;
+        let Some(per_px) = self.world_per_pixel(screen, point) else { return false };
+        let pixels = screen.distance(last_screen);
+        point.distance(last) > per_px * (10.0 * pixels).max(30.0)
+    }
+
+    /// World units one screen pixel covers at `point`'s depth, near `screen`.
+    fn world_per_pixel(&self, screen: glam::Vec2, point: glam::Vec3) -> Option<f32> {
+        let (a, b) = (self.ray(screen)?, self.ray(screen + glam::Vec2::Y)?);
+        let t = (point - a.origin).dot(a.dir);
+        Some((a.origin + a.dir * t).distance(b.origin + b.dir * t))
     }
 
     /// The camera ray through a screen position.

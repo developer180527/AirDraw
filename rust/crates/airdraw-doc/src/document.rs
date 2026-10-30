@@ -298,6 +298,22 @@ impl Document {
         (id, changes)
     }
 
+    /// Appends several strokes on the active layer as one undo step: one pen stroke that was
+    /// drawn in pieces (it left the guide and came back). Returns the changes and the new ids.
+    pub fn add_strokes(&mut self, pieces: Vec<(BrushRef, Vec<InputPoint>)>) -> (Vec<Change>, Vec<StrokeId>) {
+        let base = self.strokes.len();
+        let added: Vec<(usize, Stroke)> = pieces
+            .into_iter()
+            .enumerate()
+            .map(|(n, (brush, points))| (base + n, Stroke { id: self.new_id(), layer: self.active_layer, brush, points: points.into() }))
+            .collect();
+        if added.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let ids = added.iter().map(|(_, s)| s.id).collect();
+        (self.commit(Op::Replace { removed: Vec::new(), added }), ids)
+    }
+
     pub fn remove_strokes(&mut self, ids: &[StrokeId]) -> Vec<Change> {
         let items: Vec<(usize, Stroke)> =
             self.strokes.iter().enumerate().filter(|(_, s)| ids.contains(&s.id)).map(|(i, s)| (i, s.clone())).collect();
@@ -553,6 +569,21 @@ pub(crate) mod tests {
 
     pub fn brush(id: &str) -> BrushDef {
         BrushLibrary::new(StageRegistry::with_builtins()).get(id).unwrap().def.clone()
+    }
+
+    #[test]
+    fn add_strokes_is_one_undo_step() {
+        let mut d = Document::new();
+        let ink = d.intern_brush(&brush("com.airdraw.ink"));
+        d.add_stroke(ink, points(5, 0.0));
+        let (_, ids) = d.add_strokes(vec![(ink, points(4, 1.0)), (ink, points(6, 2.0))]);
+        assert_eq!(ids.len(), 2);
+        assert_eq!(d.strokes().iter().map(|s| s.id).skip(1).collect::<Vec<_>>(), ids);
+        d.undo();
+        assert_eq!(d.strokes().len(), 1);
+        d.redo();
+        assert_eq!(d.strokes().len(), 3);
+        assert_eq!(d.add_strokes(Vec::new()).1, Vec::new());
     }
 
     #[test]

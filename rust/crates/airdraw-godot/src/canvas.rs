@@ -86,6 +86,9 @@ pub struct SketchCanvas {
     warm_up: Vec<(Gd<MeshInstance3D>, u32)>,
     nodes: HashMap<StrokeId, Gd<MeshInstance3D>>,
     current: Option<LiveStroke>,
+    /// Finished pieces of the pen stroke in progress (it left the guide and came back): shown,
+    /// and added together with the last piece at pen-up, as one undo step.
+    pieces: Vec<(Gd<MeshInstance3D>, BrushRef, Vec<InputPoint>)>,
     /// Strokes the eraser and selection can pick (§3i), kept in step with the document.
     pick: PickIndex,
     /// Widest half width per brush snapshot, for picking.
@@ -129,6 +132,7 @@ impl INode3D for SketchCanvas {
             warm_up: Vec::new(),
             nodes: HashMap::new(),
             current: None,
+            pieces: Vec::new(),
             pick: PickIndex::new(),
             half_widths: HashMap::new(),
             erasing: None,
@@ -314,7 +318,10 @@ impl SketchCanvas {
 
     #[func]
     pub(crate) fn begin_stroke(&mut self, pos: Vector3, normal: Vector3, pressure: f32, time: f64) {
-        self.cancel_stroke();
+        // A new piece of the same pen stroke keeps the earlier pieces (see `break_stroke`).
+        if let Some(s) = self.current.take() {
+            s.cancel();
+        }
         let brush = self.brush.clone();
         let brush_ref = self.doc.intern_brush(&brush.def);
         self.compiled.entry(brush_ref).or_insert_with(|| brush.clone());
@@ -371,16 +378,33 @@ impl SketchCanvas {
         d
     }
 
+    /// Ends the current piece of the pen stroke without committing it: the pen left the guide
+    /// (or jumped to a far part of it), so the next point starts a new piece instead of being
+    /// joined by a straight line through the air.
+    pub(crate) fn break_stroke(&mut self) {
+        if let Some(piece) = self.finish_current() {
+            self.pieces.push(piece);
+        }
+    }
+
+    /// Commits the pen stroke: its pieces and the current one, as one undo step.
     #[func]
     pub(crate) fn end_stroke(&mut self) {
-        let Some(s) = self.current.take() else { return };
-        let Some((instance, brush_ref, points, t)) = s.finish() else { return };
-        if let Some(timings) = &mut self.timings {
-            timings.push(t);
+        self.break_stroke();
+        let mut pieces = std::mem::take(&mut self.pieces);
+        let (changes, ids) = match pieces.len() {
+            0 => return,
+            1 => {
+                let (_, brush, points) = &mut pieces[0];
+                let (id, changes) = self.doc.add_stroke(*brush, std::mem::take(points));
+                (changes, vec![id])
+            }
+            _ => self.doc.add_strokes(pieces.iter_mut().map(|(_, b, p)| (*b, std::mem::take(p))).collect()),
+        };
+        // The live nodes already show these strokes; adopt them instead of rebuilding.
+        for (id, (instance, _, _)) in ids.into_iter().zip(pieces) {
+            self.nodes.insert(id, instance);
         }
-        let (id, changes) = self.doc.add_stroke(brush_ref, points);
-        // The live node already shows this stroke; adopt it instead of rebuilding.
-        self.nodes.insert(id, instance);
         self.apply(changes);
     }
 
@@ -389,11 +413,24 @@ impl SketchCanvas {
         if let Some(s) = self.current.take() {
             s.cancel();
         }
+        for (mut node, _, _) in self.pieces.drain(..) {
+            node.queue_free();
+        }
+    }
+
+    /// The current piece as a finished node with its brush and points, or `None` if there is
+    /// none or it has no geometry.
+    fn finish_current(&mut self) -> Option<(Gd<MeshInstance3D>, BrushRef, Vec<InputPoint>)> {
+        let (instance, brush_ref, points, t) = self.current.take()?.finish()?;
+        if let Some(timings) = &mut self.timings {
+            timings.push(t);
+        }
+        Some((instance, brush_ref, points))
     }
 
     #[func]
     fn is_drawing(&self) -> bool {
-        self.current.is_some()
+        self.current.is_some() || !self.pieces.is_empty()
     }
 
     // ---- Erasing (§3i) -----------------------------------------------------------------------
@@ -1474,6 +1511,10 @@ impl SketchCanvas {
             if let Some(s) = &mut self.current {
                 s.set_material(&m);
             }
+        }
+        let pieces: Vec<(Gd<MeshInstance3D>, BrushRef)> = self.pieces.iter().map(|(n, b, _)| (n.clone(), *b)).collect();
+        for (mut node, brush) in pieces {
+            node.set_material_override(&self.material_for(brush));
         }
     }
 

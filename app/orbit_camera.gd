@@ -34,9 +34,28 @@ func pan(delta: Vector2) -> void:
 	global_position += (-b.x * delta.x + b.y * delta.y) * scale
 
 
-## Multiplies the distance by `factor` (< 1 zooms in).
-func zoom(factor: float, _at := Vector2.ZERO) -> void:
-	distance = clampf(distance * factor, min_distance, max_distance)
+## Multiplies the distance by `factor` (< 1 zooms in), toward `at` (viewport pixels: the
+## pinch centre or the mouse): the point under it stays under it, so you zoom into what you
+## point at, wherever it is. Zooming in past `min_distance` moves the whole rig forward
+## instead of stopping, so you can always get closer (the pivot used to be a hard wall).
+func zoom(factor: float, at := Vector2(-1, -1)) -> void:
+	if factor <= 0.0 or not is_finite(factor):
+		return
+	var target := clampf(distance * factor, min_distance, max_distance)
+	var forward := -camera.global_transform.basis.z
+	if at.x >= 0.0 and at.y >= 0.0:
+		# Where `at` meets the plane through the pivot facing the camera; moving the pivot
+		# toward it by the same factor as the distance keeps it fixed on screen.
+		var origin := camera.project_ray_origin(at)
+		var dir := camera.project_ray_normal(at)
+		var denom := dir.dot(forward)
+		if denom > 1e-4:
+			var anchor := origin + dir * ((global_position - origin).dot(forward) / denom)
+			global_position = anchor + (global_position - anchor) * (target / distance)
+	if distance * factor < min_distance:
+		# At the limit: move forward by the rest of the zoom instead of stopping.
+		global_position += forward * (min_distance - distance * factor)
+	distance = target
 	_apply()
 
 

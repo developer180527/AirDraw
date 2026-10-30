@@ -47,6 +47,26 @@ impl Guide {
         self.intersect(ray).filter(|h| h.point.length() <= REACH)
     }
 
+    /// Like [`Guide::intersect_in_reach`], but where the ray meets the guide more than once
+    /// (a curved sweep folding in front of itself), the hit closest to `near`: a stroke stays
+    /// on the fold it's drawing on instead of jumping to whichever fold is in front. Without
+    /// `near` (a stroke's first point), the hit nearest the camera.
+    pub fn intersect_near(&self, ray: Ray, near: Option<Vec3>) -> Option<Hit> {
+        let hits = self.hits(ray).into_iter().filter(|h| h.point.length() <= REACH);
+        match near {
+            Some(p) => hits.min_by(|a, b| a.point.distance_squared(p).total_cmp(&b.point.distance_squared(p))),
+            None => hits.min_by(|a, b| a.t.total_cmp(&b.t)),
+        }
+    }
+
+    /// Every place the ray meets the guide in front of its origin, in no particular order.
+    pub fn hits(&self, ray: Ray) -> Vec<Hit> {
+        match self {
+            Guide::Plane { .. } => self.intersect(ray).into_iter().collect(),
+            Guide::Sweep(s) => s.hits(ray),
+        }
+    }
+
     /// Nearest hit in front of the ray's origin.
     pub fn intersect(&self, ray: Ray) -> Option<Hit> {
         match self {
@@ -131,18 +151,22 @@ impl Sweep {
     }
 
     pub fn intersect(&self, ray: Ray) -> Option<Hit> {
-        let mut best: Option<Hit> = None;
+        self.hits(ray).into_iter().min_by(|a, b| a.t.total_cmp(&b.t))
+    }
+
+    /// Every hit of the ray on the sweep (one per fold it passes through). A ray through an
+    /// edge shared by two triangles hits both; those count once.
+    pub fn hits(&self, ray: Ray) -> Vec<Hit> {
+        let mut out: Vec<Hit> = Vec::new();
         for i in 0..self.profile.len().saturating_sub(1) {
             let [a, b, c, d] = self.quad(i);
-            for tri in [[a, b, c], [a, c, d]] {
-                if let Some(h) = intersect_triangle(ray, tri)
-                    && best.is_none_or(|b| h.t < b.t)
-                {
-                    best = Some(h);
+            for h in [[a, b, c], [a, c, d]].into_iter().filter_map(|tri| intersect_triangle(ray, tri)) {
+                if !out.iter().any(|o| (o.t - h.t).abs() <= 1e-5 * h.t.max(1.0)) {
+                    out.push(h);
                 }
             }
         }
-        best
+        out
     }
 
     /// Display mesh: `rows` bands across the sweep, UVs in world units (u along the curve,
@@ -259,6 +283,27 @@ fn resample(pts: &[Vec3], dirs: &[Vec3], opts: SweepOptions) -> Option<(Vec<Vec3
 
 #[cfg(test)]
 mod tests {
+    /// A sweep folded back on itself: the profile runs along x at z = 0, turns, and comes
+    /// back along x at z = -1, swept along y. A ray along -z at x = 0.5 crosses both layers.
+    fn folded() -> Guide {
+        let profile = vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0), Vec3::new(1.0, 0.0, -1.0), Vec3::new(0.0, 0.0, -1.0)];
+        let dirs = vec![Vec3::Y; 4];
+        Guide::Sweep(Sweep { profile, dirs, near: 1.0, far: 1.0 })
+    }
+
+    #[test]
+    fn near_hit_keeps_a_stroke_on_its_fold() {
+        let g = folded();
+        // From in front (+z), looking back along -z at x = 0.5: two layers, z = 0 and z = -1.
+        let ray = Ray { origin: Vec3::new(0.5, 0.0, 5.0), dir: Vec3::NEG_Z };
+        assert_eq!(g.hits(ray).len(), 2);
+        let front = g.intersect_near(ray, None).unwrap();
+        assert!((front.point.z - 0.0).abs() < 1e-4, "first point: nearest to the camera");
+        let back = g.intersect_near(ray, Some(Vec3::new(0.4, 0.0, -1.0))).unwrap();
+        assert!((back.point.z + 1.0).abs() < 1e-4, "continuing on the back fold stays there");
+        assert_eq!(g.intersect(ray), Some(front));
+    }
+
     #[test]
     fn grazing_plane_hits_are_out_of_reach() {
         let plane = Guide::Plane { origin: Vec3::ZERO, normal: Vec3::Z };
