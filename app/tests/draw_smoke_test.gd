@@ -790,6 +790,41 @@ func _ready() -> void:
 	await _tap(cards[1])
 	await get_tree().process_frame
 	print("SMOKE reopened=", main.get("doc_path").get_file(), " strokes=", canvas.stroke_count(), " home_visible=", home.visible)
+	# Losing focus saves at once, without a frame (iOS stops rendering right then); the preview
+	# catches up on return. The sketch is safe even if the app never comes back.
+	var docs = main.get("documents")
+	var sketch_path: String = docs.doc_path
+	var strokes_saved: int = canvas.stroke_count()
+	var file_before_edit := FileAccess.get_file_as_bytes(sketch_path)
+	await _stroke(center + Vector2(-200, 100), func(t: float) -> Vector2: return Vector2(150.0 * t, 50.0 * sin(t * 6.0)))
+	var preview_before: PackedByteArray = canvas.thumbnail_of(sketch_path)
+	main.notification(NOTIFICATION_APPLICATION_FOCUS_OUT)
+	var written_at_once: bool = not canvas.is_dirty() and FileAccess.get_file_as_bytes(sketch_path) != file_before_edit
+	var preview_kept: bool = canvas.thumbnail_of(sketch_path) == preview_before
+	main.notification(NOTIFICATION_APPLICATION_FOCUS_IN)
+	await docs.save_current()
+	var preview_refreshed: bool = canvas.thumbnail_of(sketch_path) != preview_before
+	var settled := FileAccess.get_file_as_bytes(sketch_path)
+	main.notification(NOTIFICATION_APPLICATION_FOCUS_OUT)
+	main.notification(NOTIFICATION_APPLICATION_FOCUS_IN)
+	await docs.save_current()
+	print("SMOKE focus_save written_at_once=", written_at_once, " preview_kept=", preview_kept, " preview_refreshed=", preview_refreshed,
+		" no_edit_no_write=", FileAccess.get_file_as_bytes(sketch_path) == settled)
+	# A save overtaken by losing focus still ends clean.
+	await _stroke(center + Vector2(-200, 150), func(t: float) -> Vector2: return Vector2(150.0 * t, 0.0))
+	docs.save_current()
+	main.notification(NOTIFICATION_APPLICATION_FOCUS_OUT)
+	var overtaken_written: bool = not canvas.is_dirty()
+	await docs.save_current()
+	# Opening another sketch while a save waits for its frame must not lose the edits.
+	await _stroke(center + Vector2(-200, 200), func(t: float) -> Vector2: return Vector2(150.0 * t, 0.0))
+	var expected: int = canvas.stroke_count()
+	docs.save_current()
+	await docs.open_path(ProjectSettings.globalize_path("user://test_documents/guide.airdraw"), "")
+	var opened_other: bool = docs.doc_path != sketch_path
+	canvas.load_document(sketch_path)
+	print("SMOKE save_race overtaken_written=", overtaken_written, " opened_other=", opened_other,
+		" edits_kept=", canvas.stroke_count() == expected, " added=", expected - strokes_saved)
 	var svg_img := Image.new()
 	svg_img.load_svg_from_string(FileAccess.get_file_as_string("user://exports/clean.svg"), 2.0)
 	svg_img.save_png("user://exports/clean_svg_render.png")

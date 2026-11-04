@@ -980,6 +980,15 @@ so opening a file, orbiting and closing it rewrote it. Now it saves only when di
 thumbnail changes only with content. The smoke test opens a file, orbits, changes guide
 opacity and leaves: same bytes, same modification time.
 
+**Saving when the app leaves (fixed 2026-11-04):** `save_current` renders the preview first,
+which takes a frame, and iOS stops rendering the moment the app loses focus (`on_focus_out`).
+So the save on backgrounding only finished on return: killing the app lost everything since
+the last autosave. Losing focus now calls `save_now`, which writes at once with the preview the
+sketch already has; the preview is refreshed by the next `save_current` (on return). A preview
+can be stale if the app never returns, the drawing can't. Also, `save_current` used to return
+immediately if a save was already waiting for its frame, so opening another sketch at that
+moment dropped the edits; it now waits. Smoke test: `focus_save`, `save_race`.
+
 **Deterministic writer:** the same content always produces the same bytes: no timestamps,
 stable key and section order, fixed codec settings per level.
 

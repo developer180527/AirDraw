@@ -211,13 +211,18 @@ func _open_pending_files() -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_APPLICATION_FOCUS_IN and documents:
 		_open_pending_files()
+		# Back from a save without a preview (`save_now`): refresh it.
+		documents.save_current()
 	match what:
 		NOTIFICATION_APPLICATION_PAUSED, NOTIFICATION_APPLICATION_FOCUS_OUT:
-			if documents and documents.active and canvas.is_dirty():
-				documents.save_current()
+			if documents and documents.active:
+				documents.save_now()
 		NOTIFICATION_WM_CLOSE_REQUEST:
 			if documents and documents.active:
-				await documents.save_current()
+				documents.save_now()
+				# The preview takes a frame, which a minimized window never draws.
+				if DisplayServer.window_can_draw():
+					await documents.save_current()
 			get_tree().quit()
 
 

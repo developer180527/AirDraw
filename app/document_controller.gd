@@ -7,6 +7,7 @@ extends Node
 signal opened  ## a document is ready on the canvas
 signal status(message: String)  ## for the canvas info line
 signal home_message(message: String)  ## problems to show on the home screen
+signal _save_finished
 
 const AUTOSAVE_SECONDS := 15.0
 
@@ -27,6 +28,9 @@ var doc_bookmark := ""
 var active := false
 
 var _saving := false
+## A save wrote the file without rendering its preview (see `save_now`): the next
+## `save_current` refreshes it, even with no new edits.
+var _preview_stale := false
 
 
 func _init(p_canvas: SketchCanvas, p_app_files: AppFiles, p_thumbnails: ThumbnailRenderer) -> void:
@@ -91,15 +95,43 @@ func open_recent(entry: Dictionary) -> void:
 ## Saves the open sketch in place (with a fresh preview), only if it was edited: a file
 ## that was only viewed is never rewritten (docs/ARCHITECTURE.md §3h). A new sketch that was
 ## never drawn in isn't written, so + New then back leaves no empty files behind.
+##
+## Rendering the preview takes a frame. A save already waiting for one is waited for, not
+## skipped: callers go on to replace the sketch once this returns.
 func save_current() -> void:
-	if doc_path.is_empty() or _saving or not canvas.is_dirty():
-		return
-	if canvas.stroke_count() == 0 and not FileAccess.file_exists(doc_path):
+	while _saving:
+		await _save_finished
+	if not _needs_save() and not _preview_stale:
 		return
 	_saving = true
+	var path := doc_path
 	await update_thumbnail()
-	var err: String = canvas.save_document(doc_path)
+	# `save_now` may have written it meanwhile; the fresh preview still needs writing then.
+	if doc_path == path and (canvas.is_dirty() or _preview_stale):
+		_write()
+		_preview_stale = false
 	_saving = false
+	_save_finished.emit()
+
+
+## Saves right now, with the preview the sketch already has. For when the app is leaving:
+## iOS stops rendering as soon as it loses focus, so `save_current` wouldn't finish until the
+## app came back, if it ever did. The preview is refreshed on the next `save_current`.
+func save_now() -> void:
+	if _needs_save():
+		_write()
+		_preview_stale = true
+
+
+## The open sketch has edits the file lacks. A new sketch that was never drawn in has no file.
+func _needs_save() -> bool:
+	if doc_path.is_empty() or not canvas.is_dirty():
+		return false
+	return canvas.stroke_count() > 0 or FileAccess.file_exists(doc_path)
+
+
+func _write() -> void:
+	var err: String = canvas.save_document(doc_path)
 	if err.is_empty():
 		app_files.touch_recent(AppPaths.store(doc_path), doc_bookmark)
 		status.emit("")
@@ -122,6 +154,7 @@ func close() -> void:
 		app_files.release_file(doc_path)
 	doc_path = ""
 	doc_bookmark = ""
+	_preview_stale = false
 
 
 ## System "Open" picker: native on iOS, Godot's native dialog (or its own) elsewhere.
