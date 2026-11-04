@@ -719,6 +719,16 @@ impl SketchCanvas {
         n
     }
 
+    /// How far from `camera` the strokes nearest `pos` on screen are, or -1 if none is in
+    /// reach of the view. Used to settle the orbit pivot on what a gesture is about.
+    #[func]
+    fn view_depth(&mut self, camera: Gd<Camera3D>, pos: Vector2) -> f32 {
+        let Some(cam) = pick_camera(&camera) else { return -1.0 };
+        let size = camera.get_viewport().map_or(Vector2::new(1000.0, 1000.0), |v| v.get_visible_rect().size);
+        self.skip_hidden_layers();
+        self.pick.depth_near(&cam, glam::Vec2::new(pos.x, pos.y), size.length()).unwrap_or(-1.0)
+    }
+
     /// Whether the frontmost stroke within `tolerance` pixels of `pos` is selected.
     #[func]
     fn selected_at(&mut self, camera: Gd<Camera3D>, pos: Vector2, tolerance: f32) -> bool {

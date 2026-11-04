@@ -22,6 +22,7 @@ const KEYS := {
 	"view_side": [KEY_S, false, false],
 	"view_top": [KEY_T, false, false],
 	"view_reset": [KEY_0, false, false],
+	"view_fit": [KEY_PERIOD, false, false],
 	"toggle_ui": [KEY_TAB, false, false],
 	"rebrush": [KEY_R, false, false],
 	"brush_1": [KEY_1, false, false],

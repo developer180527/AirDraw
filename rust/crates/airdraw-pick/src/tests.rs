@@ -316,3 +316,18 @@ fn timing_on_a_million_points() {
         t.elapsed().as_secs_f64() * 1000.0
     );
 }
+
+#[test]
+fn depth_near_is_the_closest_stroke_on_screen_frontmost_among_equals() {
+    // At depths 5 (z = 0) and 7 (z = -2), both through the centre of the view; one more far
+    // off to the side at depth 3.
+    let i = index(&[x_line(1, 0.0, 0.0, 1.0), x_line(2, 0.0, -2.0, 1.0), x_line(3, 2.0, 2.0, 0.2)]);
+    let centre = Vec2::splat(500.0);
+    assert!((i.depth_near(&cam(), centre, 2000.0).unwrap() - 5.0).abs() < 0.01);
+    // Near the side stroke, it wins despite the others being in the view.
+    let (side, _) = cam().project(Vec3::new(0.0, 2.0, 2.0)).unwrap();
+    assert!((i.depth_near(&cam(), side, 2000.0).unwrap() - 3.0).abs() < 0.01);
+    // Nothing within the tolerance, or nothing at all.
+    assert_eq!(i.depth_near(&cam(), Vec2::new(500.0, 950.0), 5.0), None);
+    assert_eq!(index(&[]).depth_near(&cam(), centre, 2000.0), None);
+}

@@ -167,6 +167,9 @@ impl INode for SketchSession {
 
 #[godot_api]
 impl SketchSession {
+    /// A view gesture starts or changes around `at` (viewport pixels).
+    #[signal]
+    fn view_focus(at: Vector2);
     /// Screen-space drag in pixels.
     #[signal]
     fn view_orbit(delta: Vector2);
@@ -247,6 +250,7 @@ impl SketchSession {
     fn dispatch(&mut self, r: Routed) {
         match r {
             Routed::Stroke(s) => self.stroke(s),
+            Routed::View(ViewEvent::Focus { at }) => self.signals().view_focus().emit(Vector2::new(at.x, at.y)),
             Routed::View(ViewEvent::Orbit(d)) => self.signals().view_orbit().emit(Vector2::new(d.x, d.y)),
             Routed::View(ViewEvent::Pan(d)) => self.signals().view_pan().emit(Vector2::new(d.x, d.y)),
             Routed::View(ViewEvent::Zoom { factor, at }) => self.signals().view_zoom().emit(factor, Vector2::new(at.x, at.y)),

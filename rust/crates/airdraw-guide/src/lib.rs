@@ -35,16 +35,16 @@ pub enum Guide {
     Sweep(Sweep),
 }
 
-/// How far from the world origin a stroke point may land, world units. A ray that grazes a
-/// plane (pen near its horizon) meets it kilometres away; those hits count as misses, or
-/// one stroke segment spans the whole view. Comfortably past the floor (20) and the camera's
-/// zoom range (50).
+/// How far from the camera a stroke point may land, world units. A ray that grazes a plane
+/// (pen near its horizon) meets it kilometres away; those hits count as misses, or one stroke
+/// segment spans the whole view. Comfortably past the floor (20) and the camera's zoom range
+/// (50), and measured from the camera because it can fly anywhere.
 pub const REACH: f32 = 100.0;
 
 impl Guide {
-    /// Nearest hit within [`REACH`] of the origin; farther hits are treated as misses.
+    /// Nearest hit within [`REACH`] of the ray's origin; farther hits are treated as misses.
     pub fn intersect_in_reach(&self, ray: Ray) -> Option<Hit> {
-        self.intersect(ray).filter(|h| h.point.length() <= REACH)
+        self.intersect(ray).filter(|h| h.t <= REACH)
     }
 
     /// Like [`Guide::intersect_in_reach`], but where the ray meets the guide more than once
@@ -52,7 +52,7 @@ impl Guide {
     /// on the fold it's drawing on instead of jumping to whichever fold is in front. Without
     /// `near` (a stroke's first point), the hit nearest the camera.
     pub fn intersect_near(&self, ray: Ray, near: Option<Vec3>) -> Option<Hit> {
-        let hits = self.hits(ray).into_iter().filter(|h| h.point.length() <= REACH);
+        let hits = self.hits(ray).into_iter().filter(|h| h.t <= REACH);
         match near {
             Some(p) => hits.min_by(|a, b| a.point.distance_squared(p).total_cmp(&b.point.distance_squared(p))),
             None => hits.min_by(|a, b| a.t.total_cmp(&b.t)),
@@ -313,6 +313,9 @@ mod tests {
         assert_eq!(plane.intersect_in_reach(ray), None);
         let straight = Ray { origin: Vec3::new(0.0, 0.0, 5.0), dir: Vec3::NEG_Z };
         assert_eq!(plane.intersect_in_reach(straight), plane.intersect(straight));
+        // Reach follows the camera: drawing works far from the world's origin.
+        let far = Ray { origin: Vec3::new(500.0, 0.0, 5.0), dir: Vec3::NEG_Z };
+        assert!(plane.intersect_in_reach(far).is_some());
     }
 
     use super::*;

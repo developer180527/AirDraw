@@ -9,7 +9,7 @@ extends CanvasLayer
 ## slim bar at the bottom holds the current tool's options. Same layout on tablet and desktop;
 ## left-handed mode mirrors the tray and cube.
 
-signal action(name: String)  ## gallery, export, undo, redo, edit_brush, import_brushes, clear, remove_guide, save_copy
+signal action(name: String)  ## gallery, export, undo, redo, edit_brush, import_brushes, clear, remove_guide, save_copy, fit_view
 signal tool_selected(tool: String)  ## draw, erase, select, guide
 signal plane_requested(index: int)  ## GuideController preset index (3 = view-aligned)
 signal guide_offset_changed(offset: float)
@@ -534,6 +534,8 @@ func _build_menu() -> void:
 		left_handed = not left_handed
 		_save_settings()
 		_layout())
+	var fit_item: Button = item.call("Fit view", "Fit View", action.emit.bind("fit_view"))
+	fit_item.tooltip_text = Shortcuts.tooltip("Frame the whole sketch", "view_fit")
 	var hide_item: Button = item.call("Hide interface", "Hide interface", toggle_ui)
 	hide_item.tooltip_text = Shortcuts.tooltip("Hide interface", "toggle_ui")
 	col.add_child(HSeparator.new())

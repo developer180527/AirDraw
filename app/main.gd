@@ -5,9 +5,11 @@ extends Node3D
 
 ## Exporter plugin libraries (desktop). iOS builds link plugins in statically.
 const PLUGIN_DIR := "user://plugins"
+const FOCUS_INTERVAL_MS := 100
 const GUIDE_READY := "Guide ready. Orbit to see it, then draw on it."
 
 var rig: OrbitCamera
+var _last_focus_ms := -FOCUS_INTERVAL_MS
 var environment: WorldEnvironment
 var sun: DirectionalLight3D
 var canvas: SketchCanvas
@@ -83,6 +85,7 @@ func _ready() -> void:
 	session = SketchSession.new()
 	session.canvas = canvas
 	session.camera = rig.camera
+	session.view_focus.connect(_focus_view)
 	session.view_orbit.connect(rig.orbit)
 	session.view_pan.connect(rig.pan)
 	session.view_zoom.connect(rig.zoom)
@@ -103,7 +106,10 @@ func _ready() -> void:
 	add_child(thumbnails)
 	documents = DocumentController.new(canvas, app_files, thumbnails)
 	documents.sketch_dir = ProjectSettings.globalize_path(sketch_dir) if not sketch_dir.is_empty() else AppPaths.sketches()
-	documents.opened.connect(_show_canvas)
+	documents.opened.connect(func() -> void:
+		# Files hold no camera: a sketch opens framed at the default angle.
+		rig.reset_to(_sketch_box())
+		_show_canvas())
 	documents.status.connect(_set_status)
 	add_child(documents)
 	documents.tidy_recents()
@@ -302,6 +308,9 @@ func _handle_key(event: InputEventKey) -> void:
 			rig.set_view("top")
 		"view_reset":
 			rig.set_view("3d")
+			rig.fit(_sketch_box())
+		"view_fit":
+			_file_action("fit_view")
 		"toggle_ui":
 			toolbar.toggle_ui()
 		"rebrush":
@@ -380,6 +389,20 @@ func _open_stroke_menu(pos: Vector2) -> void:
 		toolbar.open_stroke_menu(pos)
 
 
+## Settles the camera's pivot on the strokes around `at`. Looking them up visits every point
+## (about 20 ms per million), and wheel zoom asks on every notch, hence the limit.
+func _focus_view(at: Vector2) -> void:
+	var now := Time.get_ticks_msec()
+	if now - _last_focus_ms >= FOCUS_INTERVAL_MS:
+		_last_focus_ms = now
+		rig.focus(canvas.view_depth(rig.camera, at))
+
+
+## All the strokes, or an empty box.
+func _sketch_box() -> AABB:
+	return canvas.strokes_aabb() if canvas.stroke_count() > 0 else AABB()
+
+
 func _file_action(action: String) -> void:
 	match action:
 		"gallery":
@@ -398,6 +421,8 @@ func _file_action(action: String) -> void:
 			export_dialog.open(canvas, toolbar.popup_theme())
 		"save_copy":
 			documents.save_copy_without_history(self)
+		"fit_view":
+			rig.fit(_sketch_box())
 		"edit_brush":
 			brush_editor.open(canvas, canvas.current_brush(), toolbar.popup_theme(), toolbar.bar_rect().end.y)
 		"import_brushes":

@@ -154,13 +154,22 @@ a lock-free SPSC ring buffer replaces it if a backend ever delivers from another
 
 - Pen → active tool (brush / eraser / select)
 - Finger → camera (orbit, pan, pinch zoom), 2-finger tap undo, 3-finger tap redo
-- **Zoom (`app/orbit_camera.gd`)** goes toward the pinch centre or mouse cursor: the point
-  under it stays under it, so you zoom into what you point at. Pinching in past the closest
-  distance (0.2) moves the whole rig forward instead of stopping. Until 2026-10-31 zoom only
-  shrank the distance to a fixed pivot and stopped at 0.2, so getting close to work away from
-  the pivot (typical on a drawn 3D guide) hit a wall; pan, scaled by that distance, then
-  barely moved and fingers seemed blocked (found with on-device input logs: input and
-  rendering were fine).
+- **Camera (`app/orbit_camera.gd`).** The rig orbits around a pivot `distance` ahead of the
+  camera. Three rules keep it from getting stuck (found 2026-10-31 with on-device input logs:
+  input and rendering were fine, the camera was the block; before, pinching only shrank the
+  distance to a fixed pivot and stopped at 0.2, and pan, scaled by that distance, crawled):
+  - **Zoom** goes toward the pinch centre or cursor (the point under it stays), and past the
+    closest distance moves the rig forward instead of stopping.
+  - **Focus:** when a view gesture starts or its fingers change, and on wheel or trackpad
+    zoom (at most every 100 ms), the router sends `ViewEvent::Focus { at }` and the pivot moves
+    along the view axis to the depth of the strokes nearest `at` on screen
+    (`PickIndex::depth_near`, ~20 ms per 1M points on an M4 Pro). The camera doesn't move, so
+    the picture doesn't change, but pan speed, orbit and zoom work at that depth. Orbit stays
+    around the centre of the view at that depth, not around the touched point.
+  - **Fit View** (⋯ menu, `.`) frames all strokes at the current angle; `0` also resets the
+    angle. Files hold no camera, so a sketch opens at the default angle, framed.
+  - `REACH` (the farthest a stroke point can land) is measured from the camera, so drawing
+    works anywhere the camera flies.
 - Mouse → button-mapped
 - Pencil squeeze / double-tap → user-assigned action
 - Palm rejection: finger touches ignored while a pen is down

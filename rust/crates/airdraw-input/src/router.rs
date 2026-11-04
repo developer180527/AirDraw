@@ -24,6 +24,11 @@ pub enum StrokeEvent {
 /// Camera movement in screen pixels; the camera decides how pixels map to angles/distance.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ViewEvent {
+    /// A view gesture starts or changes around `at`: the camera can settle its pivot at
+    /// what's there before the movement that follows.
+    Focus {
+        at: Vec2,
+    },
     Orbit(Vec2),
     Pan(Vec2),
     /// Multiply the camera distance by `factor` (< 1 zooms in), centered on `at`.
@@ -131,6 +136,8 @@ pub struct InputRouter {
     tap: Option<TapGesture>,
     /// Centroid and spread of the first two fingers at the last update.
     pinch_ref: Option<(Vec2, f32)>,
+    /// The next view movement starts a gesture (or its fingers changed): send `Focus` first.
+    focus_pending: bool,
     /// Screen rectangles (min, max) covered by app UI; contacts starting there are ignored.
     ui_regions: Vec<(Vec2, Vec2)>,
 }
@@ -146,6 +153,7 @@ impl InputRouter {
             rejected: HashSet::new(),
             tap: None,
             pinch_ref: None,
+            focus_pending: false,
             ui_regions: Vec::new(),
         }
     }
@@ -172,6 +180,7 @@ impl InputRouter {
             PenEvent::Scroll { pos, delta, precise, modifiers } => self.scroll(pos, delta, precise, modifiers, out),
             PenEvent::Pinch { pos, factor } => {
                 if factor > 0.0 {
+                    out.push(Routed::View(ViewEvent::Focus { at: pos }));
                     out.push(Routed::View(ViewEvent::Zoom { factor: 1.0 / factor, at: pos }));
                 }
             }
@@ -204,6 +213,7 @@ impl InputRouter {
                 if action == DragAction::Draw {
                     self.begin_stroke(id, DrawTool::Brush, sample, out);
                 }
+                self.focus_pending = true;
                 self.drags.insert(id, (action, sample.pos));
             }
             PointerTool::Finger => {
@@ -216,6 +226,7 @@ impl InputRouter {
                     None => self.tap = Some(TapGesture { start_t: sample.t, max_fingers: 1, travel: 0.0 }),
                 }
                 self.fingers.push((id, sample.pos));
+                self.focus_pending = true;
                 if self.config.finger_draws && self.fingers.len() == 1 {
                     self.begin_stroke(id, DrawTool::Brush, sample, out);
                 } else if let Some(owner) = self.stroke
@@ -245,8 +256,10 @@ impl InputRouter {
             if self.stroke == Some(id) {
                 out.push(Routed::Stroke(StrokeEvent::Extend { samples, predicted }));
             } else if self.fingers.len() == 1 {
+                self.send_focus(last, out);
                 push_view(out, ViewEvent::Orbit(delta));
             } else if let Some((c, spread)) = self.pinch() {
+                self.send_focus(c, out);
                 if let Some((c0, spread0)) = self.pinch_ref {
                     push_view(out, ViewEvent::Pan(c - c0));
                     if spread0 > 0.0 && spread > 0.0 && spread != spread0 {
@@ -262,8 +275,11 @@ impl InputRouter {
             out.push(Routed::Stroke(StrokeEvent::Extend { samples, predicted }));
         }
         if let Some((action, prev)) = self.drags.get_mut(&id) {
-            let delta = last - *prev;
+            let (action, delta) = (*action, last - *prev);
             *prev = last;
+            if matches!(action, DragAction::Orbit | DragAction::Pan) {
+                self.send_focus(last, out);
+            }
             match action {
                 DragAction::Orbit => push_view(out, ViewEvent::Orbit(delta)),
                 DragAction::Pan => push_view(out, ViewEvent::Pan(delta)),
@@ -300,6 +316,7 @@ impl InputRouter {
                 }
             }
             self.pinch_ref = self.pinch();
+            self.focus_pending = true;
         }
     }
 
@@ -327,6 +344,7 @@ impl InputRouter {
             let d = delta * self.config.trackpad_scale;
             push_view(out, if m.shift { ViewEvent::Pan(d) } else { ViewEvent::Orbit(d) });
         } else if delta.y != 0.0 {
+            out.push(Routed::View(ViewEvent::Focus { at: pos }));
             out.push(Routed::View(ViewEvent::Zoom { factor: self.config.wheel_zoom_step.powf(delta.y), at: pos }));
         }
     }
@@ -335,6 +353,12 @@ impl InputRouter {
         if self.stroke.is_none() {
             self.stroke = Some(id);
             out.push(Routed::Stroke(StrokeEvent::Begin { tool, sample }));
+        }
+    }
+
+    fn send_focus(&mut self, at: Vec2, out: &mut Vec<Routed>) {
+        if std::mem::take(&mut self.focus_pending) {
+            out.push(Routed::View(ViewEvent::Focus { at }));
         }
     }
 
@@ -350,6 +374,7 @@ fn push_view(out: &mut Vec<Routed>, v: ViewEvent) {
     let zero = match v {
         ViewEvent::Orbit(d) | ViewEvent::Pan(d) => d == Vec2::ZERO,
         ViewEvent::Zoom { factor, .. } => factor == 1.0,
+        ViewEvent::Focus { .. } => false,
     };
     if !zero {
         out.push(Routed::View(v));
@@ -376,12 +401,36 @@ mod tests {
         PenEvent::Up { id: PointerId(id), sample: s(x, y, t) }
     }
 
+    /// Everything but `Focus`, which has its own test.
     fn run(r: &mut InputRouter, events: Vec<PenEvent>) -> Vec<Routed> {
+        let mut out = run_all(r, events);
+        out.retain(|e| !matches!(e, Routed::View(ViewEvent::Focus { .. })));
+        out
+    }
+
+    fn run_all(r: &mut InputRouter, events: Vec<PenEvent>) -> Vec<Routed> {
         let mut out = Vec::new();
         for e in events {
             r.route(e, &mut out);
         }
         out
+    }
+
+    #[test]
+    fn view_gestures_focus_once_where_they_start() {
+        let focus = |x: f32, y: f32| Routed::View(ViewEvent::Focus { at: Vec2::new(x, y) });
+        let mut r = InputRouter::new(RouterConfig::default());
+        // One finger: once, at the first move.
+        let out = run_all(&mut r, vec![down(1, PointerTool::Finger, 0., 0., 0.), mv(1, 10., 0., 0.1), mv(1, 20., 0., 0.2)]);
+        assert_eq!(out[0], focus(10., 0.));
+        assert_eq!(out.iter().filter(|e| matches!(e, Routed::View(ViewEvent::Focus { .. }))).count(), 1);
+        // A second finger changes the gesture: again, between the fingers.
+        let out = run_all(&mut r, vec![down(2, PointerTool::Finger, 20., 100., 0.3), mv(2, 20., 110., 0.4)]);
+        assert_eq!(out[0], focus(20., 55.));
+        // The pen doesn't focus.
+        let mut r = InputRouter::new(RouterConfig::default());
+        let out = run_all(&mut r, vec![down(3, PointerTool::Pen, 0., 0., 0.), mv(3, 5., 0., 0.1), up(3, 5., 0., 0.2)]);
+        assert!(!out.iter().any(|e| matches!(e, Routed::View(_))));
     }
 
     #[test]

@@ -81,6 +81,41 @@ func _ready() -> void:
 		moved_last = cam.global_position.distance_to(p0)
 	print("SMOKE zoom point_stays_under_fingers=", stays, " keeps_moving_past_pivot=", moved_last > 0.01,
 		" at_min=", is_equal_approx(rig.distance, rig.min_distance))
+	# A gesture settles the pivot on the strokes under it, with the camera where it was: from
+	# there, pan moves at their depth rather than crawling at the closest distance.
+	rig.global_position = Vector3.ZERO
+	rig.distance = 3.0
+	rig.set_view("3d")
+	await get_tree().create_timer(0.4).timeout
+	rig.focus(0.2)
+	var eye_before: Vector3 = cam.global_position
+	var near_pivot: float = rig.distance
+	rig.focus(canvas.view_depth(cam, center))
+	var eye_kept: bool = cam.global_position.is_equal_approx(eye_before)
+	rig.distance = rig.min_distance
+	rig.global_position = eye_before - cam.global_transform.basis.z * rig.min_distance
+	rig.zoom(1.0)
+	await _touch_stroke(0, center, Vector2(4, 0), Vector2.ZERO, 0.0)
+	print("SMOKE focus camera_stays=", eye_kept, " starts_close=", is_equal_approx(near_pivot, 0.2), " gesture_moves_pivot_to_strokes=", rig.distance > 1.0)
+	# Fit View brings everything back from anywhere, by the menu's action and the key.
+	rig.global_position = Vector3(40, 30, -60)
+	rig.distance = rig.min_distance
+	rig.zoom(1.0)
+	main.call("_file_action", "fit_view")
+	await get_tree().create_timer(0.5).timeout
+	var box: AABB = canvas.strokes_aabb()
+	var all_in_view := func() -> bool:
+		for i in 8:
+			if not cam.is_position_in_frustum(box.get_endpoint(i)):
+				return false
+		return true
+	var fit_frames: bool = all_in_view.call()
+	var fit_item_exists: bool = main.get("toolbar").find_button("Fit view") != null
+	rig.global_position = Vector3(-30, 10, 50)
+	rig.zoom(1.0)
+	_key(KEY_PERIOD)
+	await get_tree().create_timer(0.5).timeout
+	print("SMOKE fit menu=", fit_frames, " item=", fit_item_exists, " key=", all_in_view.call())
 	rig.global_position = Vector3.ZERO
 	rig.distance = 3.0
 	rig.set_view("3d")
@@ -790,6 +825,12 @@ func _ready() -> void:
 	await _tap(cards[1])
 	await get_tree().process_frame
 	print("SMOKE reopened=", main.get("doc_path").get_file(), " strokes=", canvas.stroke_count(), " home_visible=", home.visible)
+	# A sketch opens framed, wherever the camera had flown and wherever its strokes are.
+	var opened_box: AABB = canvas.strokes_aabb()
+	var opened_framed := true
+	for i in 8:
+		opened_framed = opened_framed and rig.camera.is_position_in_frustum(opened_box.get_endpoint(i))
+	print("SMOKE open_framed=", opened_framed, " default_angle=", is_equal_approx(rig.yaw, OrbitCamera.DEFAULT_YAW))
 	# Losing focus saves at once, without a frame (iOS stops rendering right then); the preview
 	# catches up on return. The sketch is safe even if the app never comes back.
 	var docs = main.get("documents")

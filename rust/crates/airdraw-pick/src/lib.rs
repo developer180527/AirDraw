@@ -245,6 +245,16 @@ impl PickIndex {
             .map(|c| c.id)
     }
 
+    /// How far from the camera the strokes around `p` are (metres): the depth of the stroke
+    /// closest on screen, within `tolerance` pixels; among strokes about as close, the
+    /// frontmost. For settling the camera's pivot on what a gesture is about.
+    pub fn depth_near(&self, cam: &Camera, p: Vec2, tolerance: f32) -> Option<f32> {
+        const SAME_PX: f32 = 30.0;
+        let contacts = self.contacts(cam, p, p, tolerance);
+        let closest = contacts.iter().map(|c| c.dist).min_by(f32::total_cmp)?;
+        contacts.iter().filter(|c| c.dist <= closest + SAME_PX).map(|c| c.depth).min_by(f32::total_cmp)
+    }
+
     /// Strokes with at least half their points inside the lasso (pixels), at any depth.
     /// Sorted by id.
     pub fn in_lasso(&self, cam: &Camera, polygon: &[Vec2]) -> Vec<StrokeId> {

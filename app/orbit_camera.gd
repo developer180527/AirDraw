@@ -8,8 +8,16 @@ extends Node3D
 @export var min_distance := 0.2
 @export var max_distance := 50.0
 
-var yaw := 0.6
-var pitch := -0.45
+const DEFAULT_DISTANCE := 3.0
+const DEFAULT_YAW := 0.6
+const DEFAULT_PITCH := -0.45
+## Fit View leaves this much room around the sketch.
+const FIT_MARGIN := 1.05
+## Fit View ignores anything beyond this from the origin (stray points in old sketches).
+const FIT_LIMIT := 200.0
+
+var yaw := DEFAULT_YAW
+var pitch := DEFAULT_PITCH
 var camera: Camera3D
 
 
@@ -18,6 +26,50 @@ func _ready() -> void:
 	camera.near = 0.01
 	add_child(camera)
 	_apply()
+
+
+## Settles the pivot `depth` ahead of the camera without moving the camera, so the picture
+## doesn't change but pan speed, orbit and zoom work at the depth of what a gesture is about.
+## With nothing to go by (`depth` < 0), keeps the pivot unless it's too close to be useful.
+func focus(depth: float) -> void:
+	var d := clampf(depth if depth > 0.0 else maxf(distance, DEFAULT_DISTANCE), min_distance, max_distance)
+	var eye := camera.global_position
+	global_position = eye - camera.global_transform.basis.z * d
+	distance = d
+	_apply()
+
+
+## Frames `box` (all the strokes) at the current angle; an empty box goes back to the start.
+func fit(box: AABB, animate := true) -> void:
+	box = box.intersection(AABB(Vector3.ONE * -FIT_LIMIT, Vector3.ONE * FIT_LIMIT * 2.0))
+	var target_pos := Vector3.ZERO
+	var target_distance := DEFAULT_DISTANCE
+	if box.size != Vector3.ZERO:
+		var half_v := deg_to_rad(camera.fov) * 0.5
+		var view := get_viewport().get_visible_rect().size
+		var half_h := atan(tan(half_v) * view.x / maxf(view.y, 1.0))
+		target_pos = box.get_center()
+		target_distance = box.size.length() * 0.5 / sin(minf(half_v, half_h)) * FIT_MARGIN
+		target_distance = clampf(target_distance, min_distance, max_distance)
+	if not animate:
+		global_position = target_pos
+		distance = target_distance
+		_apply()
+		return
+	var from_pos := global_position
+	var from_distance := distance
+	var tween := create_tween().set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tween.tween_method(func(f: float) -> void:
+		global_position = from_pos.lerp(target_pos, f)
+		distance = lerpf(from_distance, target_distance, f)
+		_apply(), 0.0, 1.0, 0.3)
+
+
+## The view a sketch opens at: the default angle, framing `box`.
+func reset_to(box: AABB) -> void:
+	yaw = DEFAULT_YAW
+	pitch = DEFAULT_PITCH
+	fit(box, false)
 
 
 ## Screen-space drag in pixels.
@@ -63,7 +115,7 @@ func zoom(factor: float, at := Vector2(-1, -1)) -> void:
 func set_view(view: String) -> void:
 	var target: Vector2 = {
 		"front": Vector2(0, 0), "back": Vector2(PI, 0), "side": Vector2(PI / 2, 0), "left": Vector2(-PI / 2, 0),
-		"top": Vector2(0, -1.55), "bottom": Vector2(0, 1.55), "3d": Vector2(0.6, -0.45),
+		"top": Vector2(0, -1.55), "bottom": Vector2(0, 1.55), "3d": Vector2(DEFAULT_YAW, DEFAULT_PITCH),
 	}.get(view, Vector2(yaw, pitch))
 	# Turn the short way round.
 	target.x = yaw + wrapf(target.x - yaw, -PI, PI)
