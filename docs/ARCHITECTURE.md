@@ -1408,7 +1408,7 @@ A gizmo sits at the selection's centre, sized in screen points:
 
 ---
 
-### 3j. Per-stroke colour and size (approved 2026-11-07 with the proposed defaults; step 1 implemented)
+### 3j. Per-stroke colour and size (approved 2026-11-07 with the proposed defaults; steps 1–2 implemented)
 
 Today a stroke's colour and width come only from its brush: drawing a red Ink line needs a
 red Ink brush. Feather (and every sketching app) picks colour and size separately from the
@@ -1490,7 +1490,7 @@ override); "merge" groups by it. Sizes are already in the geometry. SVG uses the
 | Step | Deliverable |
 |---|---|
 | 1 ✅ | `StrokeStyle` on `Stroke`; size in both pipelines (`Brush::stream_sized`, a final width stage only when size ≠ 1); `set_color`/`set_size` (`SetStyle`); `Replace` carries style, `transform_strokes` scales size with a uniform scale; `STYL` + `HIST` styles; canvas and exporters build at each stroke's size. Tests: live/rebuilt/batch match at 4 sizes, every undo/redo step after reopening, unstyled files unchanged, damaged styles, bad history styles; 9 mutations caught |
-| 2 | Canvas: current style for new strokes, `(brush, colour)` materials, set style on selection; export materials per colour |
+| 2 ✅ | Canvas: current style for new strokes (fixed per pen stroke, all its pieces), materials cached per `(brush, colour)`, `set_draw_color`/`use_brush_color`/`set_draw_size`, `color_selected`/`brush_color_selected`/`size_selected`; exporters: one material per `(brush, colour)`, merge keeps colours apart. Tests: export colours/sizes; smoke `style` line (drawn styled and rendered in that colour, selection recolour/resize/brush colour, one undo step each) |
 | 3 | UI: swatch + colour popover (recents, palette, picker), size slider, per-brush size; Select bar / stroke menu Colour and Size; smoke checks |
 | 4 | Gizmo scale handle; smoke check |
 | 5 | iPad check: Pencil + palette, size slider feel |

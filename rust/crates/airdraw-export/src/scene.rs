@@ -155,7 +155,8 @@ pub fn build_scene(doc: &Document, name: &str, brush: &mut dyn FnMut(BrushRef) -
         materials: Vec::new(),
         curves: Vec::new(),
     };
-    let mut materials: HashMap<BrushRef, usize> = HashMap::new();
+    // One material per brush snapshot and stroke colour (§3j); `None` is the brush's own.
+    let mut materials: HashMap<(BrushRef, Option<[u8; 4]>), usize> = HashMap::new();
 
     for layer in doc.layers() {
         if !layer.visible && !opts.include_hidden {
@@ -172,8 +173,8 @@ pub fn build_scene(doc: &Document, name: &str, brush: &mut dyn FnMut(BrushRef) -
 
         for stroke in strokes {
             let b = brush(stroke.brush);
-            let material = *materials.entry(stroke.brush).or_insert_with(|| {
-                scene.materials.push(material(&b, scene.materials.len()));
+            let material = *materials.entry((stroke.brush, stroke.style.color)).or_insert_with(|| {
+                scene.materials.push(material(&b, stroke.style.color, scene.materials.len()));
                 scene.materials.len() - 1
             });
             let built = b.build_sized(&stroke.points, stroke.style.size);
@@ -242,13 +243,14 @@ fn append(into: &mut ExportMesh, from: ExportMesh) {
     into.indices.extend(from.indices.into_iter().map(|i| i + offset));
 }
 
-fn material(brush: &Brush, index: usize) -> ExportMaterial {
+/// The brush's material, in the stroke's own colour if it has one.
+fn material(brush: &Brush, color: Option<[u8; 4]>, index: usize) -> ExportMaterial {
     let d: &MaterialDesc = brush.material();
     // Brush names can repeat across snapshots (edited brushes); keep material names unique.
     let name = format!("{}_{}", sanitize(&brush.def.name), index);
     ExportMaterial {
         name,
-        base_color: d.color,
+        base_color: color.map_or(d.color, |c| c.map(|v| v as f32 / 255.0)),
         roughness: d.roughness,
         metallic: d.metallic,
         emission: d.emission,
@@ -317,6 +319,29 @@ pub(crate) mod tests {
         let single = build(&doc, &lib, &SceneOptions::default());
         assert_eq!(ink.positions.len(), single.meshes[0].positions.len() * 2);
         assert!(ink.indices.iter().all(|&i| (i as usize) < ink.positions.len()));
+    }
+
+    #[test]
+    fn stroke_colours_are_materials_and_sizes_are_geometry() {
+        let (mut doc, lib) = sample_doc();
+        let ids: Vec<_> = doc.strokes().iter().map(|s| s.id).collect();
+        let plain = build(&doc, &lib, &SceneOptions { include_curves: true, ..Default::default() });
+        // The two Ink strokes: one red and twice as thick, one left as the brush draws.
+        doc.set_color(&[ids[0]], Some([255, 0, 51, 255]));
+        doc.set_size(&[ids[0]], 2.0);
+        let s = build(&doc, &lib, &SceneOptions { include_curves: true, ..Default::default() });
+        assert_eq!(s.materials.len(), 3, "red ink, ribbon, ink");
+        let red = &s.materials[s.meshes[0].material];
+        assert_eq!(red.base_color, [1.0, 0.0, 0.2, 1.0]);
+        assert_eq!(s.materials[s.meshes[2].material].base_color, plain.materials[plain.meshes[2].material].base_color);
+        assert_eq!(s.curves[0].widths.iter().zip(&plain.curves[0].widths).filter(|(a, b)| **a != **b * 2.0).count(), 0);
+        let span = |m: &ExportMesh| {
+            m.positions.iter().map(|p| p.y).fold(f32::MIN, f32::max) - m.positions.iter().map(|p| p.y).fold(f32::MAX, f32::min)
+        };
+        assert!((span(&s.meshes[0]) - 2.0 * span(&plain.meshes[0])).abs() < 1e-5, "twice as thick");
+        // Merging keeps colours apart.
+        let merged = build(&doc, &lib, &SceneOptions { merge: true, ..Default::default() });
+        assert_eq!(merged.meshes.len(), 3);
     }
 
     #[test]

@@ -50,7 +50,8 @@ pub(crate) struct UpdateTiming {
 }
 
 impl LiveStroke {
-    pub fn new(brush: &Brush, brush_ref: BrushRef, first: InputPoint, material: &Gd<Material>, layers: u32) -> Self {
+    /// `size`: the stroke's own size (§3j), a multiplier on the brush's widths.
+    pub fn new(brush: &Brush, brush_ref: BrushRef, size: f32, first: InputPoint, material: &Gd<Material>, layers: u32) -> Self {
         let node = |mesh: &Gd<ArrayMesh>| {
             let mut n = MeshInstance3D::new_alloc();
             n.set_layer_mask(layers);
@@ -62,7 +63,7 @@ impl LiveStroke {
         let mut instance = node(&sealed_mesh);
         let live_node = node(&live_mesh);
         instance.add_child(&live_node);
-        let mut stream = brush.stream();
+        let mut stream = brush.stream_sized(size);
         stream.push(&[first]);
         Self { brush_ref, points: vec![first], stream, instance, sealed_mesh, sealed_indices: 0, live_node, live_mesh }
     }

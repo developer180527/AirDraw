@@ -76,7 +76,8 @@ pub struct SketchCanvas {
     doc: Document,
     /// Compiled brushes and Godot materials per document brush snapshot.
     compiled: HashMap<BrushRef, Arc<Brush>>,
-    materials: HashMap<BrushRef, Gd<Material>>,
+    /// Per brush snapshot and colour (`None`: the brush's own), §3j.
+    materials: HashMap<(BrushRef, Option<[u8; 4]>), Gd<Material>>,
     /// How strokes are shaded (§3g); the document says which one.
     looks: LookLibrary,
     /// Compiled Look shaders by (shader name, double-sided).
@@ -91,6 +92,10 @@ pub struct SketchCanvas {
     /// Finished pieces of the pen stroke in progress (it left the guide and came back): shown,
     /// and added together with the last piece at pen-up, as one undo step.
     pieces: Vec<(Gd<MeshInstance3D>, BrushRef, Vec<InputPoint>)>,
+    /// Colour and size new strokes are drawn with (§3j).
+    style: StrokeStyle,
+    /// The style of the pen stroke in progress (all its pieces), fixed when it began.
+    pen_style: StrokeStyle,
     /// Strokes the eraser and selection can pick (§3i), kept in step with the document.
     pick: PickIndex,
     /// Widest half width per brush snapshot, for picking.
@@ -135,6 +140,8 @@ impl INode3D for SketchCanvas {
             nodes: HashMap::new(),
             current: None,
             pieces: Vec::new(),
+            style: StrokeStyle::BRUSH,
+            pen_style: StrokeStyle::BRUSH,
             pick: PickIndex::new(),
             half_widths: HashMap::new(),
             erasing: None,
@@ -327,9 +334,12 @@ impl SketchCanvas {
         let brush = self.brush.clone();
         let brush_ref = self.doc.intern_brush(&brush.def);
         self.compiled.entry(brush_ref).or_insert_with(|| brush.clone());
-        let material = self.material_for(brush_ref);
+        if self.pieces.is_empty() {
+            self.pen_style = self.style;
+        }
+        let material = self.material_for(brush_ref, self.pen_style.color);
         let first = input_point(pos, normal, pressure, time);
-        let live = LiveStroke::new(&brush, brush_ref, first, &material, STROKE_LAYERS);
+        let live = LiveStroke::new(&brush, brush_ref, self.pen_style.size, first, &material, STROKE_LAYERS);
         self.base_mut().add_child(&live.instance);
         self.current = Some(live);
     }
@@ -409,10 +419,10 @@ impl SketchCanvas {
             0 => return,
             1 => {
                 let (_, brush, points) = &mut pieces[0];
-                let (id, changes) = self.doc.add_stroke(*brush, std::mem::take(points));
+                let (id, changes) = self.doc.add_styled_stroke(*brush, self.pen_style, std::mem::take(points));
                 (changes, vec![id])
             }
-            _ => self.doc.add_strokes(pieces.iter_mut().map(|(_, b, p)| (*b, StrokeStyle::BRUSH, std::mem::take(p))).collect()),
+            _ => self.doc.add_strokes(pieces.iter_mut().map(|(_, b, p)| (*b, self.pen_style, std::mem::take(p))).collect()),
         };
         // The live nodes already show these strokes; adopt them instead of rebuilding.
         for (id, (instance, _, _)) in ids.into_iter().zip(pieces) {
@@ -522,7 +532,7 @@ impl SketchCanvas {
         }
         // The new pieces, in order, take the cut one's place.
         let brush = self.brush_for(stroke.brush);
-        let material = self.material_for(stroke.brush);
+        let material = self.material_for(stroke.brush, stroke.style.color);
         let mut ids = Vec::with_capacity(kept.len());
         for points in kept {
             let p = self.erasing_partial();
@@ -814,6 +824,124 @@ impl SketchCanvas {
         let r = self.doc.intern_brush(&brush.def);
         self.compiled.entry(r).or_insert(brush);
         let changes = self.doc.set_brush(&self.selection.clone(), r);
+        let changed = !changes.is_empty();
+        self.apply(changes);
+        changed
+    }
+
+    // ---- Colour and size (§3j) ---------------------------------------------------------------
+
+    /// New strokes draw in `color` (sRGB), whatever the brush.
+    #[func]
+    fn set_draw_color(&mut self, color: Color) {
+        self.style.color = Some(rgba8(color));
+    }
+
+    /// New strokes draw in their brush's own colour.
+    #[func]
+    fn use_brush_color(&mut self) {
+        self.style.color = None;
+    }
+
+    /// Whether new strokes draw in their brush's colour (no colour of their own).
+    #[func]
+    fn draws_brush_color(&self) -> bool {
+        self.style.color.is_none()
+    }
+
+    /// The colour new strokes draw in: the chosen one, or the current brush's.
+    #[func]
+    fn draw_color(&self) -> Color {
+        match self.style.color {
+            Some(c) => from_rgba8(c),
+            None => {
+                let [r, g, b, a] = self.brush.material().color;
+                Color::from_rgba(r, g, b, a)
+            }
+        }
+    }
+
+    /// New strokes' size: a multiplier on the brush's widths, kept in 0.1–10.
+    #[func]
+    fn set_draw_size(&mut self, size: f32) {
+        self.style = StrokeStyle::new(self.style.color, size);
+    }
+
+    #[func]
+    fn draw_size(&self) -> f32 {
+        self.style.size
+    }
+
+    /// Recolours the selection (one undo step); false if nothing changed.
+    #[func]
+    fn color_selected(&mut self, color: Color) -> bool {
+        let changes = self.doc.set_color(&self.selection.clone(), Some(rgba8(color)));
+        self.apply_any(changes)
+    }
+
+    /// The selection back to its brushes' colours (one undo step).
+    #[func]
+    fn brush_color_selected(&mut self) -> bool {
+        let changes = self.doc.set_color(&self.selection.clone(), None);
+        self.apply_any(changes)
+    }
+
+    /// Resizes the selection (one undo step).
+    #[func]
+    fn size_selected(&mut self, size: f32) -> bool {
+        let changes = self.doc.set_size(&self.selection.clone(), size);
+        self.apply_any(changes)
+    }
+
+    /// A stroke's style as `{color: Color, brush_color: bool, size: float}` (empty if there's
+    /// no such stroke). For the UI and tests.
+    #[func]
+    fn stroke_style(&mut self, id: i64) -> VarDictionary {
+        let mut d = VarDictionary::new();
+        let Some(s) = self.doc.stroke(StrokeId(id as u64)).cloned() else { return d };
+        let color = match s.style.color {
+            Some(c) => from_rgba8(c),
+            None => {
+                let [r, g, b, a] = self.brush_for(s.brush).material().color;
+                Color::from_rgba(r, g, b, a)
+            }
+        };
+        d.set("color", color);
+        d.set("brush_color", s.style.color.is_none());
+        d.set("size", s.style.size);
+        d
+    }
+
+    /// Selects exactly these strokes (ids that aren't strokes are ignored).
+    #[func]
+    fn select_ids(&mut self, ids: PackedInt64Array) {
+        let ids: Vec<StrokeId> = ids.as_slice().iter().map(|&i| StrokeId(i as u64)).filter(|id| self.doc.stroke(*id).is_some()).collect();
+        self.set_selection(ids);
+    }
+
+    /// Every stroke's id, in drawing order.
+    #[func]
+    fn stroke_ids(&self) -> PackedInt64Array {
+        self.doc.strokes().iter().map(|s| s.id.0 as i64).collect()
+    }
+
+    /// The colour a stroke is rendered in (its material's `albedo`), for tests.
+    #[func]
+    fn stroke_render_color(&self, id: i64) -> Color {
+        let Some(node) = self.nodes.get(&StrokeId(id as u64)) else { return Color::from_rgba(0.0, 0.0, 0.0, 0.0) };
+        node.get_material_override()
+            .and_then(|m| m.try_cast::<ShaderMaterial>().ok())
+            .and_then(|m| m.get_shader_parameter("albedo").try_to::<Color>().ok())
+            .unwrap_or(Color::from_rgba(0.0, 0.0, 0.0, 0.0))
+    }
+
+    /// A stroke node's mesh bounds (local), for tests.
+    #[func]
+    fn stroke_bounds(&self, id: i64) -> Aabb {
+        self.nodes.get(&StrokeId(id as u64)).map_or(Aabb::default(), |n| n.get_aabb())
+    }
+
+    fn apply_any(&mut self, changes: Vec<Change>) -> bool {
         let changed = !changes.is_empty();
         self.apply(changes);
         changed
@@ -1374,7 +1502,7 @@ impl SketchCanvas {
                 }
                 Change::Updated(id) => {
                     if let (Some(stroke), Some(mut node)) = (self.doc.stroke(id).cloned(), self.nodes.get(&id).cloned()) {
-                        node.set_material_override(&self.material_for(stroke.brush));
+                        node.set_material_override(&self.material_for(stroke.brush, stroke.style.color));
                         set_mesh(&mut node, &self.brush_for(stroke.brush).build_sized(&stroke.points, stroke.style.size));
                     }
                 }
@@ -1434,7 +1562,7 @@ impl SketchCanvas {
     fn make_node(&mut self, stroke: &Stroke) -> Gd<MeshInstance3D> {
         let mut node = MeshInstance3D::new_alloc();
         node.set_layer_mask(STROKE_LAYERS);
-        node.set_material_override(&self.material_for(stroke.brush));
+        node.set_material_override(&self.material_for(stroke.brush, stroke.style.color));
         set_mesh(&mut node, &self.brush_for(stroke.brush).build_sized(&stroke.points, stroke.style.size));
         self.base_mut().add_child(&node);
         node
@@ -1467,13 +1595,17 @@ impl SketchCanvas {
     /// The material for a brush snapshot under the current Look: the Look's shader (its unlit
     /// variant for unlit brushes; back faces drawn for double-sided ones) with the brush's
     /// colour, roughness, metallic and emission plus the Look's own parameters as uniforms.
-    fn material_for(&mut self, r: BrushRef) -> Gd<Material> {
-        if let Some(m) = self.materials.get(&r) {
+    /// `color` replaces the brush's colour (a stroke's own, §3j); everything else is the brush's.
+    fn material_for(&mut self, r: BrushRef, color: Option<[u8; 4]>) -> Gd<Material> {
+        if let Some(m) = self.materials.get(&(r, color)) {
             return m.clone();
         }
-        let d = self.brush_for(r).material().clone();
+        let mut d = self.brush_for(r).material().clone();
+        if let Some(c) = color {
+            d.color = c.map(|v| v as f32 / 255.0);
+        }
         let m = self.build_material(&d);
-        self.materials.insert(r, m.clone());
+        self.materials.insert((r, color), m.clone());
         m
     }
 
@@ -1531,19 +1663,20 @@ impl SketchCanvas {
         self.outlines.clear();
         let nodes: Vec<(StrokeId, Gd<MeshInstance3D>)> = self.nodes.iter().map(|(k, v)| (*k, v.clone())).collect();
         for (id, mut node) in nodes {
-            if let Some(brush) = self.doc.stroke(id).map(|s| s.brush) {
-                node.set_material_override(&self.material_for(brush));
+            if let Some((brush, color)) = self.doc.stroke(id).map(|s| (s.brush, s.style.color)) {
+                node.set_material_override(&self.material_for(brush, color));
             }
         }
+        let pen_color = self.pen_style.color;
         if let Some(r) = self.current.as_ref().map(|s| s.brush_ref) {
-            let m = self.material_for(r);
+            let m = self.material_for(r, pen_color);
             if let Some(s) = &mut self.current {
                 s.set_material(&m);
             }
         }
         let pieces: Vec<(Gd<MeshInstance3D>, BrushRef)> = self.pieces.iter().map(|(n, b, _)| (n.clone(), *b)).collect();
         for (mut node, brush) in pieces {
-            node.set_material_override(&self.material_for(brush));
+            node.set_material_override(&self.material_for(brush, pen_color));
         }
     }
 
@@ -1677,4 +1810,13 @@ fn warm_up_mesh() -> Gd<ArrayMesh> {
     let mut mesh = ArrayMesh::new_gd();
     mesh.add_surface_from_arrays(PrimitiveType::TRIANGLES, &mesh_arrays(&m));
     mesh
+}
+
+/// Godot colour (sRGB) → the RGBA8 a stroke stores.
+fn rgba8(c: Color) -> [u8; 4] {
+    [c.r, c.g, c.b, c.a].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+}
+
+fn from_rgba8(c: [u8; 4]) -> Color {
+    Color::from_rgba8(c[0], c[1], c[2], c[3])
 }

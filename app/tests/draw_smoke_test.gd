@@ -670,6 +670,41 @@ func _ready() -> void:
 	_key(KEY_ESCAPE)
 	print("SMOKE select lasso=", sel_lassoed >= 1, " lasso_shown=", sel_lasso_drawn, " lasso_cleared=", shell._lasso.points.is_empty(),
 		" duplicate=", sel_duplicated, " one_undo_step=", sel_dup_undone, " all=", sel_all)
+	# Colour and size (§3j): new strokes take the current colour and size; recolouring and
+	# resizing the selection is one undo step each; Brush colour goes back to the brush's.
+	_key(KEY_ESCAPE)
+	main.set_tool("draw")
+	var plain_count: int = canvas.stroke_count()
+	await _stroke(center + Vector2(-160, 200), func(t: float) -> Vector2: return Vector2(220.0 * t, 0.0))
+	var plain_id: int = canvas.stroke_ids()[-1]
+	canvas.set_draw_color(Color8(46, 134, 222))
+	canvas.set_draw_size(3.0)
+	await _stroke(center + Vector2(-160, 240), func(t: float) -> Vector2: return Vector2(220.0 * t, 0.0))
+	var styled_id: int = canvas.stroke_ids()[-1]
+	var st: Dictionary = canvas.stroke_style(styled_id)
+	var styled_mesh: bool = canvas.stroke_bounds(styled_id).get_longest_axis_size() > 0.0
+	var drawn_styled: bool = canvas.stroke_count() == plain_count + 2 and st.size == 3.0 and not st.brush_color \
+		and st.color.is_equal_approx(Color8(46, 134, 222)) and canvas.stroke_render_color(styled_id).is_equal_approx(Color8(46, 134, 222))
+	canvas.use_brush_color()
+	canvas.set_draw_size(1.0)
+	var back_to_brush: bool = canvas.draws_brush_color() and canvas.draw_color().is_equal_approx(canvas.brush_color(canvas.current_brush()))
+	main.set_tool("select")
+	await get_tree().create_timer(0.3).timeout
+	canvas.select_ids(PackedInt64Array([plain_id]))
+	var recoloured: bool = canvas.color_selected(Color8(230, 80, 40)) and canvas.stroke_render_color(plain_id).is_equal_approx(Color8(230, 80, 40))
+	var resized: bool = canvas.size_selected(0.5) and canvas.stroke_style(plain_id).size == 0.5
+	var unstyled: bool = canvas.brush_color_selected() and canvas.stroke_style(plain_id).brush_color
+	_key(KEY_Z, true)
+	_key(KEY_Z, true)
+	var undo_steps: bool = canvas.stroke_style(plain_id).size == 1.0 and not canvas.stroke_style(plain_id).brush_color
+	_key(KEY_Z, true)
+	var undo_colour: bool = canvas.stroke_style(plain_id).brush_color
+	_key(KEY_ESCAPE)
+	_key(KEY_Z, true)
+	_key(KEY_Z, true)
+	print("SMOKE style drawn=", drawn_styled, " mesh_built=", styled_mesh, " brush_colour_again=", back_to_brush, " recolour=", recoloured,
+		" resize=", resized, " brush_colour_selected=", unstyled, " undo_steps=", undo_steps and undo_colour, " cleaned_up=", canvas.stroke_count() == plain_count)
+
 	main.set_tool("draw")
 	await _click(Vector2(center.x, sel_row), MOUSE_BUTTON_RIGHT)
 	await _settle()
