@@ -853,6 +853,24 @@ func _ready() -> void:
 	_key(KEY_Z, true)
 	await _click(Vector2(center.x, sel_row), MOUSE_BUTTON_LEFT)
 	var gz_undone: bool = canvas.selection_count() == 1 and canvas.selection_center().is_equal_approx(c0)
+	# Scale knob (§3j): dragging it out to twice its distance doubles the stroke's spread and
+	# its size together, as one undo step. (The brush resamples at a fixed spacing in metres,
+	# so the rebuilt stroke is within a fraction of a percent of exactly twice as big.)
+	var sc_id: int = canvas.selection_ids()[0]
+	var sc_size: float = canvas.stroke_style(sc_id).size
+	var sc_box: AABB = canvas.stroke_bounds(sc_id)
+	var sc_center: Vector3 = canvas.selection_center()
+	var knob: Vector2 = gizmo._knob()
+	await _gizmo_drag(knob, gizmo._at + (knob - gizmo._at) * 2.0)
+	var sc_new: int = canvas.selection_ids()[0]
+	var gz_scaled: bool = canvas.selection_count() == 1 and absf(canvas.stroke_style(sc_new).size - sc_size * 2.0) < 0.02 \
+		and _within(canvas.stroke_bounds(sc_new).size, sc_box.size * canvas.stroke_style(sc_new).size / sc_size, 0.01) \
+		and canvas.selection_center().distance_to(sc_center) < 1e-3
+	await _shot("user://gizmo_scaled.png")
+	_key(KEY_Z, true)
+	await _settle()
+	await _click(Vector2(center.x, sel_row), MOUSE_BUTTON_LEFT)
+	var gz_scale_undone: bool = canvas.selection_count() == 1 and is_equal_approx(canvas.stroke_style(canvas.selection_ids()[0]).size, sc_size)
 	# The same with a finger or Pencil (iPad: touches don't become mouse events), then undo.
 	var touch_at: Vector2 = gizmo._at
 	_touch(0, touch_at, true)
@@ -872,7 +890,7 @@ func _ready() -> void:
 	_key(KEY_ESCAPE)
 	print("SMOKE gizmo shown=", gz_shown, " in_ui_rects=", gz_in_rects, " mid_drag_unbaked=", gz_mid_unbaked, " moved_under_pen=", gz_moved,
 		" turn_keeps_center=", gz_turn_keeps_center, " depth_pushes=", gz_pushed, " arc_turns=", gz_yawed, " turned_upright=", gz_turned, " hides=", gz_hidden_without_selection,
-		" undo_restores=", gz_undone, " pickable_in_step=", canvas.pickable_count() == canvas.stroke_count())
+		" undo_restores=", gz_undone, " scale_knob=", gz_scaled, " scale_undo=", gz_scale_undone, " pickable_in_step=", canvas.pickable_count() == canvas.stroke_count())
 	main.set_tool("draw")
 	main.set_tool("erase")
 	main.call("_pen_action", "doubletap")
@@ -1036,6 +1054,14 @@ func _shot(path: String) -> void:
 	for i in 4:
 		await get_tree().process_frame
 	get_viewport().get_texture().get_image().save_png(path)
+
+
+## Each axis of `a` within `rel` of `b`'s (axes under 0.1 mm, a flat ribbon's depth, are skipped).
+func _within(a: Vector3, b: Vector3, rel: float) -> bool:
+	for i in 3:
+		if b[i] > 1e-4 and absf(a[i] - b[i]) > rel * b[i]:
+			return false
+	return true
 
 
 ## Frames drawn over half a second once things settle (tweens, toasts, deferred layout).

@@ -7,13 +7,15 @@ extends Control
 ##   ring        rotate about the line of sight to the selection
 ##   top arc     rotate about the world's up axis
 ##   left arc    rotate about the view's right axis
+##   corner knob scale about the centre: positions and stroke sizes together (§3j)
 ## While dragging only the stroke nodes move (canvas.preview_selection_transform); releasing
-## bakes the move into the strokes as one undo step. Shift snaps rotations to 15°.
+## bakes the move into the strokes as one undo step. Shift snaps rotations to 15° and scale
+## to 10 % steps.
 ## Only the handles take input (_has_point), so the canvas around them still works.
 
 signal moved  ## the gizmo's screen area changed (UI regions follow it)
 
-enum Handle { NONE, MOVE, DEPTH, ROLL, YAW, PITCH }
+enum Handle { NONE, MOVE, DEPTH, ROLL, YAW, PITCH, SCALE }
 
 const RING := 64.0
 const PAD := 18.0
@@ -22,6 +24,12 @@ const YAW_ARC := Vector2(-120.0, -60.0)  ## degrees, screen angles (y down: -90 
 const PITCH_ARC := Vector2(150.0, 210.0)
 const TURN_PER_PX := 0.01
 const SNAP := deg_to_rad(15.0)
+## The scale knob: screen angle (degrees, y down) at the arcs' radius, and its half size.
+const KNOB_ANGLE := 45.0
+const KNOB := 10.0
+## A stroke's size stays within this (StrokeStyle::MIN_SIZE / MAX_SIZE), so a scale stops
+## where the thinnest or thickest selected stroke would leave it.
+const SIZE_RANGE := Vector2(0.1, 10.0)
 
 var canvas: SketchCanvas
 var camera: Camera3D
@@ -35,6 +43,7 @@ var _start := Vector2.ZERO
 var _start_center := Vector2.ZERO
 var _depth := 0.0
 var _xf := Transform3D.IDENTITY
+var _scale_range := Vector2(0.0, INF)  ## allowed scale factors for the selection being scaled
 
 
 func _init() -> void:
@@ -77,7 +86,12 @@ func areas() -> Array[Rect2]:
 	for arc in [YAW_ARC, PITCH_ARC]:
 		for a in range(int(arc.x), int(arc.y) + 1, 10):
 			out.append(square.call(a, ARC, 10.0))
+	out.append(Rect2(_knob(), Vector2.ZERO).grow((KNOB + 6.0) * s))
 	return out
+
+
+func _knob() -> Vector2:
+	return _at + Vector2.from_angle(deg_to_rad(KNOB_ANGLE)) * ARC * ui_scale
 
 
 func _process(_delta: float) -> void:
@@ -110,6 +124,8 @@ func _hit(p: Vector2) -> Handle:
 		return Handle.MOVE
 	if _bar_rect().grow(8.0 * s).has_point(p):
 		return Handle.DEPTH
+	if p.distance_to(_knob()) <= (KNOB + 6.0) * s:
+		return Handle.SCALE
 	var angle := rad_to_deg((p - _at).angle())
 	if absf(d - ARC * s) <= 12.0 * s:
 		if angle >= YAW_ARC.x - 6.0 and angle <= YAW_ARC.y + 6.0:
@@ -159,6 +175,8 @@ func _press(at: Vector2, pressed: bool) -> bool:
 		_start_center = _at
 		_depth = -(camera.global_transform.affine_inverse() * _center).z
 		_xf = Transform3D.IDENTITY
+		if _handle == Handle.SCALE:
+			_scale_range = _allowed_scale()
 		queue_redraw()
 		return true
 	if _handle == Handle.NONE:
@@ -201,9 +219,30 @@ func _transform_for(p: Vector2, snap: bool) -> Transform3D:
 			return _about(towards_eye, -turn, snap)
 		Handle.YAW:
 			return _about(Vector3.UP, (p.x - _start.x) * TURN_PER_PX, snap)
+		Handle.SCALE:
+			# Distance from the centre, relative to where the drag began.
+			var f := p.distance_to(_start_center) / maxf(_start.distance_to(_start_center), 1.0)
+			if snap:
+				f = maxf(snappedf(f, 0.1), 0.1)
+			f = clampf(f, _scale_range.x, _scale_range.y)
+			var b := Basis.IDENTITY.scaled(Vector3.ONE * f)
+			return Transform3D(b, _center - b * _center)
 		Handle.PITCH:
 			return _about(basis.x, (p.y - _start.y) * TURN_PER_PX, snap)
 	return Transform3D.IDENTITY
+
+
+## Scale factors that keep every selected stroke's size in range.
+func _allowed_scale() -> Vector2:
+	var lo := INF
+	var hi := 0.0
+	for id in canvas.selection_ids():
+		var size: float = canvas.stroke_style(id).get("size", 1.0)
+		lo = minf(lo, size)
+		hi = maxf(hi, size)
+	if hi <= 0.0:
+		return Vector2(0.0, INF)
+	return Vector2(SIZE_RANGE.x / lo, SIZE_RANGE.y / hi)
 
 
 ## A turn by `angle` about `axis` through the selection's centre.
@@ -231,6 +270,17 @@ func _draw() -> void:
 	draw_circle(_at, PAD * s, lit.call(Handle.MOVE))
 	for d in [Vector2.RIGHT, Vector2.LEFT, Vector2.UP, Vector2.DOWN]:
 		draw_line(_at + d * 4.0 * s, _at + d * 11.0 * s, Color.WHITE, 2.0 * s, true)
+	# Scale knob: a square with a diagonal double arrow.
+	var knob := _knob()
+	var k := Rect2(knob, Vector2.ZERO).grow(KNOB * s)
+	draw_rect(k.grow(2.0 * s), halo)
+	draw_rect(k, lit.call(Handle.SCALE))
+	var out := Vector2.from_angle(deg_to_rad(KNOB_ANGLE))
+	draw_line(knob - out * 5.0 * s, knob + out * 5.0 * s, Color.WHITE, 1.5 * s, true)
+	for d: Vector2 in [out, -out]:
+		var tip := knob + d * 5.0 * s
+		draw_line(tip, tip - d.rotated(0.6) * 3.5 * s, Color.WHITE, 1.5 * s, true)
+		draw_line(tip, tip - d.rotated(-0.6) * 3.5 * s, Color.WHITE, 1.5 * s, true)
 	var bar := _bar_rect()
 	draw_rect(bar.grow(2.0 * s), halo)
 	draw_rect(bar, lit.call(Handle.DEPTH))
