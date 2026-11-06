@@ -176,7 +176,7 @@ pub fn build_scene(doc: &Document, name: &str, brush: &mut dyn FnMut(BrushRef) -
                 scene.materials.push(material(&b, scene.materials.len()));
                 scene.materials.len() - 1
             });
-            let built = b.build(&stroke.points);
+            let built = b.build_sized(&stroke.points, stroke.style.size);
             let stroke_name = format!("stroke_{}", stroke.id.0);
 
             if !built.is_empty() {
@@ -212,7 +212,7 @@ pub fn build_scene(doc: &Document, name: &str, brush: &mut dyn FnMut(BrushRef) -
             }
 
             if opts.include_curves {
-                let line = b.centerline(&stroke.points);
+                let line = b.centerline_sized(&stroke.points, stroke.style.size);
                 if line.len() >= 2 {
                     scene.curves.push(ExportCurve {
                         points: line.iter().map(|p| opts.point(p.pos)).collect(),

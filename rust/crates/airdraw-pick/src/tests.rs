@@ -1,5 +1,5 @@
 use super::*;
-use airdraw_doc::BrushRef;
+use airdraw_doc::{BrushRef, StrokeStyle};
 
 const HW: f32 = 0.005;
 
@@ -19,7 +19,7 @@ fn line(id: u64, layer: u32, from: Vec3, to: Vec3, n: usize) -> Stroke {
             InputPoint { pos: from.lerp(to, f), normal: Vec3::Z, pressure: f, tilt: Some(1.0 - f), t: 2.0 * f as f64 }
         })
         .collect::<Vec<_>>();
-    Stroke { id: StrokeId(id), layer: LayerId(layer), brush: BrushRef(0), points: points.into() }
+    Stroke { id: StrokeId(id), layer: LayerId(layer), brush: BrushRef(0), style: StrokeStyle::BRUSH, points: points.into() }
 }
 
 fn x_line(id: u64, y: f32, z: f32, half: f32) -> Stroke {
@@ -295,7 +295,7 @@ fn timing_on_a_million_points() {
                 t: k as f64,
             })
             .collect();
-        i.insert(&Stroke { id: StrokeId(id), layer: LayerId(1), brush: BrushRef(0), points: points.into() }, HW);
+        i.insert(&Stroke { id: StrokeId(id), layer: LayerId(1), brush: BrushRef(0), style: StrokeStyle::BRUSH, points: points.into() }, HW);
     }
     let c = cam();
     let moves: Vec<(Vec2, Vec2)> =

@@ -6,9 +6,16 @@
 //! "ADRW"  u16 format version  u16 flags (0)
 //! u32 thumbnail length (0 = none), PNG bytes
 //! sections (airdraw-pack): META (required, TOML: app version, layers, brush snapshots, Look,
-//!   drawn guide), STRK (required, stroke data, see `strokes.rs`); each compressed by its
-//!   own codec and CRC-checked
+//!   drawn guide), STRK (required, stroke data, see `strokes.rs`), STYL (required, only
+//!   when a stroke has its own colour or size, §3j), HIST (optional, `history.rs`); each
+//!   compressed by its own codec and CRC-checked
 //! ```
+//!
+//! `STYL`: u32 count, then per styled stroke (ascending `STRK` index):
+//! u32 index  u8 flags (1 = has colour)  4×u8 sRGB RGBA  f32 size.
+//! It's written only when needed, so a sketch drawn in brush colours stays readable by an
+//! AirDraw that predates styles; one that isn't is refused there rather than opened and
+//! saved without its colours.
 //!
 //! Sections carry their own checksums, so there's no whole-file checksum: an optional
 //! section added later can be damaged and dropped without losing the sketch. A required
@@ -50,7 +57,7 @@ use airdraw_pack::{CodecId, Codecs, PackError, ReadLimits, Section, SectionId, W
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
-use crate::document::{BrushRef, Document, Layer, LayerId, Op, Stroke, StrokeId};
+use crate::document::{BrushRef, Document, Layer, LayerId, Op, Stroke, StrokeId, StrokeStyle};
 
 pub const EXTENSION: &str = "airdraw";
 const MAGIC: &[u8; 4] = b"ADRW";
@@ -61,6 +68,7 @@ const SECTIONS_SINCE: u16 = 4;
 const META: SectionId = SectionId(*b"META");
 const STRK: SectionId = SectionId(*b"STRK");
 const HIST: SectionId = SectionId(*b"HIST");
+const STYL: SectionId = SectionId(*b"STYL");
 /// Codec for new files. Reading accepts every codec in [`codecs`], whatever this says.
 const WRITE_CODEC: CodecId = CodecId::ZSTD;
 /// First format with an embedded thumbnail.
@@ -239,12 +247,16 @@ impl Document {
         let (brushes, remap, live) = self.used_brushes(undo.iter().chain(redo).flat_map(Op::brushes));
         let file_brush = |r: BrushRef| remap[r.0 as usize].unwrap();
         let strokes = crate::strokes::encode(&self.strokes, |s| file_brush(s.brush));
-        let hash = content_hash(&self.content_toml(&brushes[..live]), &strokes);
+        let styles = encode_styles(&self.strokes);
+        let hash = content_hash(&self.content_toml(&brushes[..live]), &strokes, styles.as_deref());
         let content_id = if opts.new_content_id { crate::document::new_content_id() } else { self.content_id.clone() };
         let meta = self.meta_toml(brushes, Some(hash), content_id);
         let mut w = self.file_head(FORMAT_VERSION);
         let mut sections =
             vec![Section { id: META, required: true, data: meta.into_bytes() }, Section { id: STRK, required: true, data: strokes }];
+        if let Some(data) = styles {
+            sections.push(Section { id: STYL, required: true, data });
+        }
         if !undo.is_empty() || !redo.is_empty() {
             sections.push(Section { id: HIST, required: false, data: crate::history::encode(undo, redo, &self.strokes, &file_brush) });
         }
@@ -276,7 +288,8 @@ impl Document {
     /// content id, history, or compression: two files with the same hash hold the same model.
     pub fn content_hash(&self) -> String {
         let (brushes, remap, _) = self.used_brushes(std::iter::empty());
-        content_hash(&self.content_toml(&brushes), &crate::strokes::encode(&self.strokes, |s| remap[s.brush.0 as usize].unwrap()))
+        let strokes = crate::strokes::encode(&self.strokes, |s| remap[s.brush.0 as usize].unwrap());
+        content_hash(&self.content_toml(&brushes), &strokes, encode_styles(&self.strokes).as_deref())
     }
 
     /// The brush snapshots the strokes use, then those only `history` uses, each in
@@ -395,14 +408,63 @@ impl Document {
 }
 
 /// See [`Document::content_hash`]. Versioned, so a future change to what's hashed can't
-/// collide with today's hashes.
-fn content_hash(content_toml: &str, strokes: &[u8]) -> String {
+/// collide with today's hashes. Styles only count when there are some, so a sketch in brush
+/// colours hashes as it did before styles existed.
+fn content_hash(content_toml: &str, strokes: &[u8], styles: Option<&[u8]>) -> String {
     let mut h = blake3::Hasher::new();
     h.update(b"airdraw content v1\0");
     h.update(&(content_toml.len() as u64).to_le_bytes());
     h.update(content_toml.as_bytes());
     h.update(strokes);
+    if let Some(styles) = styles {
+        h.update(b"\0STYL");
+        h.update(styles);
+    }
     h.finalize().to_hex().to_string()
+}
+
+const STYLE_HAS_COLOR: u8 = 1;
+
+/// The `STYL` section, or `None` when every stroke draws as its brush does.
+fn encode_styles(strokes: &[Stroke]) -> Option<Vec<u8>> {
+    let styled: Vec<(usize, &Stroke)> = strokes.iter().enumerate().filter(|(_, s)| !s.style.is_brush()).collect();
+    if styled.is_empty() {
+        return None;
+    }
+    let mut w = Vec::with_capacity(4 + styled.len() * 13);
+    put_u32(&mut w, styled.len() as u32);
+    for (i, s) in styled {
+        put_u32(&mut w, i as u32);
+        w.push(if s.style.color.is_some() { STYLE_HAS_COLOR } else { 0 });
+        w.extend_from_slice(&s.style.color.unwrap_or_default());
+        put_f32(&mut w, s.style.size);
+    }
+    Some(w)
+}
+
+fn decode_styles(data: &[u8], strokes: &mut [Stroke]) -> Result<(), DocError> {
+    let bad = |why: String| DocError::Corrupt(format!("styles: {why}"));
+    let mut r = Reader { b: data, pos: 0 };
+    let count = r.u32()? as usize;
+    if count > strokes.len() || r.remaining() != count * 13 {
+        return Err(bad(format!("{count} entries in {} bytes", data.len())));
+    }
+    let mut last = None;
+    for _ in 0..count {
+        let i = r.u32()? as usize;
+        if i >= strokes.len() || last.is_some_and(|l| l >= i) {
+            return Err(bad(format!("stroke index {i}")));
+        }
+        last = Some(i);
+        let flags = r.u8()?;
+        let rgba: [u8; 4] = r.take(4)?.try_into().unwrap();
+        let size = r.f32()?;
+        if flags & !STYLE_HAS_COLOR != 0 || !(StrokeStyle::MIN_SIZE..=StrokeStyle::MAX_SIZE).contains(&size) {
+            return Err(bad(format!("stroke {i}: flags {flags}, size {size}")));
+        }
+        strokes[i].style = StrokeStyle { color: (flags & STYLE_HAS_COLOR != 0).then_some(rgba), size };
+    }
+    Ok(())
 }
 
 fn valid_content_id(id: &str) -> bool {
@@ -430,13 +492,16 @@ fn read_sections(bytes: &[u8]) -> Result<Parts, DocError> {
     if start + used != bytes.len() {
         return Err(DocError::Corrupt(format!("{} unexpected bytes after the sections", bytes.len() - start - used)));
     }
-    if let Some(s) = decoded.sections.iter().find(|s| s.required && s.id != META && s.id != STRK) {
+    if let Some(s) = decoded.sections.iter().find(|s| s.required && ![META, STRK, STYL].contains(&s.id)) {
         return Err(DocError::Unsupported(format!("file uses a feature from a newer AirDraw (section {}). Update the app.", s.id)));
     }
     let section = |id: SectionId| decoded.get(id).map(|s| &s.data[..]).ok_or_else(|| DocError::Corrupt(format!("no {id} section")));
     let meta = std::str::from_utf8(section(META)?).map_err(|_| DocError::Corrupt("metadata is not UTF-8".into()))?;
     let meta: Meta = toml::from_str(meta).map_err(|e| DocError::Corrupt(format!("metadata: {e}")))?;
-    let strokes = crate::strokes::decode(section(STRK)?)?;
+    let mut strokes = crate::strokes::decode(section(STRK)?)?;
+    if let Some(styles) = decoded.get(STYL) {
+        decode_styles(&styles.data, &mut strokes)?;
+    }
     let history = decoded.get(HIST).map(|s| s.data.clone());
     Ok((meta, strokes, thumbnail, history))
 }
@@ -563,7 +628,7 @@ fn read_stroke(r: &mut Reader) -> Result<Stroke, DocError> {
             t: r.f64()?,
         });
     }
-    Ok(Stroke { id, layer, brush, points: Arc::from(points) })
+    Ok(Stroke { id, layer, brush, style: StrokeStyle::BRUSH, points: Arc::from(points) })
 }
 
 struct Reader<'a> {
@@ -770,12 +835,12 @@ mod tests {
         d
     }
 
-    /// Ids, brushes and points of the strokes, plus the guide: what undo/redo must reproduce.
-    /// Brushes by definition, since saving renumbers snapshots.
-    type State = (Vec<(StrokeId, String, Vec<InputPoint>)>, Option<Guide>);
+    /// Ids, brushes, styles and points of the strokes, plus the guide: what undo/redo must
+    /// reproduce. Brushes by definition, since saving renumbers snapshots.
+    type State = (Vec<(StrokeId, String, StrokeStyle, Vec<InputPoint>)>, Option<Guide>);
 
     fn state(d: &Document) -> State {
-        let strokes = d.strokes().iter().map(|s| (s.id, d.brush_def(s.brush).unwrap().id.clone(), s.points.to_vec())).collect();
+        let strokes = d.strokes().iter().map(|s| (s.id, d.brush_def(s.brush).unwrap().id.clone(), s.style, s.points.to_vec())).collect();
         (strokes, d.guide().map(|g| (**g).clone()))
     }
 
@@ -1361,6 +1426,132 @@ mod tests {
         assert_eq!(Document::load(&path).unwrap().strokes(), d.strokes());
         assert!(!path.with_extension("airdraw.tmp").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const RED: [u8; 4] = [228, 87, 46, 255];
+    const BLUE: [u8; 4] = [40, 90, 220, 128];
+
+    /// Colours and sizes through every kind of edit: drawn styled, recoloured, resized,
+    /// scaled, cut, deleted, some of it undone.
+    fn styled_doc() -> Document {
+        let mut d = Document::new();
+        let ink = d.intern_brush(&brush("com.airdraw.ink"));
+        let ribbon = d.intern_brush(&brush("com.airdraw.ribbon"));
+        let (a, _) = d.add_styled_stroke(ink, StrokeStyle::new(Some(RED), 2.0), points(30, 0.0));
+        let (b, _) = d.add_stroke(ribbon, points(20, 1.0));
+        let (c, _) = d.add_styled_stroke(ink, StrokeStyle::new(None, 0.5), points(25, 2.0));
+        d.set_color(&[b, c], Some(BLUE));
+        d.set_size(&[a], 3.0);
+        let (_, scaled) = d.transform_strokes(&[b], glam::Affine3A::from_scale(Vec3::splat(2.0)));
+        let p = d.stroke(a).unwrap().points.to_vec();
+        d.replace_strokes(vec![(a, vec![p[..10].to_vec(), p[14..].to_vec()])]);
+        d.remove_strokes(&scaled);
+        d.set_color(&[c], None);
+        d.undo();
+        d.undo();
+        d
+    }
+
+    #[test]
+    fn styles_survive_save_and_open_with_history() {
+        let d = styled_doc();
+        assert!(d.strokes().iter().any(|s| !s.style.is_brush()));
+        let bytes = d.to_bytes();
+        let ids: Vec<_> = sections(&bytes).sections.iter().map(|s| (s.id, s.required)).collect();
+        assert_eq!(ids, [(META, true), (STRK, true), (STYL, true), (HIST, false)]);
+        let mut back = Document::from_bytes(&bytes).unwrap();
+        let mut orig = d.clone();
+        assert_eq!(state(&back), state(&orig));
+        while orig.can_redo() {
+            orig.redo();
+            back.redo();
+            assert_eq!(state(&back), state(&orig));
+        }
+        while orig.can_undo() {
+            orig.undo();
+            back.undo();
+            assert_eq!(state(&back), state(&orig));
+        }
+        assert!(back.strokes().is_empty());
+        assert_eq!(Document::from_bytes(&bytes).unwrap().to_bytes(), bytes, "deterministic");
+        let hist = String::from_utf8_lossy(&sections(&bytes).get(HIST).unwrap().data).into_owned();
+        assert!(hist.contains("op = \"set_style\"") && hist.contains("[[styles]]") && hist.contains("#285ADC80"), "{hist}");
+    }
+
+    #[test]
+    fn brush_coloured_sketches_have_no_styl_section() {
+        // Readable by an AirDraw from before styles: no required section it doesn't know, and
+        // history references in the old three-number form.
+        let d = replaced_doc();
+        let bytes = d.to_bytes();
+        let ids: Vec<_> = sections(&bytes).sections.iter().map(|s| s.id).collect();
+        assert_eq!(ids, [META, STRK, HIST]);
+        let hist = String::from_utf8_lossy(&sections(&bytes).get(HIST).unwrap().data).into_owned();
+        assert!(!hist.contains("styles") && !hist.contains("set_style"), "{hist}");
+        // A style changes the artwork's hash; back to the brush's own, it's the same again.
+        let mut styled = d.clone();
+        let id = styled.strokes()[0].id;
+        let plain_hash = styled.content_hash();
+        styled.set_color(&[id], Some(RED));
+        assert_ne!(styled.content_hash(), plain_hash);
+        styled.set_color(&[id], None);
+        assert_eq!(styled.content_hash(), plain_hash);
+    }
+
+    #[test]
+    fn damaged_styles_are_reported() {
+        let mut d = sample_doc();
+        let id = d.strokes()[1].id;
+        d.set_color(&[id], Some(RED));
+        let mut all = sections(&d.to_bytes()).sections;
+        let at = all.iter().position(|s| s.id == STYL).unwrap();
+        let good = all[at].data.clone();
+        let mut cases = Vec::new();
+        let mut index = good.clone();
+        index[4..8].copy_from_slice(&9u32.to_le_bytes()); // past the last stroke
+        cases.push(index);
+        let mut size = good.clone();
+        size[13..17].copy_from_slice(&f32::NAN.to_le_bytes());
+        cases.push(size);
+        let mut flags = good.clone();
+        flags[8] = 6;
+        cases.push(flags);
+        cases.push(good[..good.len() - 1].to_vec());
+        for bad in cases {
+            all[at].data = bad;
+            let mut w = d.file_head(FORMAT_VERSION);
+            airdraw_pack::write(&mut w, &all, codecs(), WriteOptions { codec: WRITE_CODEC, level: Level::Fast }).unwrap();
+            assert!(matches!(Document::from_bytes(&w), Err(DocError::Corrupt(_))));
+        }
+    }
+
+    #[test]
+    fn bad_styles_in_history_drop_only_the_history() {
+        let d = styled_doc();
+        let mut all = sections(&d.to_bytes()).sections;
+        let hist = all.pop().unwrap();
+        let len = u32::from_le_bytes(hist.data[..4].try_into().unwrap()) as usize;
+        let text = String::from_utf8(hist.data[4..4 + len].to_vec()).unwrap();
+        let reopen = |t: String| {
+            let mut data = (t.len() as u32).to_le_bytes().to_vec();
+            data.extend_from_slice(t.as_bytes());
+            data.extend_from_slice(&hist.data[4 + len..]);
+            let mut w = d.file_head(FORMAT_VERSION);
+            let mut secs = all.clone();
+            secs.push(Section { id: HIST, required: false, data });
+            airdraw_pack::write(&mut w, &secs, codecs(), WriteOptions { codec: WRITE_CODEC, level: Level::Fast }).unwrap();
+            Document::from_bytes(&w).unwrap()
+        };
+        let no_styles = text.replace("[[styles]]", "[[nothing]]");
+        let bad_colour = text.replace("#285ADC80", "#28ZZDC80");
+        let bad_size = text.replacen("size = ", "size = 99", 1);
+        for bad in [no_styles, bad_colour, bad_size] {
+            assert_ne!(bad, text);
+            let back = reopen(bad);
+            assert_eq!(state(&back), state(&d), "the sketch itself still opens");
+            assert!(!back.can_undo() && !back.can_redo());
+        }
+        assert!(reopen(text).can_undo(), "the untouched section still works");
     }
 
     #[test]

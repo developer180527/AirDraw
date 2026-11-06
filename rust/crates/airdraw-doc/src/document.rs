@@ -28,6 +28,43 @@ pub struct Layer {
     pub locked: bool,
 }
 
+/// How a stroke looks on top of its brush (§3j): its own colour, and a size that multiplies
+/// the brush's widths. Re-brushing keeps it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StrokeStyle {
+    /// sRGB RGBA8; `None` draws in the brush's colour.
+    pub color: Option<[u8; 4]>,
+    /// Multiplies the brush's widths, from [`MIN_SIZE`](Self::MIN_SIZE) to
+    /// [`MAX_SIZE`](Self::MAX_SIZE); 1 draws as the brush does.
+    pub size: f32,
+}
+
+impl StrokeStyle {
+    pub const MIN_SIZE: f32 = 0.1;
+    pub const MAX_SIZE: f32 = 10.0;
+    /// As the brush draws: its colour, its widths.
+    pub const BRUSH: Self = Self { color: None, size: 1.0 };
+
+    /// A style with `size` kept in range (a non-finite size draws at the brush's).
+    pub fn new(color: Option<[u8; 4]>, size: f32) -> Self {
+        Self { color, size: clamp_size(size) }
+    }
+
+    pub fn is_brush(&self) -> bool {
+        *self == Self::BRUSH
+    }
+}
+
+impl Default for StrokeStyle {
+    fn default() -> Self {
+        Self::BRUSH
+    }
+}
+
+pub(crate) fn clamp_size(size: f32) -> f32 {
+    if size.is_finite() { size.clamp(StrokeStyle::MIN_SIZE, StrokeStyle::MAX_SIZE) } else { 1.0 }
+}
+
 /// A stroke keeps its raw input and the exact brush settings it was drawn with, so it can be
 /// rebuilt identically later, re-brushed, or re-meshed at another quality for export.
 #[derive(Clone, Debug, PartialEq)]
@@ -35,6 +72,7 @@ pub struct Stroke {
     pub id: StrokeId,
     pub layer: LayerId,
     pub brush: BrushRef,
+    pub style: StrokeStyle,
     /// Shared so undo history and the document don't duplicate point data.
     pub points: Arc<[InputPoint]>,
 }
@@ -43,7 +81,7 @@ pub struct Stroke {
 pub enum Change {
     Added(StrokeId),
     Removed(StrokeId),
-    /// Same stroke, different brush or points: rebuild its mesh.
+    /// Same stroke, different brush or style: rebuild its mesh and material.
     Updated(StrokeId),
     /// Everything changed (document loaded or replaced): rebuild all.
     Reset,
@@ -64,6 +102,10 @@ pub(crate) enum Op {
     },
     SetBrush {
         changes: Vec<(StrokeId, BrushRef, BrushRef)>,
+    },
+    /// Recolour / resize (§3j): each stroke's style before and after.
+    SetStyle {
+        changes: Vec<(StrokeId, StrokeStyle, StrokeStyle)>,
     },
     SetGuide {
         before: Option<Arc<Guide>>,
@@ -86,7 +128,7 @@ impl Op {
             Op::Add { stroke, .. } => Box::new(std::iter::once(stroke)),
             Op::Remove { items } => Box::new(items.iter().map(|(_, s)| s)),
             Op::Replace { removed, added } => Box::new(removed.iter().chain(added).map(|(_, s)| s)),
-            Op::SetBrush { .. } | Op::SetGuide { .. } => Box::new(std::iter::empty()),
+            Op::SetBrush { .. } | Op::SetStyle { .. } | Op::SetGuide { .. } => Box::new(std::iter::empty()),
         }
     }
 
@@ -293,22 +335,31 @@ impl Document {
         BrushRef(idx as u32)
     }
 
-    /// Appends a stroke on the active layer.
+    /// Appends a stroke on the active layer, drawn as the brush draws.
     pub fn add_stroke(&mut self, brush: BrushRef, points: Vec<InputPoint>) -> (StrokeId, Vec<Change>) {
+        self.add_styled_stroke(brush, StrokeStyle::BRUSH, points)
+    }
+
+    /// Appends a stroke on the active layer with its own colour and size.
+    pub fn add_styled_stroke(&mut self, brush: BrushRef, style: StrokeStyle, points: Vec<InputPoint>) -> (StrokeId, Vec<Change>) {
         let id = self.new_id();
-        let stroke = Stroke { id, layer: self.active_layer, brush, points: points.into() };
+        let stroke =
+            Stroke { id, layer: self.active_layer, brush, style: StrokeStyle::new(style.color, style.size), points: points.into() };
         let changes = self.commit(Op::Add { index: self.strokes.len(), stroke });
         (id, changes)
     }
 
     /// Appends several strokes on the active layer as one undo step: one pen stroke that was
     /// drawn in pieces (it left the guide and came back). Returns the changes and the new ids.
-    pub fn add_strokes(&mut self, pieces: Vec<(BrushRef, Vec<InputPoint>)>) -> (Vec<Change>, Vec<StrokeId>) {
+    pub fn add_strokes(&mut self, pieces: Vec<(BrushRef, StrokeStyle, Vec<InputPoint>)>) -> (Vec<Change>, Vec<StrokeId>) {
         let base = self.strokes.len();
         let added: Vec<(usize, Stroke)> = pieces
             .into_iter()
             .enumerate()
-            .map(|(n, (brush, points))| (base + n, Stroke { id: self.new_id(), layer: self.active_layer, brush, points: points.into() }))
+            .map(|(n, (brush, style, points))| {
+                let style = StrokeStyle::new(style.color, style.size);
+                (base + n, Stroke { id: self.new_id(), layer: self.active_layer, brush, style, points: points.into() })
+            })
             .collect();
         if added.is_empty() {
             return (Vec::new(), Vec::new());
@@ -330,6 +381,15 @@ impl Document {
     /// layer and brush: no pieces deletes it, one moves it, several split it. One undo step.
     /// Returns the changes and each new stroke's id, in the order given.
     pub fn replace_strokes(&mut self, replacements: Vec<(StrokeId, Vec<Vec<InputPoint>>)>) -> (Vec<Change>, Vec<StrokeId>) {
+        self.replace_styled(replacements, |s| s)
+    }
+
+    /// [`replace_strokes`](Self::replace_strokes), the new strokes' style made from the old one's.
+    fn replace_styled(
+        &mut self,
+        replacements: Vec<(StrokeId, Vec<Vec<InputPoint>>)>,
+        style: impl Fn(StrokeStyle) -> StrokeStyle,
+    ) -> (Vec<Change>, Vec<StrokeId>) {
         let mut seen = std::collections::HashSet::new();
         let mut targets: Vec<(usize, Stroke, Vec<Vec<InputPoint>>)> = replacements
             .into_iter()
@@ -353,8 +413,9 @@ impl Document {
         for k in order {
             let (index, stroke, pieces) = (targets[k].0, targets[k].1.clone(), std::mem::take(&mut targets[k].2));
             let at = (index as isize + shift) as usize;
+            let new_style = style(stroke.style);
             for (n, (points, &id)) in pieces.into_iter().zip(&ids[k]).enumerate() {
-                added.push((at + n, Stroke { id, points: points.into(), ..stroke.clone() }));
+                added.push((at + n, Stroke { id, style: new_style, points: points.into(), ..stroke.clone() }));
             }
             shift += ids[k].len() as isize - 1;
             removed.push((index, stroke));
@@ -388,11 +449,14 @@ impl Document {
     }
 
     /// Moves strokes by `xf` (positions transformed, normals rotated with it), each keeping its
-    /// place, layer and brush but getting a new id. One undo step. Returns the changes and the
-    /// moved strokes' new ids, in the order given. `xf` should be rigid (move and rotate):
-    /// strokes have no size of their own yet (§3i).
+    /// place, layer, brush and colour but getting a new id. One undo step. Returns the changes
+    /// and the moved strokes' new ids, in the order given. `xf` is a move, a rotation and a
+    /// uniform scale; the scale also multiplies each stroke's size, so a scaled stroke is as
+    /// thick, relative to its length, as before (§3j). (Sizes stop at their range.)
     pub fn transform_strokes(&mut self, ids: &[StrokeId], xf: glam::Affine3A) -> (Vec<Change>, Vec<StrokeId>) {
-        let rot = glam::Mat3::from(xf.matrix3);
+        let m = glam::Mat3::from(xf.matrix3);
+        let scale = m.determinant().abs().cbrt();
+        let rot = if scale > 1e-6 { m * (1.0 / scale) } else { m };
         let replacements = ids
             .iter()
             .filter_map(|id| {
@@ -409,7 +473,10 @@ impl Document {
                 Some((*id, vec![moved]))
             })
             .collect();
-        self.replace_strokes(replacements)
+        if (scale - 1.0).abs() < 1e-6 {
+            return self.replace_strokes(replacements);
+        }
+        self.replace_styled(replacements, |st| StrokeStyle::new(st.color, st.size * scale))
     }
 
     pub fn clear(&mut self) -> Vec<Change> {
@@ -425,6 +492,35 @@ impl Document {
             return Vec::new();
         }
         self.commit(Op::SetBrush { changes })
+    }
+
+    /// Recolours strokes (`None`: back to their brush's colour), keeping their sizes. One undo
+    /// step; strokes already in that colour aren't part of it.
+    pub fn set_color(&mut self, ids: &[StrokeId], color: Option<[u8; 4]>) -> Vec<Change> {
+        self.restyle(ids, |st| StrokeStyle { color, ..st })
+    }
+
+    /// Resizes strokes (a multiplier on their brush's widths, kept in range), keeping their
+    /// colours. One undo step.
+    pub fn set_size(&mut self, ids: &[StrokeId], size: f32) -> Vec<Change> {
+        let size = clamp_size(size);
+        self.restyle(ids, |st| StrokeStyle { size, ..st })
+    }
+
+    fn restyle(&mut self, ids: &[StrokeId], f: impl Fn(StrokeStyle) -> StrokeStyle) -> Vec<Change> {
+        let changes: Vec<_> = self
+            .strokes
+            .iter()
+            .filter(|s| ids.contains(&s.id))
+            .filter_map(|s| {
+                let new = f(s.style);
+                (new != s.style).then_some((s.id, s.style, new))
+            })
+            .collect();
+        if changes.is_empty() {
+            return Vec::new();
+        }
+        self.commit(Op::SetStyle { changes })
     }
 
     /// Replaces the active guide (`None` removes it). Undoable, like strokes.
@@ -504,6 +600,7 @@ impl Document {
                 changes
             }
             Op::SetBrush { changes } => self.set_refs(changes.iter().map(|&(id, _, new)| (id, new))),
+            Op::SetStyle { changes } => self.set_styles(changes.iter().map(|&(id, _, new)| (id, new))),
             Op::SetGuide { after, .. } => {
                 self.guide = after.clone();
                 vec![Change::Guide]
@@ -524,6 +621,7 @@ impl Document {
                 changes
             }
             Op::SetBrush { changes } => self.set_refs(changes.iter().map(|&(id, old, _)| (id, old))),
+            Op::SetStyle { changes } => self.set_styles(changes.iter().map(|&(id, old, _)| (id, old))),
             Op::SetGuide { before, .. } => {
                 self.guide = before.clone();
                 vec![Change::Guide]
@@ -545,6 +643,17 @@ impl Document {
             self.strokes.insert((*i).min(self.strokes.len()), s.clone());
         }
         items.iter().map(|(_, s)| Change::Added(s.id)).collect()
+    }
+
+    fn set_styles(&mut self, styles: impl Iterator<Item = (StrokeId, StrokeStyle)>) -> Vec<Change> {
+        let mut out = Vec::new();
+        for (id, style) in styles {
+            if let Some(s) = self.strokes.iter_mut().find(|s| s.id == id) {
+                s.style = style;
+                out.push(Change::Updated(id));
+            }
+        }
+        out
     }
 
     fn set_refs(&mut self, refs: impl Iterator<Item = (StrokeId, BrushRef)>) -> Vec<Change> {
@@ -631,7 +740,7 @@ pub(crate) mod tests {
         let mut d = Document::new();
         let ink = d.intern_brush(&brush("com.airdraw.ink"));
         d.add_stroke(ink, points(5, 0.0));
-        let (_, ids) = d.add_strokes(vec![(ink, points(4, 1.0)), (ink, points(6, 2.0))]);
+        let (_, ids) = d.add_strokes(vec![(ink, StrokeStyle::BRUSH, points(4, 1.0)), (ink, StrokeStyle::BRUSH, points(6, 2.0))]);
         assert_eq!(ids.len(), 2);
         assert_eq!(d.strokes().iter().map(|s| s.id).skip(1).collect::<Vec<_>>(), ids);
         d.undo();
@@ -825,5 +934,57 @@ pub(crate) mod tests {
         d.mark_saved();
         d.undo();
         assert!(d.is_dirty());
+    }
+
+    #[test]
+    fn recolour_and_resize_are_one_step_each_and_keep_the_rest() {
+        let mut d = Document::new();
+        let ink = d.intern_brush(&brush("com.airdraw.ink"));
+        let ribbon = d.intern_brush(&brush("com.airdraw.ribbon"));
+        let (a, _) = d.add_stroke(ink, points(10, 0.0));
+        let (b, _) = d.add_styled_stroke(ink, StrokeStyle::new(Some([1, 2, 3, 255]), 2.0), points(10, 1.0));
+        let red = Some([255, 0, 0, 255]);
+        assert_eq!(d.set_color(&[a, b], red), vec![Change::Updated(a), Change::Updated(b)]);
+        assert_eq!(d.stroke(b).unwrap().style, StrokeStyle::new(red, 2.0), "size kept");
+        assert!(d.set_color(&[a, b], red).is_empty(), "no change, no step");
+        d.set_size(&[a], 50.0);
+        assert_eq!(d.stroke(a).unwrap().style.size, StrokeStyle::MAX_SIZE, "clamped");
+        d.set_brush(&[a], ribbon);
+        assert_eq!(d.stroke(a).unwrap().style, StrokeStyle::new(red, 10.0), "re-brushing keeps the style");
+        d.undo();
+        d.undo();
+        assert_eq!(d.stroke(a).unwrap().style, StrokeStyle::new(red, 1.0));
+        d.undo();
+        assert_eq!(d.stroke(a).unwrap().style, StrokeStyle::BRUSH);
+        assert_eq!(d.stroke(b).unwrap().style, StrokeStyle::new(Some([1, 2, 3, 255]), 2.0));
+        d.redo();
+        assert_eq!(d.stroke(b).unwrap().style.color, red);
+        assert_eq!(StrokeStyle::new(None, f32::NAN).size, 1.0);
+    }
+
+    #[test]
+    fn pieces_and_moves_keep_the_style_and_scaling_scales_the_size() {
+        let mut d = Document::new();
+        let ink = d.intern_brush(&brush("com.airdraw.ink"));
+        let style = StrokeStyle::new(Some([9, 8, 7, 255]), 1.5);
+        let (a, _) = d.add_styled_stroke(ink, style, points(30, 0.0));
+        let p = d.stroke(a).unwrap().points.to_vec();
+        let (_, pieces) = d.replace_strokes(vec![(a, vec![p[..10].to_vec(), p[14..].to_vec()])]);
+        assert!(pieces.iter().all(|&id| d.stroke(id).unwrap().style == style));
+        let turn = glam::Affine3A::from_rotation_z(0.7) * glam::Affine3A::from_translation(Vec3::X);
+        let (_, moved) = d.transform_strokes(&pieces[..1], turn);
+        assert_eq!(d.stroke(moved[0]).unwrap().style, style, "a rigid move keeps the size");
+        let grow =
+            glam::Affine3A::from_translation(Vec3::Y) * glam::Affine3A::from_rotation_x(0.3) * glam::Affine3A::from_scale(Vec3::splat(2.0));
+        let before = d.stroke(moved[0]).unwrap().clone();
+        let (_, grown) = d.transform_strokes(&moved, grow);
+        let after = d.stroke(grown[0]).unwrap();
+        assert!((after.style.size - 3.0).abs() < 1e-5 && after.style.color == style.color);
+        for (p, q) in before.points.iter().zip(after.points.iter()) {
+            assert!((q.normal.length() - 1.0).abs() < 1e-5, "normals stay unit length");
+            assert!(q.pos.abs_diff_eq(grow.transform_point3(p.pos), 1e-5));
+        }
+        d.undo();
+        assert_eq!(d.stroke(moved[0]).unwrap().style, style, "undo restores the old size");
     }
 }

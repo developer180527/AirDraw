@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use airdraw_brush::{Brush, BrushLibrary, BrushSource, InputPoint, MaterialDesc, MeshBuffers, Shading, StageRegistry};
-use airdraw_doc::{BrushRef, Change, Document, Stroke, StrokeId, read_thumbnail};
+use airdraw_doc::{BrushRef, Change, Document, Stroke, StrokeId, StrokeStyle, read_thumbnail};
 use airdraw_export::{ExporterRegistry, FolderSink, SceneOptions, build_scene};
 use airdraw_guide::Guide;
 use airdraw_look::LookLibrary;
@@ -412,7 +412,7 @@ impl SketchCanvas {
                 let (id, changes) = self.doc.add_stroke(*brush, std::mem::take(points));
                 (changes, vec![id])
             }
-            _ => self.doc.add_strokes(pieces.iter_mut().map(|(_, b, p)| (*b, std::mem::take(p))).collect()),
+            _ => self.doc.add_strokes(pieces.iter_mut().map(|(_, b, p)| (*b, StrokeStyle::BRUSH, std::mem::take(p))).collect()),
         };
         // The live nodes already show these strokes; adopt them instead of rebuilding.
         for (id, (instance, _, _)) in ids.into_iter().zip(pieces) {
@@ -503,7 +503,7 @@ impl SketchCanvas {
             None => self.doc.stroke(id).cloned().map(|s| (s, None)),
         };
         let Some((stroke, piece)) = target else { return };
-        let half_width = self.half_width_for(stroke.brush);
+        let half_width = self.half_width_for(stroke.brush) * stroke.style.size;
         let Some(kept) = airdraw_pick::cut(cam, &stroke.points, half_width, &[along], radius, MIN_PIECE) else { return };
         let original = match piece {
             Some(_) => self.erasing_partial().pieces[&id].original,
@@ -532,7 +532,7 @@ impl SketchCanvas {
             let mut node = MeshInstance3D::new_alloc();
             node.set_layer_mask(STROKE_LAYERS);
             node.set_material_override(&material);
-            set_mesh(&mut node, &brush.build(&piece.points));
+            set_mesh(&mut node, &brush.build_sized(&piece.points, piece.style.size));
             self.base_mut().add_child(&node);
             self.pick.insert(&piece, half_width);
             self.erasing_partial().pieces.insert(piece_id, Piece { original, stroke: piece, node });
@@ -640,7 +640,13 @@ impl SketchCanvas {
                         InputPoint { pos: world(local), normal: glam::Vec3::Z, pressure: 0.5, tilt: None, t: k as f64 }
                     })
                     .collect();
-                let stroke = Stroke { id: StrokeId(id as u64), layer: airdraw_doc::LayerId(1), brush: BrushRef(0), points: points.into() };
+                let stroke = Stroke {
+                    id: StrokeId(id as u64),
+                    layer: airdraw_doc::LayerId(1),
+                    brush: BrushRef(0),
+                    style: StrokeStyle::BRUSH,
+                    points: points.into(),
+                };
                 index.insert(&stroke, 0.006);
             }
             let mut times = Vec::new();
@@ -1369,7 +1375,7 @@ impl SketchCanvas {
                 Change::Updated(id) => {
                     if let (Some(stroke), Some(mut node)) = (self.doc.stroke(id).cloned(), self.nodes.get(&id).cloned()) {
                         node.set_material_override(&self.material_for(stroke.brush));
-                        set_mesh(&mut node, &self.brush_for(stroke.brush).build(&stroke.points));
+                        set_mesh(&mut node, &self.brush_for(stroke.brush).build_sized(&stroke.points, stroke.style.size));
                     }
                 }
                 Change::Guide => self.signals().guide_changed().emit(),
@@ -1399,7 +1405,7 @@ impl SketchCanvas {
     /// Adds (or refreshes) a document stroke in the pick index.
     fn index_stroke(&mut self, id: StrokeId) {
         let Some(stroke) = self.doc.stroke(id).cloned() else { return };
-        let half_width = self.half_width_for(stroke.brush);
+        let half_width = self.half_width_for(stroke.brush) * stroke.style.size;
         self.pick.insert(&stroke, half_width);
     }
 
@@ -1429,7 +1435,7 @@ impl SketchCanvas {
         let mut node = MeshInstance3D::new_alloc();
         node.set_layer_mask(STROKE_LAYERS);
         node.set_material_override(&self.material_for(stroke.brush));
-        set_mesh(&mut node, &self.brush_for(stroke.brush).build(&stroke.points));
+        set_mesh(&mut node, &self.brush_for(stroke.brush).build_sized(&stroke.points, stroke.style.size));
         self.base_mut().add_child(&node);
         node
     }

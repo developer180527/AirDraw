@@ -31,7 +31,7 @@ use airdraw_brush::InputPoint;
 use glam::Vec3;
 
 use crate::DocError;
-use crate::document::{BrushRef, LayerId, Stroke, StrokeId};
+use crate::document::{BrushRef, LayerId, Stroke, StrokeId, StrokeStyle};
 
 const SHARED_NORMAL: u8 = 1;
 const HAS_TILT: u8 = 2;
@@ -136,7 +136,13 @@ pub(crate) fn decode(data: &[u8]) -> Result<Vec<Stroke>, DocError> {
             if h.flags & HAS_TILT != 0 {
                 ti += h.n;
             }
-            Stroke { id: StrokeId(h.id), layer: LayerId(h.layer), brush: BrushRef(h.brush), points: Arc::from(pts) }
+            Stroke {
+                id: StrokeId(h.id),
+                layer: LayerId(h.layer),
+                brush: BrushRef(h.brush),
+                style: StrokeStyle::BRUSH,
+                points: Arc::from(pts),
+            }
         })
         .collect();
     Ok(strokes)
@@ -237,7 +243,7 @@ mod tests {
     use crate::document::tests::points;
 
     fn stroke(id: u64, pts: Vec<InputPoint>) -> Stroke {
-        Stroke { id: StrokeId(id), layer: LayerId(1), brush: BrushRef(id as u32 % 2), points: Arc::from(pts) }
+        Stroke { id: StrokeId(id), layer: LayerId(1), brush: BrushRef(id as u32 % 2), style: StrokeStyle::BRUSH, points: Arc::from(pts) }
     }
 
     fn mixed() -> Vec<Stroke> {

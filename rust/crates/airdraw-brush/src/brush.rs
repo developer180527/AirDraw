@@ -155,7 +155,12 @@ impl Brush {
     /// their raw points at any time (re-brushing, export quality, replay). Goes through
     /// [`stream`](Self::stream), so a stroke drawn live ends exactly as it rebuilds.
     pub fn build(&self, input: &[InputPoint]) -> MeshBuffers {
-        let mut s = self.stream();
+        self.build_sized(input, 1.0)
+    }
+
+    /// [`build`](Self::build) with every width multiplied by `size` (a stroke's own size, §3j).
+    pub fn build_sized(&self, input: &[InputPoint], size: f32) -> MeshBuffers {
+        let mut s = self.stream_sized(size);
         s.push(input);
         s.into_mesh(&[])
     }
@@ -163,14 +168,26 @@ impl Brush {
     /// The processed stroke path (after filters and dynamics) with per-point width.
     /// Exporters use it to write strokes as curves.
     pub fn centerline(&self, input: &[InputPoint]) -> Vec<StrokePoint> {
-        let mut s = self.stream();
+        self.centerline_sized(input, 1.0)
+    }
+
+    /// [`centerline`](Self::centerline) with widths multiplied by `size`.
+    pub fn centerline_sized(&self, input: &[InputPoint], size: f32) -> Vec<StrokePoint> {
+        let mut s = self.stream_sized(size);
         s.push(input);
         s.into_centerline(&[])
     }
 
     /// Starts an incremental build, for a stroke that grows while it's drawn.
     pub fn stream(&self) -> BrushStream {
-        BrushStream::new(&self.filters, &self.dynamics, &self.geometry)
+        self.stream_sized(1.0)
+    }
+
+    /// [`stream`](Self::stream) with widths multiplied by `size`, after the brush's dynamics
+    /// and before its geometry, so pressure curves and tapers keep their shape. At size 1
+    /// there's no extra stage: strokes build exactly as before sizes existed.
+    pub fn stream_sized(&self, size: f32) -> BrushStream {
+        BrushStream::new(&self.filters, &self.dynamics, &self.geometry, size)
     }
 }
 

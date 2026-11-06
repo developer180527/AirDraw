@@ -21,13 +21,22 @@
 //! removed = [[2, 5, 0]]     # index before, stroke id, brush
 //! added = [[2, 11, 0], [3, 12, 0]]  # index after, stroke id, brush
 //! [[undo]]
+//! op = "set_style"          # recolour / resize (§3j)
+//! changes = [[4, 0, 1]]     # stroke id, old style, new style
+//! [[undo]]
 //! op = "set_guide"
 //! after = { kind = "plane", origin = [0, 0, 0], normal = [0, 0, 1] }
 //! ```
 //!
+//! ```toml
+//! [[styles]]                # stroke styles history refers to, by position (§3j)
+//! color = "#E4572EFF"       # sRGB RGBA; absent = the brush's colour
+//! size = 1.5
+//! ```
+//!
 //! A stroke's points are stored once: from `STRK` if it's in the sketch, else from the pool.
-//! Each reference carries its own brush, since re-brushing changes a stroke's brush over
-//! time. Brush numbers index `META`'s snapshot list, where snapshots only history uses
+//! Each reference carries its own brush, and its style as an optional last number (absent =
+//! the brush's own look), since re-brushing and restyling change them over time. Brush numbers index `META`'s snapshot list, where snapshots only history uses
 //! follow the live ones.
 //!
 //! History is optional data: anything wrong with it (bad references, ops that don't fit the
@@ -38,7 +47,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::DocError;
-use crate::document::{BrushRef, Op, Stroke, StrokeId};
+use crate::document::{BrushRef, Op, Stroke, StrokeId, StrokeStyle};
 use crate::file::GuideDef;
 
 /// History keeps at most the sketch's peak size during the history (or this much, if
@@ -49,6 +58,8 @@ const POINT_BYTES: usize = 40;
 
 #[derive(Serialize, Deserialize)]
 struct HistDef {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    styles: Vec<StyleDef>,
     #[serde(default)]
     undo: Vec<OpDef>,
     #[serde(default)]
@@ -56,23 +67,40 @@ struct HistDef {
 }
 
 #[derive(Serialize, Deserialize)]
+struct StyleDef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    color: Option<String>,
+    #[serde(default = "one")]
+    size: f32,
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 enum OpDef {
+    /// `stroke`: id, brush[, style].
     Add {
         index: u64,
-        stroke: [u64; 2],
+        stroke: Vec<u64>,
     },
+    /// Each item: index, stroke id, brush[, style].
     Remove {
-        items: Vec<[u64; 3]>,
+        items: Vec<Vec<u64>>,
     },
     SetBrush {
         changes: Vec<[u64; 3]>,
     },
+    SetStyle {
+        changes: Vec<[u64; 3]>,
+    },
     Replace {
         #[serde(default)]
-        removed: Vec<[u64; 3]>,
+        removed: Vec<Vec<u64>>,
         #[serde(default)]
-        added: Vec<[u64; 3]>,
+        added: Vec<Vec<u64>>,
     },
     SetGuide {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -170,19 +198,43 @@ pub(crate) fn encode(undo: &[Op], redo: &[Op], live: &[Stroke], brush: &dyn Fn(B
         }
     }
     let b = |r: BrushRef| brush(r) as u64;
+    // Styles in order of first use, so saving stays deterministic.
+    let styles = std::cell::RefCell::new(Vec::<StrokeStyle>::new());
+    let style = |st: StrokeStyle| -> u64 {
+        let mut list = styles.borrow_mut();
+        let i = list.iter().position(|x| *x == st).unwrap_or_else(|| {
+            list.push(st);
+            list.len() - 1
+        });
+        i as u64
+    };
+    // A reference: [index,] id, brush, and the style only when it isn't the brush's own.
+    let reference = |index: Option<usize>, s: &Stroke| -> Vec<u64> {
+        let mut r: Vec<u64> = index.map(|i| i as u64).into_iter().collect();
+        r.extend([s.id.0, b(s.brush)]);
+        if !s.style.is_brush() {
+            r.push(style(s.style));
+        }
+        r
+    };
     let def = |op: &Op| match op {
-        Op::Add { index, stroke } => OpDef::Add { index: *index as u64, stroke: [stroke.id.0, b(stroke.brush)] },
-        Op::Remove { items } => OpDef::Remove { items: items.iter().map(|(i, s)| [*i as u64, s.id.0, b(s.brush)]).collect() },
+        Op::Add { index, stroke } => OpDef::Add { index: *index as u64, stroke: reference(None, stroke) },
+        Op::Remove { items } => OpDef::Remove { items: items.iter().map(|(i, s)| reference(Some(*i), s)).collect() },
         Op::SetBrush { changes } => OpDef::SetBrush { changes: changes.iter().map(|&(id, old, new)| [id.0, b(old), b(new)]).collect() },
+        Op::SetStyle { changes } => {
+            OpDef::SetStyle { changes: changes.iter().map(|&(id, old, new)| [id.0, style(old), style(new)]).collect() }
+        }
         Op::Replace { removed, added } => OpDef::Replace {
-            removed: removed.iter().map(|(i, s)| [*i as u64, s.id.0, b(s.brush)]).collect(),
-            added: added.iter().map(|(i, s)| [*i as u64, s.id.0, b(s.brush)]).collect(),
+            removed: removed.iter().map(|(i, s)| reference(Some(*i), s)).collect(),
+            added: added.iter().map(|(i, s)| reference(Some(*i), s)).collect(),
         },
         Op::SetGuide { before, after } => {
             OpDef::SetGuide { before: before.as_deref().map(GuideDef::new), after: after.as_deref().map(GuideDef::new) }
         }
     };
-    let hist = HistDef { undo: undo.iter().map(def).collect(), redo: redo.iter().map(def).collect() };
+    let (undo, redo): (Vec<OpDef>, Vec<OpDef>) = (undo.iter().map(def).collect(), redo.iter().map(def).collect());
+    let styles = styles.into_inner().into_iter().map(|st| StyleDef { color: st.color.map(hex_rgba), size: st.size }).collect();
+    let hist = HistDef { styles, undo, redo };
     let text = toml::to_string(&hist).expect("history always serializes");
     let mut out = Vec::new();
     out.extend_from_slice(&(text.len() as u32).to_le_bytes());
@@ -209,19 +261,39 @@ pub(crate) fn decode(data: &[u8], live: &[Stroke], brushes: usize) -> Result<(Ve
         }
     }
     let brush = |n: u64| (n < brushes as u64).then_some(BrushRef(n as u32)).ok_or_else(|| bad(format!("missing brush {n}")));
-    let stroke = |id: u64, b: u64| -> Result<Stroke, DocError> {
+    let styles: Vec<StrokeStyle> = hist
+        .styles
+        .iter()
+        .map(|d| {
+            let color = d.color.as_deref().map(|c| parse_rgba(c).ok_or_else(|| bad(format!("bad colour {c}")))).transpose()?;
+            if !(StrokeStyle::MIN_SIZE..=StrokeStyle::MAX_SIZE).contains(&d.size) {
+                return Err(bad(format!("size {} out of range", d.size)));
+            }
+            Ok(StrokeStyle { color, size: d.size })
+        })
+        .collect::<Result<_, DocError>>()?;
+    let style = |n: u64| styles.get(n as usize).copied().ok_or_else(|| bad(format!("missing style {n}")));
+    // [id, brush] or [id, brush, style].
+    let stroke = |r: &[u64]| -> Result<Stroke, DocError> {
+        let (&id, &b) =
+            (r.first().ok_or_else(|| bad("empty reference".into()))?, r.get(1).ok_or_else(|| bad("reference without brush".into()))?);
+        let st = match r.get(2..) {
+            Some([]) => StrokeStyle::BRUSH,
+            Some([n]) => style(*n)?,
+            _ => return Err(bad(format!("reference to stroke {id} has extra numbers"))),
+        };
         let s = points.get(&StrokeId(id)).ok_or_else(|| bad(format!("missing stroke {id}")))?;
-        Ok(Stroke { brush: brush(b)?, ..(*s).clone() })
+        Ok(Stroke { brush: brush(b)?, style: st, ..(*s).clone() })
     };
-    let items = |items: &[[u64; 3]], what: &str| -> Result<Vec<(usize, Stroke)>, DocError> {
-        if !items.windows(2).all(|w| w[0][0] < w[1][0]) {
+    let items = |items: &[Vec<u64>], what: &str| -> Result<Vec<(usize, Stroke)>, DocError> {
+        if items.iter().any(|r| r.is_empty()) || !items.windows(2).all(|w| w[0][0] < w[1][0]) {
             return Err(bad(format!("{what} needs ascending indices")));
         }
-        items.iter().map(|&[i, id, b]| Ok((i as usize, stroke(id, b)?))).collect()
+        items.iter().map(|r| Ok((r[0] as usize, stroke(&r[1..])?))).collect()
     };
     let op = |d: OpDef| -> Result<Op, DocError> {
         Ok(match d {
-            OpDef::Add { index, stroke: [id, b] } => Op::Add { index: index as usize, stroke: stroke(id, b)? },
+            OpDef::Add { index, stroke: r } => Op::Add { index: index as usize, stroke: stroke(&r)? },
             OpDef::Remove { items: list } => {
                 if list.is_empty() {
                     return Err(bad("remove of nothing".into()));
@@ -238,6 +310,12 @@ pub(crate) fn decode(data: &[u8], live: &[Stroke], brushes: usize) -> Result<(Ve
                 changes: changes
                     .iter()
                     .map(|&[id, old, new]| Ok((StrokeId(id), brush(old)?, brush(new)?)))
+                    .collect::<Result<_, DocError>>()?,
+            },
+            OpDef::SetStyle { changes } => Op::SetStyle {
+                changes: changes
+                    .iter()
+                    .map(|&[id, old, new]| Ok((StrokeId(id), style(old)?, style(new)?)))
                     .collect::<Result<_, DocError>>()?,
             },
             OpDef::SetGuide { before, after } => Op::SetGuide {
@@ -273,6 +351,7 @@ fn check(undo: &[Op], redo: &[Op], live: &[Stroke]) -> Result<(), String> {
                 st.put(removed, "undo replace")?;
             }
             Op::SetBrush { changes } => present(&st.has, changes.iter().map(|c| c.0), "undo re-brush")?,
+            Op::SetStyle { changes } => present(&st.has, changes.iter().map(|c| c.0), "undo restyle")?,
             Op::SetGuide { .. } => {}
         }
     }
@@ -286,6 +365,7 @@ fn check(undo: &[Op], redo: &[Op], live: &[Stroke]) -> Result<(), String> {
                 st.put(added, "redo replace")?;
             }
             Op::SetBrush { changes } => present(&st.has, changes.iter().map(|c| c.0), "redo re-brush")?,
+            Op::SetStyle { changes } => present(&st.has, changes.iter().map(|c| c.0), "redo restyle")?,
             Op::SetGuide { .. } => {}
         }
     }
@@ -330,4 +410,18 @@ fn present(has: &HashSet<StrokeId>, wanted: impl Iterator<Item = StrokeId>, what
         }
     }
     Ok(())
+}
+
+/// `#RRGGBBAA`.
+pub(crate) fn hex_rgba(c: [u8; 4]) -> String {
+    format!("#{:02X}{:02X}{:02X}{:02X}", c[0], c[1], c[2], c[3])
+}
+
+pub(crate) fn parse_rgba(s: &str) -> Option<[u8; 4]> {
+    let h = s.strip_prefix('#')?;
+    if h.len() != 8 || !h.is_ascii() {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&h[i * 2..i * 2 + 2], 16).ok();
+    Some([byte(0)?, byte(1)?, byte(2)?, byte(3)?])
 }

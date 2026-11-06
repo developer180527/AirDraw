@@ -45,6 +45,7 @@ impl BrushStream {
         filters: &[(Arc<dyn Filter>, Params)],
         dynamics: &[(Arc<dyn Dynamics>, Params)],
         geometry: &(Arc<dyn Geometry>, Params),
+        size: f32,
     ) -> Self {
         let mut points: Vec<Box<dyn PointStream>> = Vec::with_capacity(filters.len() + dynamics.len() + 1);
         for (f, p) in filters {
@@ -53,6 +54,9 @@ impl BrushStream {
         points.push(Box::new(Distance::default()));
         for (d, p) in dynamics {
             points.push(d.stream(p).unwrap_or_else(|| Box::new(BatchDynamics::new(d, p))));
+        }
+        if size != 1.0 {
+            points.push(Box::new(Size(size)));
         }
         let (g, p) = geometry;
         let geometry = g.stream(p).unwrap_or_else(|| Box::new(BatchGeometry::new(g, p)));
@@ -124,6 +128,20 @@ impl BrushStream {
             std::mem::swap(&mut cur, &mut next);
         }
         cur
+    }
+}
+
+/// A stroke's own size (§3j): multiplies every width the dynamics produced. Per point, so
+/// nothing is held back.
+struct Size(f32);
+
+impl PointStream for Size {
+    fn commit(&mut self, input: &[StrokePoint], out: &mut Vec<StrokePoint>) {
+        self.finish(input, out);
+    }
+
+    fn finish(&self, tail: &[StrokePoint], out: &mut Vec<StrokePoint>) {
+        out.extend(tail.iter().map(|p| StrokePoint { width: p.width * self.0, ..*p }));
     }
 }
 
@@ -366,6 +384,33 @@ mod tests {
             assert_eq!(s.mesh(&input[280..]), reference(&brush, &input).0, "{}", brush.id());
             // Previewing doesn't change the stream.
             assert_eq!(s.mesh(&[]), reference(&brush, &input[..280]).0, "{}", brush.id());
+        }
+    }
+
+    /// A stroke's size scales the widths after the dynamics: live in pieces, with a tail and
+    /// rebuilt all match the batch stages with widths scaled; size 1 is the brush unchanged.
+    #[test]
+    fn size_scales_widths_after_dynamics() {
+        let input = stroke(300);
+        for brush in brushes() {
+            let (_, plain) = reference(&brush, &input);
+            for size in [0.1f32, 0.5, 2.5, 10.0] {
+                let mut line = plain.clone();
+                for p in &mut line {
+                    p.width *= size;
+                }
+                let mut expected = MeshBuffers::default();
+                brush.geometry.0.build(&line, &brush.geometry.1, &mut expected);
+                let id = format!("{} size={size}", brush.id());
+                assert_eq!(brush.build_sized(&input, size), expected, "{id}");
+                assert_eq!(brush.centerline_sized(&input, size), line, "{id}");
+                let mut s = brush.stream_sized(size);
+                for chunk in input[..280].chunks(7) {
+                    s.push(chunk);
+                }
+                assert_eq!(s.mesh(&input[280..]), expected, "{id} live");
+            }
+            assert_eq!(brush.build_sized(&input, 1.0), reference(&brush, &input).0, "{}", brush.id());
         }
     }
 

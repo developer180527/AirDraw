@@ -1408,7 +1408,7 @@ A gizmo sits at the selection's centre, sized in screen points:
 
 ---
 
-### 3j. Per-stroke colour and size (proposed, 2026-10-29)
+### 3j. Per-stroke colour and size (approved 2026-11-07 with the proposed defaults; step 1 implemented)
 
 Today a stroke's colour and width come only from its brush: drawing a red Ink line needs a
 red Ink brush. Feather (and every sketching app) picks colour and size separately from the
@@ -1442,16 +1442,21 @@ pub struct Stroke { id, layer, brush: BrushRef, style: StrokeStyle, points }
   undo step (like `SetBrush`). Re-brushing keeps the style.
 - Partial-erase pieces and gizmo moves (`Replace`) carry the stroke's style; Scale is a
   `Replace` whose new strokes have `size × s`.
-- `HIST` stores styles with its stroke pool and `SetStyle` steps; same checks as today
-  (an unknown or bad op drops only the history).
+- `HIST` keeps a `[[styles]]` table (`color = "#RRGGBBAA"`, `size`); a stroke reference
+  gets the style's position as an optional last number (absent = the brush's own look), and
+  `set_style` steps hold old and new positions. Without styles the section is as before.
+  Same checks as today: a bad style or op drops only the history.
 
-#### File: format 5, `STYL` section (required)
+#### File: a required `STYL` section, only when used
 
 Styles live in a new section listing only strokes that differ from the default
-(`color = None, size = 1`): stroke index, flags, RGBA8, size. A sketch drawn with brush
-colours only has an empty `STYL`, so it's no bigger. Required, not optional: an older
-AirDraw must refuse the file ("made with a newer AirDraw") rather than open it, drop the
-colours and save over them. Formats 1–4 open with default styles.
+(`color = None, size = 1`): u32 count, then per styled stroke its `STRK` index, flags,
+RGBA8 and size. Required, not optional: an older AirDraw refuses the file ("feature from a
+newer AirDraw") rather than open it, drop the colours and save over them. Written only
+when some stroke has a style, so the format version stays 4 and a sketch drawn in brush
+colours is unchanged, byte for byte, and still opens in older builds. (A format bump would
+have locked those out too.) Older files open with every stroke in its brush's look. The
+content hash includes `STYL` only when it exists, so unstyled sketches keep their hashes.
 
 #### Rendering
 
@@ -1484,7 +1489,7 @@ override); "merge" groups by it. Sizes are already in the geometry. SVG uses the
 
 | Step | Deliverable |
 |---|---|
-| 1 | `StrokeStyle` on `Stroke`; size in both pipelines; `SetStyle`; `Replace` carries style; format 5 + `STYL`; `HIST` styles; tests (exact rebuild with size, round trip, history, old formats) |
+| 1 ✅ | `StrokeStyle` on `Stroke`; size in both pipelines (`Brush::stream_sized`, a final width stage only when size ≠ 1); `set_color`/`set_size` (`SetStyle`); `Replace` carries style, `transform_strokes` scales size with a uniform scale; `STYL` + `HIST` styles; canvas and exporters build at each stroke's size. Tests: live/rebuilt/batch match at 4 sizes, every undo/redo step after reopening, unstyled files unchanged, damaged styles, bad history styles; 9 mutations caught |
 | 2 | Canvas: current style for new strokes, `(brush, colour)` materials, set style on selection; export materials per colour |
 | 3 | UI: swatch + colour popover (recents, palette, picker), size slider, per-brush size; Select bar / stroke menu Colour and Size; smoke checks |
 | 4 | Gizmo scale handle; smoke check |
