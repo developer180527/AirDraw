@@ -816,11 +816,26 @@ func _ready() -> void:
 	canvas.set_world_light(Color8(255, 230, 200))
 	var origin_ok: bool = canvas.origin().is_equal_approx(Vector3(0.5, -1.0, 2.0)) and canvas.is_dirty()
 	var world_ok: bool = canvas.world_background(Color.WHITE).is_equal_approx(Color8(20, 24, 33)) and canvas.world_light(Color.WHITE).is_equal_approx(Color8(255, 230, 200)) and canvas.has_world_colors()
+	# The planes, floor and axes follow the origin; nudging the plane moves the origin (§3k
+	# step 2), and there's no offset slider any more.
+	var gc = main.get("guides")
+	var o: Vector3 = canvas.origin()
+	var follows: bool = gc.origin.is_equal_approx(o) and gc._floor.position.is_equal_approx(o) \
+		and gc._axes.position.is_equal_approx(o) and gc._guide.global_position.is_equal_approx(o) \
+		and absf(main.get("session").guide_origin.distance_to(o)) < 1e-5
+	gc.move(0.25)
+	var nudged: bool = canvas.origin().is_equal_approx(o + gc.normal.normalized() * 0.25) and gc.origin.is_equal_approx(canvas.origin())
+	main.set_tool("guide")
+	await _settle()
+	var no_offset: bool = shell._bar_row.find_child("Guide position", true, false) == null
+	await _shot("user://origin_axes.png")
+	main.set_tool("draw")
 	canvas.reset_world_colors()
 	canvas.set_origin(Vector3.ZERO)
 	var reset_ok: bool = not canvas.has_world_colors() and canvas.world_background(Color.RED) == Color.RED and canvas.origin() == Vector3.ZERO
 	canvas.world_changed.disconnect(count_world)
-	print("SMOKE world origin=", origin_ok, " colours=", world_ok, " reset=", reset_ok, " signals=", world_signals[0] == 5, " not_undo=", canvas.can_undo() == undo_ok_before)
+	print("SMOKE world origin=", origin_ok, " colours=", world_ok, " reset=", reset_ok, " signals=", world_signals[0] == 6, " not_undo=", canvas.can_undo() == undo_ok_before,
+		" planes_follow=", follows, " nudge_moves_origin=", nudged, " no_offset_slider=", no_offset, " floor_at_origin=", gc._floor.position == Vector3.ZERO)
 	shell.draw_color = saved_style[0]
 	shell.recent_colors.assign(saved_style[1])
 	shell.brush_sizes = saved_style[2]

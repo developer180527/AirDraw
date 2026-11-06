@@ -97,7 +97,7 @@ func _ready() -> void:
 	guides = GuideController.new(session)
 	guides.changed.connect(func() -> void:
 		if toolbar:
-			toolbar.refresh_guide(guides.has_drawn(), guides.preset, guides.offset(), guides.opacity())
+			toolbar.refresh_guide(guides.has_drawn(), guides.preset, guides.opacity())
 			if not guides.has_drawn():
 				toolbar.dismiss_toast(GUIDE_READY)
 		_update_hud())
@@ -123,7 +123,6 @@ func _ready() -> void:
 			guides.align_to_view(rig.camera)
 		else:
 			guides.set_preset(i))
-	toolbar.guide_offset_changed.connect(guides.set_offset)
 	toolbar.guide_opacity_changed.connect(guides.set_opacity)
 	toolbar.tool_selected.connect(set_tool)
 	toolbar.eraser_size_changed.connect(func(r: float) -> void: session.eraser_radius = r)
@@ -329,6 +328,7 @@ func _apply_look() -> void:
 	var e: Dictionary = canvas.look_environment()
 	var env := environment.environment
 	env.background_color = e.background
+	guides.set_background(e.background)
 	env.ambient_light_color = e.ambient
 	env.ambient_light_energy = e.ambient_energy
 	sun.light_energy = e.sun_energy

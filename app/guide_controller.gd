@@ -1,8 +1,9 @@
 class_name GuideController
 extends Node3D
-## The drawing guide (the surface strokes land on) and the floor grid. Owns the preset
-## plane and keeps the input session's projection surface in sync; shows the drawn 3D guide
-## (owned by the canvas's document) in its place when there is one.
+## The drawing guide (the surface strokes land on), the floor grid and the sketch's origin
+## axes (§3k). The preset planes pass through the sketch's origin; keeps the input session's
+## projection surface in sync; shows the drawn 3D guide (owned by the canvas's document) in
+## its place when there is one.
 
 signal changed
 
@@ -28,6 +29,8 @@ var preset := 0
 
 var canvas: SketchCanvas
 var _guide: MeshInstance3D
+var _floor: MeshInstance3D
+var _axes: OriginAxes
 var _drawn: MeshInstance3D
 var _start_line: MeshInstance3D
 var _opacity := DEFAULT_OPACITY
@@ -37,13 +40,16 @@ var _save_timer: Timer
 
 func _init(p_session: SketchSession) -> void:
 	session = p_session
-	var floor_grid := MeshInstance3D.new()
+	# The floor is the XZ plane through the origin.
+	_floor = MeshInstance3D.new()
+	_floor.name = "Floor grid"
 	var floor_mesh := PlaneMesh.new()
 	floor_mesh.size = Vector2(20, 20)
-	floor_grid.mesh = floor_mesh
-	floor_grid.material_override = _grid_material(Color(0.4, 0.4, 0.4, 0.35), Color(0, 0, 0, 0), 0.25)
-	floor_grid.position.y = -1.0
-	add_child(floor_grid)
+	_floor.mesh = floor_mesh
+	_floor.material_override = _grid_material(Color(0.4, 0.4, 0.4, 0.35), Color(0, 0, 0, 0), 0.25)
+	add_child(_floor)
+	_axes = OriginAxes.new()
+	add_child(_axes)
 
 	_guide = MeshInstance3D.new()
 	var guide_mesh := PlaneMesh.new()
@@ -67,7 +73,9 @@ func _init(p_session: SketchSession) -> void:
 func attach(p_canvas: SketchCanvas) -> void:
 	canvas = p_canvas
 	canvas.guide_changed.connect(_show_drawn)
+	canvas.world_changed.connect(_follow_origin)
 	_show_drawn()
+	_follow_origin()
 
 
 func has_drawn() -> bool:
@@ -92,20 +100,25 @@ func align_to_view(camera: Camera3D) -> void:
 	_apply()
 
 
-## Slides the plane along its normal.
+## Slides the plane along its normal by moving the sketch's origin: the planes always pass
+## through it (§3k).
 func move(amount: float) -> void:
-	origin += normal * amount
-	_apply()
+	if canvas:
+		canvas.set_origin(canvas.origin() + normal.normalized() * amount)
 
 
-## Places the plane at a signed distance along its normal.
-func set_offset(value: float) -> void:
-	origin = normal.normalized() * value
-	_apply()
+## Grid line colours that read on `background`: grey on light, light grey on dark.
+func set_background(color: Color) -> void:
+	var dark := color.get_luminance() < 0.45
+	_floor.material_override.set_shader_parameter("line_color", Color(0.85, 0.85, 0.9, 0.22) if dark else Color(0.4, 0.4, 0.4, 0.35))
+	_axes.set_background(color)
 
 
-func reset_origin() -> void:
-	origin = Vector3.ZERO
+## The planes, floor and axes follow the sketch's origin (moved, or another sketch loaded).
+func _follow_origin() -> void:
+	origin = canvas.origin()
+	_floor.position = origin
+	_axes.set_origin(origin)
 	_apply()
 
 
@@ -140,11 +153,6 @@ func _apply_opacity() -> void:
 		if node:
 			node.material_override.set_shader_parameter("line_color", Color(GUIDE_COLOR, line))
 			node.material_override.set_shader_parameter("fill_color", Color(GUIDE_COLOR, o))
-
-
-## Signed distance of the plane from the world origin, for display.
-func offset() -> float:
-	return origin.dot(normal)
 
 
 func _apply() -> void:

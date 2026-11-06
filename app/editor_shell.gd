@@ -12,7 +12,6 @@ extends CanvasLayer
 signal action(name: String)  ## gallery, export, undo, redo, edit_brush, import_brushes, clear, remove_guide, save_copy, fit_view
 signal tool_selected(tool: String)  ## draw, erase, select, guide
 signal plane_requested(index: int)  ## GuideController preset index (3 = view-aligned)
-signal guide_offset_changed(offset: float)
 signal guide_opacity_changed(opacity: float)
 signal view_requested(view: String)  ## front, back, side, left, top, bottom, 3d
 signal orbit_requested(delta: Vector2)
@@ -116,7 +115,6 @@ var _press_serial := 0  ## invalidates a pending long-press
 ## Guide state shown in the context bars.
 var _has_drawn_guide := false
 var _plane := 0
-var _offset := 0.0
 var _guide_opacity := GuideController.DEFAULT_OPACITY
 var _guide_drawing := false
 
@@ -277,11 +275,10 @@ func set_tool(p_tool: String) -> void:
 	_rebuild_bar()
 
 
-## Guide state for the context bars: a drawn guide, or the preset plane and its offset.
-func refresh_guide(has_drawn: bool, plane: int, offset: float, opacity: float) -> void:
+## Guide state for the context bars: a drawn guide, or the preset plane.
+func refresh_guide(has_drawn: bool, plane: int, opacity: float) -> void:
 	_has_drawn_guide = has_drawn
 	_plane = plane
-	_offset = offset
 	_guide_opacity = opacity
 	_rebuild_bar()
 
@@ -946,22 +943,10 @@ func _guide_bar() -> void:
 		b.button_group = group
 		b.button_pressed = not _has_drawn_guide and i == _plane
 		b.tooltip_text = "Draw on a flat %s plane" % GUIDE_PLANES[i].to_lower() if i < 3 else "Draw on a plane facing you"
-	_bar_row.add_child(VSeparator.new())
+	# Planes pass through the sketch's origin; moving the origin moves them (§3k).
 	if _has_drawn_guide:
+		_bar_row.add_child(VSeparator.new())
 		_bar_button("Remove guide", "Remove", action.emit.bind("remove_guide"))
-	else:
-		var slider := HSlider.new()
-		slider.name = "Guide position"
-		slider.min_value = -3.0
-		slider.max_value = 3.0
-		slider.step = 0.01
-		slider.value = _offset
-		slider.tooltip_text = "Move the plane along its normal (Alt + wheel)"
-		slider.custom_minimum_size.x = 130 * _s
-		slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		slider.value_changed.connect(guide_offset_changed.emit)
-		_bar_row.add_child(slider)
-		_bar_button("Reset position", "Reset", func() -> void: guide_offset_changed.emit(0.0))
 	_bar_row.add_child(VSeparator.new())
 	var label := Label.new()
 	label.text = "Opacity"
