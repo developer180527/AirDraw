@@ -806,6 +806,21 @@ func _ready() -> void:
 	print("SMOKE style_ui popover=", pop_opened, " picked=", picked, " sized=", sized, " size_per_brush=", size_remembered, " drawn=", ui_drawn,
 		" selection_colour=", sel_recoloured, " selection_size=", sel_resized, " undo=", sel_undone, " brush_colour=", brush_again,
 		" cleaned_up=", canvas.stroke_count() == ui_count)
+	# Origin and world colours (§3k step 1): saved settings with a change signal, not edits.
+	var world_signals := [0]
+	var count_world := func() -> void: world_signals[0] += 1
+	canvas.world_changed.connect(count_world)
+	var undo_ok_before: bool = canvas.can_undo()
+	canvas.set_origin(Vector3(0.5, -1.0, 2.0))
+	canvas.set_world_background(Color8(20, 24, 33))
+	canvas.set_world_light(Color8(255, 230, 200))
+	var origin_ok: bool = canvas.origin().is_equal_approx(Vector3(0.5, -1.0, 2.0)) and canvas.is_dirty()
+	var world_ok: bool = canvas.world_background(Color.WHITE).is_equal_approx(Color8(20, 24, 33)) and canvas.world_light(Color.WHITE).is_equal_approx(Color8(255, 230, 200)) and canvas.has_world_colors()
+	canvas.reset_world_colors()
+	canvas.set_origin(Vector3.ZERO)
+	var reset_ok: bool = not canvas.has_world_colors() and canvas.world_background(Color.RED) == Color.RED and canvas.origin() == Vector3.ZERO
+	canvas.world_changed.disconnect(count_world)
+	print("SMOKE world origin=", origin_ok, " colours=", world_ok, " reset=", reset_ok, " signals=", world_signals[0] == 5, " not_undo=", canvas.can_undo() == undo_ok_before)
 	shell.draw_color = saved_style[0]
 	shell.recent_colors.assign(saved_style[1])
 	shell.brush_sizes = saved_style[2]

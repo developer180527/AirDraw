@@ -1,12 +1,12 @@
 //! The `.airdraw` file format (little-endian), docs/ARCHITECTURE.md §3c and §3h.
 //!
-//! Format 4 (current):
+//! Format 5 (current; 4 had no origin):
 //!
 //! ```text
 //! "ADRW"  u16 format version  u16 flags (0)
 //! u32 thumbnail length (0 = none), PNG bytes
 //! sections (airdraw-pack): META (required, TOML: app version, layers, brush snapshots, Look,
-//!   drawn guide), STRK (required, stroke data, see `strokes.rs`), STYL (required, only
+//!   drawn guide, origin (required from format 5), world colours (§3k)), STRK (required, stroke data, see `strokes.rs`), STYL (required, only
 //!   when a stroke has its own colour or size, §3j), HIST (optional, `history.rs`); each
 //!   compressed by its own codec and CRC-checked
 //! ```
@@ -57,12 +57,14 @@ use airdraw_pack::{CodecId, Codecs, PackError, ReadLimits, Section, SectionId, W
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
-use crate::document::{BrushRef, Document, Layer, LayerId, Op, Stroke, StrokeId, StrokeStyle};
+use crate::document::{BrushRef, Document, Layer, LayerId, Op, Stroke, StrokeId, StrokeStyle, World};
 
 pub const EXTENSION: &str = "airdraw";
 const MAGIC: &[u8; 4] = b"ADRW";
 /// Newest file format this build reads and the one it writes.
-pub const FORMAT_VERSION: u16 = 4;
+pub const FORMAT_VERSION: u16 = 5;
+/// First format whose metadata must say where the origin is (§3k).
+const ORIGIN_SINCE: u16 = 5;
 /// First format made of `airdraw-pack` sections.
 const SECTIONS_SINCE: u16 = 4;
 const META: SectionId = SectionId(*b"META");
@@ -174,6 +176,40 @@ struct Meta {
     /// Read leniently: a guide kind from a newer app is dropped, not the sketch.
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
     guide: Option<GuideDef>,
+    /// Where the sketch's axes cross (§3k). Required from format 5; older files: world zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<[f32; 3]>,
+    /// The sketch's own background and light colours (§3k); absent = the Look's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    world: Option<WorldDef>,
+}
+
+/// `[world]` in the metadata: sRGB hex colours over the Look's.
+#[derive(Serialize, Deserialize)]
+struct WorldDef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    background: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    light: Option<String>,
+}
+
+impl WorldDef {
+    fn new(w: World) -> Option<Self> {
+        let hex = |c: [u8; 3]| format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]);
+        (w != World::default()).then(|| Self { background: w.background.map(hex), light: w.light.map(hex) })
+    }
+
+    fn into_world(self) -> Result<World, DocError> {
+        let parse = |s: Option<String>| -> Result<Option<[u8; 3]>, DocError> {
+            let Some(s) = s else { return Ok(None) };
+            let h = s.strip_prefix('#').filter(|h| h.len() == 6 && h.is_ascii());
+            let byte = |h: &str, i: usize| u8::from_str_radix(&h[i * 2..i * 2 + 2], 16).ok();
+            h.and_then(|h| Some([byte(h, 0)?, byte(h, 1)?, byte(h, 2)?]))
+                .map(Some)
+                .ok_or_else(|| DocError::Corrupt(format!("world colour {s}")))
+        };
+        Ok(World { background: parse(self.background)?, light: parse(self.light)? })
+    }
 }
 
 /// Optional data from a newer app must not stop a sketch from opening: if the value doesn't
@@ -190,6 +226,10 @@ struct Content<'a> {
     brushes: &'a [BrushDef],
     look_def: Option<&'a LookDef>,
     guide: Option<GuideDef>,
+    /// Absent unless set, so sketches without world colours keep their hashes. (The origin
+    /// isn't the artwork: moving it changes no stroke and no export.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    world: Option<WorldDef>,
 }
 
 /// A [`Guide`] as stored in the metadata (`[guide] kind = "sweep"`, …). Kept here so the
@@ -315,8 +355,13 @@ impl Document {
     }
 
     fn content_toml(&self, brushes: &[BrushDef]) -> String {
-        let content =
-            Content { layers: &self.layers, brushes, look_def: self.look.as_ref(), guide: self.guide().map(|g| GuideDef::new(g)) };
+        let content = Content {
+            layers: &self.layers,
+            brushes,
+            look_def: self.look.as_ref(),
+            guide: self.guide().map(|g| GuideDef::new(g)),
+            world: WorldDef::new(self.world),
+        };
         toml::to_string(&content).expect("document content always serializes")
     }
 
@@ -330,6 +375,8 @@ impl Document {
             look: self.look_id().map(str::to_string),
             look_def: self.look.clone(),
             guide: self.guide().map(|g| GuideDef::new(g)),
+            origin: Some(self.origin.to_array()),
+            world: WorldDef::new(self.world),
         };
         toml::to_string(&meta).expect("document metadata always serializes")
     }
@@ -375,7 +422,16 @@ impl Document {
         let content_id =
             meta.content_id.filter(|id| valid_content_id(id)).unwrap_or_else(|| blake3::hash(bytes).to_hex()[..32].to_string());
         let brush_count = meta.brushes.len();
+        let origin = match meta.origin {
+            Some(o) if o.iter().all(|v| v.is_finite()) => Vec3::from_array(o),
+            Some(o) => return Err(DocError::Corrupt(format!("origin {o:?}"))),
+            None if version >= ORIGIN_SINCE => return Err(DocError::Corrupt("no origin".into())),
+            None => Vec3::ZERO,
+        };
+        let world = meta.world.map(WorldDef::into_world).transpose()?.unwrap_or_default();
         let mut doc = Document::from_parts(meta.layers, strokes, meta.brushes, thumbnail, look, guide, content_id);
+        doc.origin = origin;
+        doc.world = world;
         // History is optional: if it doesn't fit the strokes, the sketch opens without it.
         if let Some(Ok((undo, redo))) = history.map(|h| crate::history::decode(&h, &doc.strokes, brush_count)) {
             doc.set_history(undo, redo);
@@ -751,11 +807,11 @@ mod tests {
     }
 
     #[test]
-    fn format4_is_compressed_sections_and_round_trips_at_every_level() {
+    fn sections_are_compressed_and_round_trip_at_every_level() {
         let d = sample_doc();
         for level in [Level::Fast, Level::Default, Level::Max] {
             let bytes = d.to_bytes_with(SaveOptions { level, ..Default::default() });
-            assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 4);
+            assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), FORMAT_VERSION);
             let back = Document::from_bytes(&bytes).unwrap();
             assert_eq!(back.strokes(), d.strokes());
             assert_eq!(back.layers(), d.layers());
@@ -1552,6 +1608,48 @@ mod tests {
             assert!(!back.can_undo() && !back.can_redo());
         }
         assert!(reopen(text).can_undo(), "the untouched section still works");
+    }
+
+    #[test]
+    fn origin_and_world_colours_round_trip() {
+        let mut d = sample_doc();
+        let plain_hash = d.content_hash();
+        d.set_origin(Vec3::new(0.25, -1.5, 3.0));
+        assert_eq!(d.content_hash(), plain_hash, "the origin isn't the artwork");
+        d.set_world(World { background: Some([12, 34, 56]), light: Some([255, 240, 200]) });
+        assert_ne!(d.content_hash(), plain_hash, "world colours are");
+        let bytes = d.to_bytes();
+        assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 5);
+        let back = Document::from_bytes(&bytes).unwrap();
+        assert_eq!((back.origin(), back.world()), (d.origin(), d.world()));
+        assert!(!back.is_dirty());
+        let meta = String::from_utf8(sections(&bytes).get(META).unwrap().data.clone()).unwrap();
+        assert!(meta.contains("origin = [0.25, -1.5, 3.0]") && meta.contains("background = \"#0C2238\""), "{meta}");
+        // Without world colours there's no [world] table, and the hash is as before.
+        d.set_world(World::default());
+        assert_eq!(d.content_hash(), plain_hash);
+        assert!(!String::from_utf8(sections(&d.to_bytes()).get(META).unwrap().data.clone()).unwrap().contains("[world]"));
+    }
+
+    #[test]
+    fn format5_needs_a_good_origin_and_world() {
+        let d = sample_doc();
+        let meta = String::from_utf8(sections(&d.to_bytes()).get(META).unwrap().data.clone()).unwrap();
+        let reopen = |m: String| {
+            let mut all = sections(&d.to_bytes()).sections;
+            all[0].data = m.into_bytes();
+            let mut w = d.file_head(FORMAT_VERSION);
+            airdraw_pack::write(&mut w, &all, codecs(), WriteOptions { codec: WRITE_CODEC, level: Level::Fast }).unwrap();
+            Document::from_bytes(&w)
+        };
+        assert!(reopen(meta.clone()).is_ok());
+        let line = meta.lines().find(|l| l.starts_with("origin = ")).unwrap().to_string();
+        assert!(matches!(reopen(meta.replace(&line, "")), Err(DocError::Corrupt(_))), "missing origin");
+        assert!(matches!(reopen(meta.replace(&line, "origin = [0.0, nan, 0.0]")), Err(DocError::Corrupt(_))));
+        let with_world = meta.replace(&line, &format!("{line}\n\n[world]\nbackground = \"#12345G\""));
+        assert!(matches!(reopen(with_world), Err(DocError::Corrupt(_))), "bad world colour");
+        // Older formats open with the origin at world zero.
+        assert_eq!(Document::from_bytes(&d.to_bytes_format3()).unwrap().origin(), Vec3::ZERO);
     }
 
     #[test]

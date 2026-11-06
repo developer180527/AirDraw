@@ -169,6 +169,18 @@ pub struct Document {
     /// Random id given to the sketch when it's created; survives saves and edits. Lets
     /// per-device state (camera, tool) be remembered outside the file (§3h).
     pub(crate) content_id: String,
+    /// Where the sketch's axes cross; its planes pass through it (§3k). World coordinates;
+    /// a drawing aid, not a transform: strokes and exports don't move with it.
+    pub(crate) origin: glam::Vec3,
+    /// The sketch's own background and light colours over its Look's (§3k).
+    pub(crate) world: World,
+}
+
+/// A sketch's world colours (§3k): sRGB, `None` = the Look's own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct World {
+    pub background: Option<[u8; 3]>,
+    pub light: Option<[u8; 3]>,
 }
 
 impl Default for Document {
@@ -192,6 +204,8 @@ impl Document {
             guide: None,
             look: None,
             content_id: new_content_id(),
+            origin: glam::Vec3::ZERO,
+            world: World::default(),
         }
     }
 
@@ -220,6 +234,8 @@ impl Document {
             guide: guide.map(Arc::new),
             look,
             content_id,
+            origin: glam::Vec3::ZERO,
+            world: World::default(),
         }
     }
 
@@ -279,6 +295,32 @@ impl Document {
         self.next_stroke = self.next_stroke.max(max_id + 1);
         self.undo = undo;
         self.redo = redo;
+    }
+
+    /// Where the sketch's axes cross (§3k).
+    pub fn origin(&self) -> glam::Vec3 {
+        self.origin
+    }
+
+    /// Moves the origin. A drawing aid like the Look: saved, but not an undo step. A
+    /// non-finite position is ignored.
+    pub fn set_origin(&mut self, origin: glam::Vec3) {
+        if origin.is_finite() && origin != self.origin {
+            self.origin = origin;
+            self.dirty = true;
+        }
+    }
+
+    pub fn world(&self) -> World {
+        self.world
+    }
+
+    /// Sets the sketch's world colours (saved, not an undo step).
+    pub fn set_world(&mut self, world: World) {
+        if world != self.world {
+            self.world = world;
+            self.dirty = true;
+        }
     }
 
     /// The sketch's permanent random id (32 hex digits).
@@ -986,5 +1028,19 @@ pub(crate) mod tests {
         }
         d.undo();
         assert_eq!(d.stroke(moved[0]).unwrap().style, style, "undo restores the old size");
+    }
+
+    #[test]
+    fn origin_and_world_are_saved_settings_not_edits() {
+        let mut d = Document::new();
+        assert_eq!(d.origin(), Vec3::ZERO);
+        d.set_origin(Vec3::new(1.0, 2.0, -3.0));
+        assert!(d.is_dirty() && !d.can_undo(), "not an undo step");
+        d.mark_saved();
+        d.set_origin(Vec3::new(f32::NAN, 0.0, 0.0));
+        assert_eq!(d.origin(), Vec3::new(1.0, 2.0, -3.0));
+        assert!(!d.is_dirty(), "a bad origin changes nothing");
+        d.set_world(World { background: Some([10, 20, 30]), light: None });
+        assert!(d.is_dirty() && !d.can_undo());
     }
 }

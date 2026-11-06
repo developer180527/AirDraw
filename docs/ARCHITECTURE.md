@@ -1502,6 +1502,91 @@ override); "merge" groups by it. Sizes are already in the geometry. SVG uses the
 3. Size range 0.1×–10× (proposed)?
 4. Picking a colour with a selection: recolour the selection too (proposed), or only new strokes?
 
+### 3k. Origin, axis planes, camera lock and the sketch's world colours (approved 2026-11-07; step 1 implemented)
+
+Every sketch has an origin and three axes, and the planes through them are its built-in
+guides: you pick one from the view cube. Drawn 3D guides stay for anything else. Pre-v1, so
+the file format changes without keeping older `.airdraw` files readable.
+
+#### Origin and axes (in every sketch)
+
+- **Saved in every file** (required `META` key `origin = [x, y, z]`, world coordinates);
+  a new sketch's origin is world zero. Not an undo step (like the Look).
+- **Shown always:** X red, Y green, Z blue lines through the origin (fading with distance,
+  thin at any zoom), X/Y/Z labels at their ends, a dot at the origin. The floor grid is the
+  XZ plane through the origin (it was 1 m below the world origin).
+- **Planes pass through the origin.** The offset slider goes: to draw at another depth you
+  move the origin.
+- **Move Origin mode:** a button in the Guide tool's bar and in Sketch Settings. While it's
+  on, finger, Pencil and mouse do one thing only: drag the origin (no drawing, erasing,
+  selecting or camera moves; two fingers still orbit, so you can see where it goes). It
+  moves in the current plane, under the pen; the plane's own axis via a handle on the
+  origin dot, as the gizmo's depth bar does. Done (or Esc) ends it. Reset puts it back at
+  world zero. Exports keep world coordinates (the origin is a drawing aid).
+
+#### Picking a plane: the view cube only
+
+| Cube face | Plane | Normal (towards you) |
+|---|---|---|
+| Front | XY | +Z |
+| Back | YX | −Z |
+| Top | XZ | +Y |
+| Bottom | ZX | −Y |
+| Right | YZ | +X |
+| Left | ZY | −X |
+
+- Tapping a face turns the camera to it (as now) **and** makes that plane the guide; the
+  cube shows the active plane's face in the accent colour. The Guide bar loses its plane
+  buttons. A drawn 3D guide replaces the plane (undoable, as now); tapping a face goes back
+  to planes.
+- Double-tap (3D view) and orbiting keep the current plane.
+- The plane draws its two axes in their colours, so you always see which one is on.
+
+#### Camera: lock, and back to the origin
+
+A lock button by the view cube cycles **Unlocked → Lock distance → Lock orbit**:
+- **Lock distance:** the camera keeps its distance from the origin and looks at it. Pan,
+  zoom and free orbiting (dragging the cube, two-finger orbit, Fit View) are locked: trying
+  says "Orbiting is locked" (or "Distance is locked" for zoom/pan). Tapping a cube face still
+  turns the camera to that plane, around the origin at the same distance: lock a distance,
+  then take the planes one by one and draw on each.
+- **Lock orbit:** free orbiting is locked (same message); zoom and pan stay free; cube faces
+  still pick planes and turn the camera to them.
+- The pivot moves to the origin when locking. Not saved in the file (a view setting);
+  remembered per sketch on the device with the camera.
+
+**Back to Origin** (target icon): the camera glides to look at the origin from its current
+direction, at the default distance. Disabled (dimmed) while either lock is on.
+
+#### World colours (Sketch Settings)
+
+- ⋯ › **Sketch Settings…**: Background and Light colour swatches (the colour popover from
+  §3j), Reset to Look, and Move Origin / Reset Origin.
+- Light colour tints the key light, and the ambient light softly. Strength stays the Look's.
+- Saved in `META` (`[world] background`, `light`; unset = the Look's own); not undo steps.
+- Grid, guide, axes and origin dot keep their contrast on dark backgrounds. Thumbnails use
+  the sketch's background. Exports carry no background or light colour.
+
+#### Steps
+
+| Step | Deliverable |
+|---|---|
+| 1 ✅ | Format 5: `META` `origin = [x, y, z]` (required from 5; a missing or non-finite one is a damaged file), optional `[world] background/light` (`#RRGGBB`, bad = damaged). Older formats still open, origin at world zero (keeping them cost nothing). Content hash covers world colours, not the origin. `Document::set_origin`/`set_world` (dirty, not undo); canvas `origin`/`set_origin`, `world_background`/`world_light`/`set_world_*`/`reset_world_colors`, `world_changed` signal. Tests incl. 5 mutations; smoke `world` line |
+| 2 | Axes + origin dot + floor grid through the origin, contrast with the background; planes through the origin, offset slider removed |
+| 3 | View cube picks the six planes (active face lit); Guide bar without plane buttons |
+| 4 | Move Origin mode (Guide bar + Sketch Settings), Reset Origin |
+| 5 | Camera lock (distance / orbit) and Back to Origin buttons |
+| 6 | Sketch Settings: background, light colour, Reset to Look; thumbnails use the background |
+| 7 | Smoke checks per step; iPad check |
+
+#### Decisions (2026-11-07)
+
+1. The view-aligned plane goes: planes come from the cube's six faces only.
+2. Two locks: distance (no pan/zoom/free orbit) and orbit (zoom and pan free); cube faces
+   work in both.
+3. Back to Origin keeps the direction, at the default distance; disabled while locked.
+4. The floor grid (XZ through the origin) stays visible in every view.
+
 ## 4. Export system (`airdraw-export`)
 
 ### 4a. Flow

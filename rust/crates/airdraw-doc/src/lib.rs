@@ -9,6 +9,6 @@ mod history;
 pub mod recents;
 mod strokes;
 
-pub use document::{BrushRef, Change, Document, Layer, LayerId, Stroke, StrokeId, StrokeStyle};
+pub use document::{BrushRef, Change, Document, Layer, LayerId, Stroke, StrokeId, StrokeStyle, World};
 pub use file::{DocError, EXTENSION, FORMAT_VERSION, Level, MAX_THUMBNAIL_BYTES, SaveOptions, read_thumbnail};
 pub use recents::{RecentEntry, Recents};

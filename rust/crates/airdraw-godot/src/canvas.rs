@@ -184,6 +184,9 @@ impl SketchCanvas {
     /// The Look changed (picked, or a sketch was loaded): apply `look_environment()`.
     #[signal]
     fn look_changed();
+    /// The origin or the world colours changed (set, or a sketch was loaded) (§3k).
+    #[signal]
+    fn world_changed();
     /// The selection changed; `count` strokes are selected.
     #[signal]
     fn selection_changed(count: i64);
@@ -827,6 +830,66 @@ impl SketchCanvas {
         let changed = !changes.is_empty();
         self.apply(changes);
         changed
+    }
+
+    // ---- Origin and world colours (§3k) ----------------------------------------------------------
+
+    /// Where the sketch's axes cross; its planes pass through it.
+    #[func]
+    fn origin(&self) -> Vector3 {
+        let o = self.doc.origin();
+        Vector3::new(o.x, o.y, o.z)
+    }
+
+    /// Moves the origin (saved with the sketch, not an undo step).
+    #[func]
+    fn set_origin(&mut self, at: Vector3) {
+        let before = self.doc.origin();
+        self.doc.set_origin(glam::Vec3::new(at.x, at.y, at.z));
+        if self.doc.origin() != before {
+            self.signals().world_changed().emit();
+        }
+    }
+
+    /// The sketch's background colour, or `fallback` (the Look's) when it has none.
+    #[func]
+    fn world_background(&self, fallback: Color) -> Color {
+        self.doc.world().background.map_or(fallback, from_rgb8)
+    }
+
+    #[func]
+    fn world_light(&self, fallback: Color) -> Color {
+        self.doc.world().light.map_or(fallback, from_rgb8)
+    }
+
+    #[func]
+    fn has_world_colors(&self) -> bool {
+        self.doc.world() != airdraw_doc::World::default()
+    }
+
+    #[func]
+    fn set_world_background(&mut self, color: Color) {
+        let [r, g, b, _] = rgba8(color);
+        self.set_world(airdraw_doc::World { background: Some([r, g, b]), ..self.doc.world() });
+    }
+
+    #[func]
+    fn set_world_light(&mut self, color: Color) {
+        let [r, g, b, _] = rgba8(color);
+        self.set_world(airdraw_doc::World { light: Some([r, g, b]), ..self.doc.world() });
+    }
+
+    /// Back to the Look's background and light.
+    #[func]
+    fn reset_world_colors(&mut self) {
+        self.set_world(airdraw_doc::World::default());
+    }
+
+    fn set_world(&mut self, world: airdraw_doc::World) {
+        if world != self.doc.world() {
+            self.doc.set_world(world);
+            self.signals().world_changed().emit();
+        }
     }
 
     // ---- Colour and size (§3j) ---------------------------------------------------------------
@@ -1516,6 +1579,7 @@ impl SketchCanvas {
                 Change::Reset => {
                     self.signals().guide_changed().emit();
                     self.signals().look_changed().emit();
+                    self.signals().world_changed().emit();
                     for (_, mut node) in self.nodes.drain() {
                         node.queue_free();
                     }
@@ -1825,4 +1889,8 @@ fn rgba8(c: Color) -> [u8; 4] {
 
 fn from_rgba8(c: [u8; 4]) -> Color {
     Color::from_rgba8(c[0], c[1], c[2], c[3])
+}
+
+fn from_rgb8(c: [u8; 3]) -> Color {
+    Color::from_rgba8(c[0], c[1], c[2], 255)
 }
