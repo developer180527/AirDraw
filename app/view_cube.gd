@@ -1,7 +1,8 @@
 class_name ViewCube
 extends Control
 ## A small cube that turns with the camera, so you always see which way you face. Tap a face
-## to look straight at it, drag to orbit, double-tap a face to go back to the 3D view.
+## to look straight at it and draw on its plane (§3k: planes are picked here only), drag to
+## orbit, double-tap a face to go back to the 3D view. The active plane's face is lit.
 ## Looking straight at a face hides its neighbours, so arrows around the cube show where they
 ## are; tapping beside the cube in a direction turns to the face that lies that way.
 
@@ -9,10 +10,11 @@ signal view_requested(view: String)  ## front, back, side, left, top, bottom, 3d
 signal orbit_requested(delta: Vector2)
 
 ## normal, label, view name
+## normal, label, view name, plane
 const FACES := [
-	[Vector3.BACK, "Front", "front"], [Vector3.FORWARD, "Back", "back"],
-	[Vector3.RIGHT, "Right", "side"], [Vector3.LEFT, "Left", "left"],
-	[Vector3.UP, "Top", "top"], [Vector3.DOWN, "Bottom", "bottom"],
+	[Vector3.BACK, "Front", "front", "XY"], [Vector3.FORWARD, "Back", "back", "YX"],
+	[Vector3.RIGHT, "Right", "side", "YZ"], [Vector3.LEFT, "Left", "left", "ZY"],
+	[Vector3.UP, "Top", "top", "XZ"], [Vector3.DOWN, "Bottom", "bottom", "ZX"],
 ]
 const DRAG_THRESHOLD := 6.0
 ## Faces turned less than this toward the camera are too thin to tap; arrows stand in for them.
@@ -20,6 +22,8 @@ const SLIVER := 0.15
 
 var camera: Camera3D
 var ui_scale := 1.0
+## The face whose plane strokes land on ("" for a drawn guide).
+var active := ""
 
 var _basis := Basis()
 var _press_pos := Vector2.ZERO
@@ -50,7 +54,11 @@ func _draw() -> void:
 		var poly: PackedVector2Array = face.poly
 		# Light faces, shaded by how directly they face the camera (matches the round buttons).
 		var shade: float = 0.78 + 0.2 * face.facing
-		var fill := UiTheme.ACCENT if face.view == _hover else Color(shade, shade, shade * 0.99, 0.97)
+		var fill := Color(shade, shade, shade * 0.99, 0.97)
+		if face.view == active:
+			fill = Color(shade, shade, shade).lerp(UiTheme.ACCENT, 0.35)
+		if face.view == _hover:
+			fill = UiTheme.ACCENT
 		draw_colored_polygon(poly, fill)
 		var outline := poly.duplicate()
 		outline.append(poly[0])
@@ -59,8 +67,15 @@ func _draw() -> void:
 			var w := font.get_string_size(face.label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
 			var c: Vector2 = face.center
 			var ink := Color.WHITE if face.view == _hover else UiTheme.INK
-			draw_string(font, c + Vector2(-w / 2, font_size * 0.35), face.label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size,
-				Color(ink, clampf(face.facing * 1.4, 0.0, 1.0)))
+			var alpha := clampf(face.facing * 1.4, 0.0, 1.0)
+			draw_string(font, c + Vector2(-w / 2, font_size * 0.35 - font_size * 0.55), face.label, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size,
+				Color(ink, alpha))
+			# The face's plane under its name, bold on the active one.
+			var plane_font: Font = UiTheme.font(700 if face.view == active else 500)
+			var pw := plane_font.get_string_size(face.plane, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+			var plane_ink := Color.WHITE if face.view == _hover else (UiTheme.ACCENT.darkened(0.25) if face.view == active else Color(ink, 0.55))
+			draw_string(plane_font, c + Vector2(-pw / 2, font_size * 0.35 + font_size * 0.6), face.plane, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size,
+				Color(plane_ink, alpha))
 	# Arrows toward faces that are hidden or edge-on.
 	var center := size / 2
 	var a := 6.0 * ui_scale
@@ -170,7 +185,7 @@ func _visible_faces() -> Array:
 			var p: Vector3 = inv * (n + corner)
 			poly.append(center + Vector2(p.x, -p.y) * r)
 		var c3 := inv * n
-		out.append({"poly": poly, "facing": facing, "label": f[1], "view": f[2],
+		out.append({"poly": poly, "facing": facing, "label": f[1], "view": f[2], "plane": f[3],
 			"center": center + Vector2(c3.x, -c3.y) * r, "depth": c3.z})
 	out.sort_custom(func(a, b) -> bool: return a.depth < b.depth)
 	return out

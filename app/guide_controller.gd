@@ -8,10 +8,13 @@ extends Node3D
 signal changed
 
 const GRID_SHADER := preload("res://grid.gdshader")
-const PLANE_NORMALS := [Vector3.FORWARD, Vector3.RIGHT, Vector3.UP]
-const PLANE_NAMES := ["Front (XY)", "Side (YZ)", "Top (XZ)"]
-## Index used for the view-aligned plane (matches the toolbar's plane buttons).
-const VIEW_ALIGNED := 3
+## The six axis planes, one per view-cube face (§3k): the face's view → the normal facing
+## the viewer from that side, and the plane's name. YX is XY seen from behind, and so on.
+const PLANES := {
+	"front": [Vector3.BACK, "XY"], "back": [Vector3.FORWARD, "YX"],
+	"top": [Vector3.UP, "XZ"], "bottom": [Vector3.DOWN, "ZX"],
+	"side": [Vector3.RIGHT, "YZ"], "left": [Vector3.LEFT, "ZY"],
+}
 const GUIDE_COLOR := Color(0.3, 0.45, 0.95)
 ## Guide opacity is a device preference (how you like to see guides), not part of a sketch:
 ## a file must never change because someone viewed it differently.
@@ -21,11 +24,11 @@ const DEFAULT_OPACITY := 0.1
 const MAX_OPACITY := 0.9
 
 var session: SketchSession
-var normal := Vector3.FORWARD
+var normal := Vector3.BACK
 var origin := Vector3.ZERO
-var name_text := "Front (XY)"
-## Which preset is active (0–2), or VIEW_ALIGNED.
-var preset := 0
+var name_text := "XY"
+## The active plane, by its view-cube face ("front" = XY, …).
+var plane := "front"
 
 var canvas: SketchCanvas
 var _guide: MeshInstance3D
@@ -82,21 +85,14 @@ func has_drawn() -> bool:
 	return canvas != null and canvas.has_drawn_guide()
 
 
-## Choosing a preset replaces a drawn guide (undoable).
-func set_preset(index: int) -> void:
+## Picks the plane of a view-cube face; replaces a drawn guide (undoable).
+func set_plane(view: String) -> void:
+	if not PLANES.has(view):
+		return
 	_drop_drawn()
-	preset = index
-	normal = PLANE_NORMALS[index]
-	name_text = PLANE_NAMES[index]
-	_apply()
-
-
-## Plane facing the camera, through the current origin.
-func align_to_view(camera: Camera3D) -> void:
-	_drop_drawn()
-	preset = VIEW_ALIGNED
-	normal = camera.global_transform.basis.z
-	name_text = "View-aligned"
+	plane = view
+	normal = PLANES[view][0]
+	name_text = PLANES[view][1]
 	_apply()
 
 

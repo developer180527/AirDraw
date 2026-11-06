@@ -1502,7 +1502,7 @@ override); "merge" groups by it. Sizes are already in the geometry. SVG uses the
 3. Size range 0.1×–10× (proposed)?
 4. Picking a colour with a selection: recolour the selection too (proposed), or only new strokes?
 
-### 3k. Origin, axis planes, camera lock and the sketch's world colours (approved 2026-11-07; steps 1–2 implemented)
+### 3k. Origin, axis planes, camera lock and the sketch's world colours (approved 2026-11-07; steps 1–3 implemented)
 
 Every sketch has an origin and three axes, and the planes through them are its built-in
 guides: you pick one from the view cube. Drawn 3D guides stay for anything else. Pre-v1, so
@@ -1573,7 +1573,7 @@ direction, at the default distance. Disabled (dimmed) while either lock is on.
 |---|---|
 | 1 ✅ | Format 5: `META` `origin = [x, y, z]` (required from 5; a missing or non-finite one is a damaged file), optional `[world] background/light` (`#RRGGBB`, bad = damaged). Older formats still open, origin at world zero (keeping them cost nothing). Content hash covers world colours, not the origin. `Document::set_origin`/`set_world` (dirty, not undo); canvas `origin`/`set_origin`, `world_background`/`world_light`/`set_world_*`/`reset_world_colors`, `world_changed` signal. Tests incl. 5 mutations; smoke `world` line |
 | 2 ✅ | `OriginAxes` (`app/origin_axes.gd`): X/Y/Z as screen-space lines 2.5 px wide at a 900 px view (quads pushed out in clip space; Godot lines are 1 px), solid on the positive side, faint on the negative, fading over 20 m; fixed-size labels a metre out and an origin dot. The floor grid is the XZ plane through the origin. Preset planes pass through the sketch origin (`GuideController` follows `world_changed`); the offset slider is gone and nudging (Alt+wheel) moves the origin. Grid and dot colours follow the background's brightness. Smoke `world` line: planes/floor/axes follow, nudge moves the origin, no offset slider |
-| 3 | View cube picks the six planes (active face lit); Guide bar without plane buttons |
+| 3 ✅ | `GuideController.set_plane(view)`: six facing planes keyed by cube face (front XY +Z, back YX −Z, top XZ +Y, bottom ZX −Y, side YZ +X, left ZY −X); a cube face (or F/S/T) turns the camera and picks its plane, the 3D view keeps it; the cube tints the active face and shows each face's plane name. Guide bar: no plane buttons; view-aligned plane removed. Smoke `cube_planes` line (YZ from a tap, kept in 3D, a stroke lands in YZ, Top → XZ, no plane buttons) |
 | 4 | Move Origin mode (Guide bar + Sketch Settings), Reset Origin |
 | 5 | Camera lock (distance / orbit) and Back to Origin buttons |
 | 6 | Sketch Settings: background, light colour, Reset to Look; thumbnails use the background |

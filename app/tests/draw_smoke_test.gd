@@ -434,7 +434,7 @@ func _ready() -> void:
 	canvas.load_document(guide_path)
 	main.set_tool("draw")
 	shell.toast(main.GUIDE_READY)
-	main.get("guides").set_preset(0)
+	main.get("guides").set_plane("front")
 	print("SMOKE guide preset_replaces=", not canvas.has_drawn_guide(), " stale_toast_hidden=", not shell._toast.visible)
 	rig.set_view("front")
 	await get_tree().create_timer(0.5).timeout
@@ -535,6 +535,35 @@ func _ready() -> void:
 	_touch(6, beside, false)
 	await get_tree().create_timer(0.5).timeout
 	print("SMOKE cube_tap_right_turns=", is_equal_approx(rig.yaw, PI / 2), " now_facing=", cube._face_at(cube.size / 2))
+	# Planes come from the cube only (§3k): that tap also made YZ the plane, facing +X; the 3D
+	# view keeps it; a stroke drawn now lies in YZ through the origin; Top makes it XZ.
+	var cg = main.get("guides")
+	var right_plane: bool = cg.plane == "side" and cg.normal == Vector3.RIGHT and cube.active == "side" and cg.name_text == "YZ"
+	rig.set_view("3d")
+	await get_tree().create_timer(0.5).timeout
+	var kept_in_3d: bool = cg.plane == "side"
+	var before_plane_stroke: int = canvas.stroke_count()
+	await _stroke(center + Vector2(-40, -40), func(t: float) -> Vector2: return Vector2(80.0 * t, 60.0 * t))
+	var yz_box: AABB = canvas.stroke_bounds(canvas.stroke_ids()[-1])
+	# Flat in X (only the brush's own thickness) and centred on the origin's X.
+	var on_yz: bool = canvas.stroke_count() == before_plane_stroke + 1 and yz_box.size.x < 0.05 and absf(yz_box.get_center().x - canvas.origin().x) < 0.03 \
+		and yz_box.size.y > 0.1
+	_key(KEY_Z, true)
+	var top_at: Vector2 = cube.get_global_rect().get_center() + Vector2(0, -cube._radius() * 1.3)
+	rig.set_view("front")
+	await get_tree().create_timer(0.5).timeout
+	_touch(6, top_at, true)
+	_touch(6, top_at, false)
+	await get_tree().create_timer(0.5).timeout
+	var top_plane: bool = cg.plane == "top" and cg.normal == Vector3.UP and cube.active == "top"
+	main.set_tool("guide")
+	await _settle()
+	var no_plane_buttons: bool = shell._bar_row.find_child("Front", true, false) == null and shell._bar_row.find_child("View", true, false) == null
+	main.set_tool("draw")
+	print("SMOKE cube_planes right_is_yz=", right_plane, " kept_in_3d=", kept_in_3d, " drawn_in_plane=", on_yz, " top_is_xz=", top_plane,
+		" no_plane_buttons=", no_plane_buttons)
+	await _shot("user://cube_plane.png")
+	cg.set_plane("front")
 	rig.set_view("3d")
 	await get_tree().create_timer(0.5).timeout
 

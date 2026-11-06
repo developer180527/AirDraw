@@ -97,7 +97,8 @@ func _ready() -> void:
 	guides = GuideController.new(session)
 	guides.changed.connect(func() -> void:
 		if toolbar:
-			toolbar.refresh_guide(guides.has_drawn(), guides.preset, guides.opacity())
+			toolbar.refresh_guide(guides.has_drawn(), guides.opacity())
+			toolbar.show_plane("" if guides.has_drawn() else guides.plane)
 			if not guides.has_drawn():
 				toolbar.dismiss_toast(GUIDE_READY)
 		_update_hud())
@@ -118,11 +119,6 @@ func _ready() -> void:
 	toolbar = EditorShell.new()
 	add_child(toolbar)
 	toolbar.layout_changed.connect(_update_ui_regions)
-	toolbar.plane_requested.connect(func(i: int) -> void:
-		if i == GuideController.VIEW_ALIGNED:
-			guides.align_to_view(rig.camera)
-		else:
-			guides.set_preset(i))
 	toolbar.guide_opacity_changed.connect(guides.set_opacity)
 	toolbar.tool_selected.connect(set_tool)
 	toolbar.eraser_size_changed.connect(func(r: float) -> void: session.eraser_radius = r)
@@ -144,7 +140,9 @@ func _ready() -> void:
 			_set_status("Draw a longer line to make a guide."))
 	session.pen_down.connect(func() -> void: toolbar.close_sheet())
 	session.ui_toggle_requested.connect(func() -> void: toolbar.toggle_ui())
-	toolbar.view_requested.connect(rig.set_view)
+	# Planes are picked on the view cube only (§3k): a face turns the camera to it and makes its
+	# plane the guide; the 3D view (double-tap) keeps the plane.
+	toolbar.view_requested.connect(_view_and_plane)
 	toolbar.orbit_requested.connect(rig.orbit)
 	toolbar.action.connect(_file_action)
 	toolbar.setup(canvas, rig.camera)
@@ -188,7 +186,7 @@ func _ready() -> void:
 		poll.timeout.connect(_open_pending_files)
 		add_child(poll)
 		poll.start()
-	guides.set_preset(0)
+	guides.set_plane("front")
 	# Opened from Finder / the command line with a sketch: go straight to it.
 	for arg in OS.get_cmdline_args() + OS.get_cmdline_user_args():
 		if arg.get_extension().to_lower() == "airdraw" and FileAccess.file_exists(arg):
@@ -301,11 +299,11 @@ func _handle_key(event: InputEventKey) -> void:
 		"export", "clear":
 			_file_action(action)
 		"view_front":
-			rig.set_view("front")
+			_view_and_plane("front")
 		"view_side":
-			rig.set_view("side")
+			_view_and_plane("side")
 		"view_top":
-			rig.set_view("top")
+			_view_and_plane("top")
 		"view_reset":
 			rig.set_view("3d")
 			rig.fit(_sketch_box())
@@ -483,6 +481,12 @@ func _cycle_brush(step: int) -> void:
 	var ids := canvas.brush_ids()
 	var i := ids.find(canvas.current_brush())
 	canvas.set_brush(ids[posmod(i + step, ids.size())])
+
+
+## A view-cube face (or its shortcut): look at it and draw on its plane.
+func _view_and_plane(view: String) -> void:
+	rig.set_view(view)
+	guides.set_plane(view)
 
 
 func _update_hud() -> void:

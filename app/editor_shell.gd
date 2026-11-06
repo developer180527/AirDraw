@@ -11,7 +11,6 @@ extends CanvasLayer
 
 signal action(name: String)  ## gallery, export, undo, redo, edit_brush, import_brushes, clear, remove_guide, save_copy, fit_view
 signal tool_selected(tool: String)  ## draw, erase, select, guide
-signal plane_requested(index: int)  ## GuideController preset index (3 = view-aligned)
 signal guide_opacity_changed(opacity: float)
 signal view_requested(view: String)  ## front, back, side, left, top, bottom, 3d
 signal orbit_requested(delta: Vector2)
@@ -34,7 +33,6 @@ const ERASER_SIZES := Vector2(8.0, 96.0)
 ## Selection commands: action, label, shortcut.
 const SELECTION_ACTIONS := [["delete", "Delete", "delete_selection"], ["duplicate", "Duplicate", "duplicate"],
 	["rebrush", "Re-brush", "rebrush_selection"], ["select_all", "Select All", "select_all"]]
-const GUIDE_PLANES := ["Front", "Side", "Top", "View"]
 const RECENT_MAX := 5
 ## Stroke colours (§3j): neutrals and browns, strong colours, soft colours.
 const PALETTE := ["#1B1B1F", "#4A4A50", "#8A8A90", "#C8C8CC", "#FFFFFF", "#6B4226", "#A0522D", "#D9A066",
@@ -114,7 +112,6 @@ var _press_at := Vector2.INF  ## where a right-click or a lone finger went down
 var _press_serial := 0  ## invalidates a pending long-press
 ## Guide state shown in the context bars.
 var _has_drawn_guide := false
-var _plane := 0
 var _guide_opacity := GuideController.DEFAULT_OPACITY
 var _guide_drawing := false
 
@@ -139,7 +136,7 @@ func setup(p_canvas: SketchCanvas, camera: Camera3D) -> void:
 	_build_sheet()
 	_cube = ViewCube.new()
 	_cube.camera = camera
-	_cube.tooltip_text = "Tap a face to look at it, drag to orbit, double-tap for 3D"
+	_cube.tooltip_text = "Tap a face to look at it and draw on its plane; drag to orbit; double-tap for 3D"
 	_cube.view_requested.connect(view_requested.emit)
 	_cube.orbit_requested.connect(orbit_requested.emit)
 	_root.add_child(_cube)
@@ -275,10 +272,15 @@ func set_tool(p_tool: String) -> void:
 	_rebuild_bar()
 
 
-## Guide state for the context bars: a drawn guide, or the preset plane.
-func refresh_guide(has_drawn: bool, plane: int, opacity: float) -> void:
+## The plane being drawn on, lit on the view cube ("" while a drawn guide is on).
+func show_plane(view: String) -> void:
+	_cube.active = view
+	_cube.queue_redraw()
+
+
+## Guide state for the context bars: whether a drawn guide is on, and its opacity.
+func refresh_guide(has_drawn: bool, opacity: float) -> void:
 	_has_drawn_guide = has_drawn
-	_plane = plane
 	_guide_opacity = opacity
 	_rebuild_bar()
 
@@ -935,14 +937,6 @@ func _guide_bar() -> void:
 	draw.toggle_mode = true
 	draw.button_pressed = _guide_drawing
 	draw.tooltip_text = "Draw a line: it becomes a surface you can draw on"
-	_bar_row.add_child(VSeparator.new())
-	var group := ButtonGroup.new()
-	for i in GUIDE_PLANES.size():
-		var b := _bar_button(GUIDE_PLANES[i], GUIDE_PLANES[i], plane_requested.emit.bind(i))
-		b.toggle_mode = true
-		b.button_group = group
-		b.button_pressed = not _has_drawn_guide and i == _plane
-		b.tooltip_text = "Draw on a flat %s plane" % GUIDE_PLANES[i].to_lower() if i < 3 else "Draw on a plane facing you"
 	# Planes pass through the sketch's origin; moving the origin moves them (§3k).
 	if _has_drawn_guide:
 		_bar_row.add_child(VSeparator.new())
