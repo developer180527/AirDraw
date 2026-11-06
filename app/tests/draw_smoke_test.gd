@@ -345,6 +345,18 @@ func _ready() -> void:
 	var one_redo: bool = canvas.stroke_count() == before_break + pieces
 	_key(KEY_Z, true)
 	print("SMOKE guide off_edge_pieces=", pieces, " one_undo=", one_undo, " one_redo=", one_redo)
+	# Two samples back on the guide while the pen is off it leave no speck.
+	var before_speck: int = canvas.stroke_count()
+	await _stroke(center + Vector2(100, -40), func(t: float) -> Vector2:
+		if t < 0.4:
+			return Vector2(800.0 * t, 0.0)
+		if t >= 0.6 and t < 0.61:
+			return Vector2.ZERO
+		if t < 0.8:
+			return Vector2(400.0, 0.0)
+		return Vector2(400.0 * (1.0 - t) / 0.2, 40.0))
+	print("SMOKE guide speck_dropped=", canvas.stroke_count() - before_speck == 2)
+	_key(KEY_Z, true)
 	rig.set_view("3d")
 	await get_tree().create_timer(0.5).timeout
 	await _shot("user://guide_3d.png")
@@ -821,8 +833,10 @@ func _ready() -> void:
 	DirAccess.remove_absolute(dup)
 	main.show_home()
 	await _settle()
-	cards = home.cards()
-	await _tap(cards[1])
+	# By name: on a slow machine (CI's software renderer) autosave also lists the test's
+	# second sketch, so the card order differs.
+	cards = home.cards().filter(func(c): return c.get_node("Box/Row/Text/Name").text == "Sketch 1")
+	await _tap(cards[0])
 	await get_tree().process_frame
 	print("SMOKE reopened=", main.get("doc_path").get_file(), " strokes=", canvas.stroke_count(), " home_visible=", home.visible)
 	# A sketch opens framed, wherever the camera had flown and wherever its strokes are.

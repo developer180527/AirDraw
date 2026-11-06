@@ -33,6 +33,8 @@ void fragment() {
 ";
 /// Partial-erase pieces shorter than this (metres) are dropped.
 const MIN_PIECE: f32 = 0.001;
+/// A piece of a broken pen stroke with fewer points than this (under 20 ms at 240 Hz) is noise.
+const MIN_BROKEN_POINTS: usize = 4;
 /// Ids of live partial-erase pieces in the pick index: far above any document stroke id.
 const PIECE_IDS: u64 = 1 << 62;
 
@@ -392,6 +394,17 @@ impl SketchCanvas {
     pub(crate) fn end_stroke(&mut self) {
         self.break_stroke();
         let mut pieces = std::mem::take(&mut self.pieces);
+        // A pen wobbling along a guide's edge leaves specks between the real pieces. A stroke
+        // that is only a speck (a tap) stays.
+        if pieces.iter().any(|(_, _, p)| p.len() >= MIN_BROKEN_POINTS) {
+            pieces.retain_mut(|(node, _, p)| {
+                let keep = p.len() >= MIN_BROKEN_POINTS;
+                if !keep {
+                    node.queue_free();
+                }
+                keep
+            });
+        }
         let (changes, ids) = match pieces.len() {
             0 => return,
             1 => {

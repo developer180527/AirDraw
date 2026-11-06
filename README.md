@@ -41,6 +41,10 @@ Rust crates:
 - `airdraw-codec-zstd` — the zstd codec for `airdraw-pack`.
 - `airdraw-export` — export scene + exporter registry; GLB, glTF, FBX (binary 7.4, own
   writer), OBJ, USDZ, USDA, STL, PLY, SVG.
+- `airdraw-pick` — screen-space picking of strokes: eraser, tap, lasso and the depth of what's
+  under a gesture.
+- `airdraw-guide` — 3D guides (planes and drawn sweeps) and where a pen ray meets them.
+- `airdraw-look` — Looks as data (`.look.toml`): shader, parameters, outline, lighting.
 - `airdraw-ffi` — exporter plugin ABI and loader (desktop dynamic, iOS static).
 - `airdraw-godot` — the GDExtension: `SketchCanvas`, `SketchSession`, `AppFiles`.
 
@@ -49,12 +53,14 @@ Rust crates:
 ### Works (tested)
 
 - **Drawing screen:** full-screen light canvas with dark floating chrome — pills in the top
-  corners (Gallery + sketch name; undo/redo, export, ⋯ menu), a tool rail (Draw, Guide) with
-  a recent-brush strip, a context bar for the current tool, a view cube, and a brush library
+  corners (Gallery + sketch name; undo/redo, export, ⋯ menu), tools (Draw, Erase, Select, Guide), a tray of recent
+  brushes, a context bar for the current tool, a view cube, and a brush library
   sheet that closes when you draw. Left-handed mode mirrors it; Tab or a four-finger tap
   hides it. Desktop shortcuts are shown in tooltips.
 - **Drawing:** strokes projected onto a guide plane (front / side / top / view-aligned,
   movable) or a drawn 3D guide (saved with the sketch), pressure-sensitive, smoothed; live preview of predicted Pencil points on iPad.
+- **Erase and Select:** whole-stroke and partial erase (Pencil's eraser end or double-tap too),
+  tap or lasso selection, duplicate, delete, re-brush, and a move/rotate gizmo.
 - **iPad:** native UIKit input (Pencil vs finger by tool type, not guessing), toolbar,
   home screen, system file picker, open sketches from the Files app, Files thumbnails.
 - **Brushes:** 4 built-ins, brush editor with live preview and pressure-curve editor,
@@ -78,15 +84,16 @@ Rust crates:
 
 ### Not working / known issues
 
-- **Not built yet:** eraser, selection/move/duplicate, symmetry, sphere/cylinder guides,
-  layer UI (the file format supports layers), hover cursor, Look presets (toon, realistic…),
-  settings screen, share sheet.
-- **Platforms:** no Windows, Linux or Android builds yet; macOS is arm64-only (no Universal
-  build), development-signed (no Developer ID / notarization).
+- **Not built yet:** symmetry, sphere/cylinder guides, guide Bend/Shapes/Loft, layer UI (the
+  file format supports layers), settings screen, share sheet.
+- **Known bug:** on iPad, iOS sometimes cancels a finger touch mid-orbit, so the camera stops
+  until the finger is lifted (under investigation).
+- **Platforms:** no Windows, Linux or Android app builds yet (CI runs the Rust checks and the
+  smoke test on Linux x86_64); macOS is arm64-only (no Universal build), development-signed
+  (no Developer ID / notarization).
 - **Unverified:** Pencil latency vs. Procreate/Feather (not measured), FBX in Autodesk
   tools, AR Quick Look on iPad.
-- **Dev leftovers:** `app/airdraw.gdextension` points `macos.debug` at the *release* Rust
-  library (marked `TEMP`); exporter plugins load from `user://plugins` with no opt-in UI.
+- **Dev leftovers:** exporter plugins load from `user://plugins` with no opt-in UI.
 
 ## Repository layout
 

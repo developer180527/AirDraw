@@ -100,6 +100,9 @@ impl Op {
 }
 
 pub(crate) const MAX_UNDO: usize = 1000;
+/// Undo memory for points only history holds, so repeated moves of a huge selection (each
+/// keeps a full copy) can't run an iPad out of memory.
+const MAX_UNDO_BYTES: usize = 512 << 20;
 
 #[derive(Debug, Clone)]
 pub struct Document {
@@ -455,13 +458,37 @@ impl Document {
 
     fn commit(&mut self, op: Op) -> Vec<Change> {
         let changes = self.apply(&op);
+        // Only these make history hold points the sketch doesn't: moves copy theirs.
+        let holds_points = matches!(op, Op::Remove { .. } | Op::Replace { .. });
         self.undo.push(op);
         if self.undo.len() > MAX_UNDO {
             self.undo.remove(0);
         }
         self.redo.clear();
+        if holds_points {
+            self.trim_undo(MAX_UNDO_BYTES);
+        }
         self.dirty = true;
         changes
+    }
+
+    /// Drops the oldest undo steps while history holds more than `limit` bytes of points the
+    /// sketch itself doesn't. The newest step always stays.
+    fn trim_undo(&mut self, limit: usize) {
+        let live: std::collections::HashSet<StrokeId> = self.strokes.iter().map(|s| s.id).collect();
+        let mut seen = std::collections::HashSet::new();
+        let mut held = 0;
+        for (i, op) in self.undo.iter().enumerate().rev() {
+            held += op
+                .strokes()
+                .filter(|s| !live.contains(&s.id) && seen.insert(s.id))
+                .map(|s| s.points.len() * std::mem::size_of::<InputPoint>())
+                .sum::<usize>();
+            if held > limit && i + 1 < self.undo.len() {
+                self.undo.drain(..=i);
+                return;
+            }
+        }
     }
 
     fn apply(&mut self, op: &Op) -> Vec<Change> {
@@ -569,6 +596,34 @@ pub(crate) mod tests {
 
     pub fn brush(id: &str) -> BrushDef {
         BrushLibrary::new(StageRegistry::with_builtins()).get(id).unwrap().def.clone()
+    }
+
+    #[test]
+    fn undo_memory_is_capped_oldest_first() {
+        let mut d = Document::new();
+        let ink = d.intern_brush(&brush("com.airdraw.ink"));
+        let (mut id, _) = d.add_stroke(ink, points(1000, 0.0));
+        let one_copy = 1000 * std::mem::size_of::<InputPoint>();
+        for i in 0..10 {
+            let xf = glam::Affine3A::from_translation(glam::Vec3::X * (i + 1) as f32);
+            id = d.transform_strokes(&[id], xf).1[0];
+        }
+        assert_eq!(d.undo.len(), 11);
+        d.trim_undo(one_copy * 3 + one_copy / 2);
+        assert_eq!(d.undo.len(), 3, "the newest moves that fit");
+        d.undo();
+        d.undo();
+        d.undo();
+        assert!(!d.can_undo() && d.strokes().len() == 1);
+        // Even one step over the limit stays.
+        let mut d2 = Document::new();
+        let ink = d2.intern_brush(&brush("com.airdraw.ink"));
+        d2.add_stroke(ink, points(1000, 0.0));
+        d2.clear();
+        d2.trim_undo(1);
+        assert!(d2.can_undo());
+        d2.undo();
+        assert_eq!(d2.strokes().len(), 1);
     }
 
     #[test]

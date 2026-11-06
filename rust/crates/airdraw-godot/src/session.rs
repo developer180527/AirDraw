@@ -226,7 +226,7 @@ impl SketchSession {
     /// A stroke, erase or lasso is in progress (a held finger shouldn't open a menu then).
     #[func]
     fn is_busy(&self) -> bool {
-        self.drawing || self.pending_begin.is_some() || self.erase_last.is_some() || self.select_path.is_some()
+        self.drawing || self.broken || self.pending_begin.is_some() || self.erase_last.is_some() || self.select_path.is_some()
     }
 
     #[func]
