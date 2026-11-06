@@ -47,6 +47,13 @@ pub struct SketchSession {
     /// The pen selects (the Select tool): a tap picks a stroke, a drag draws a lasso.
     #[var]
     select_tool: bool,
+    /// Move Origin mode (§3k): a pen, finger or mouse drag reports where it is
+    /// (`origin_dragged`) instead of drawing, erasing or selecting. The app turns
+    /// `finger_draws` on with it, so one finger drags too; two fingers still move the view.
+    #[var]
+    origin_tool: bool,
+    /// An origin drag is on.
+    origin_drag: bool,
     /// How near a tap must be to a stroke to pick it, viewport pixels.
     #[var]
     tap_tolerance: f32,
@@ -97,6 +104,8 @@ impl INode for SketchSession {
             erase_partial: false,
             erase_last: None,
             select_tool: false,
+            origin_tool: false,
+            origin_drag: false,
             tap_tolerance: 14.0,
             select_path: None,
             stroke_guide: None,
@@ -205,6 +214,10 @@ impl SketchSession {
     /// An eraser drag ended; `erased` strokes went (one undo step).
     #[signal]
     fn erased(count: i64);
+    /// Move Origin mode: a drag at `pos` (viewport pixels); `phase` 0 begins, 1 moves, 2 ends,
+    /// 3 is cancelled.
+    #[signal]
+    fn origin_dragged(pos: Vector2, phase: i64);
 
     /// Screen rectangles covered by UI (toolbar, open dialogs). Contacts starting there are
     /// ignored, since native backends see touches the GUI also handles.
@@ -232,7 +245,12 @@ impl SketchSession {
     /// A stroke, erase or lasso is in progress (a held finger shouldn't open a menu then).
     #[func]
     fn is_busy(&self) -> bool {
-        self.drawing || self.broken || self.pending_begin.is_some() || self.erase_last.is_some() || self.select_path.is_some()
+        self.drawing
+            || self.broken
+            || self.pending_begin.is_some()
+            || self.erase_last.is_some()
+            || self.select_path.is_some()
+            || self.origin_drag
     }
 
     #[func]
@@ -280,6 +298,14 @@ impl SketchSession {
     fn stroke(&mut self, e: StrokeEvent) {
         if matches!(e, StrokeEvent::Begin { .. }) {
             self.signals().pen_down().emit();
+        }
+        let origin = match e {
+            StrokeEvent::Begin { .. } => self.origin_tool,
+            _ => self.origin_drag,
+        };
+        if origin {
+            self.origin_stroke(e);
+            return;
         }
         let erase = match e {
             StrokeEvent::Begin { tool, .. } => tool == DrawTool::Eraser || self.erase_tool,
@@ -394,6 +420,30 @@ impl SketchSession {
                 self.signals().eraser_cursor().emit(Vector2::ZERO, false);
             }
         }
+    }
+
+    /// Move Origin mode: the drag's positions go to the app, which moves the origin.
+    fn origin_stroke(&mut self, e: StrokeEvent) {
+        let (pos, phase) = match e {
+            StrokeEvent::Begin { sample, .. } => {
+                self.cancel_drawing();
+                self.origin_drag = true;
+                (sample.pos, 0)
+            }
+            StrokeEvent::Extend { samples, .. } => match samples.last() {
+                Some(s) => (s.pos, 1),
+                None => return,
+            },
+            StrokeEvent::End { sample } => {
+                self.origin_drag = false;
+                (sample.pos, 2)
+            }
+            StrokeEvent::Cancel => {
+                self.origin_drag = false;
+                (glam::Vec2::ZERO, 3)
+            }
+        };
+        self.signals().origin_dragged().emit(Vector2::new(pos.x, pos.y), phase);
     }
 
     /// Select tool: a tap (under 10 px of travel) picks the stroke there, a drag lassos.

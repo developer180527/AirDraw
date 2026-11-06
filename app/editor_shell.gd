@@ -100,6 +100,8 @@ var _eraser_ring: Control  ## the eraser's outline at the pen
 var _eraser_at := Vector2.ZERO
 var _lasso: Line2D  ## the Select tool's lasso while it's drawn
 var _gizmo: TransformGizmo  ## moves and turns the selection (Select tool)
+var _origin_handle: OriginHandle  ## moves the origin along the plane's axis (Move Origin mode)
+var origin_mode := false
 var _stroke_menu: PanelContainer  ## right-click / long-press menu for selected strokes
 var _colors: PanelContainer  ## colour popover: brush colour, recents, palette, picker
 var _recent_row: HBoxContainer
@@ -146,6 +148,11 @@ func setup(p_canvas: SketchCanvas, camera: Camera3D) -> void:
 	# Deferred: it can move while the session is dispatching a tap (and UI regions go to it).
 	_gizmo.moved.connect(func() -> void: layout_changed.emit.call_deferred())
 	_root.add_child(_gizmo)
+	_origin_handle = OriginHandle.new()
+	_origin_handle.canvas = canvas
+	_origin_handle.camera = camera
+	_origin_handle.moved.connect(func() -> void: layout_changed.emit.call_deferred())
+	_root.add_child(_origin_handle)
 	_build_toast()
 	_build_menu()
 	_build_colors()
@@ -252,6 +259,7 @@ func ui_rects() -> Array[Rect2]:
 			rects.append(c.get_global_rect())
 	if _gizmo.visible:
 		rects.append_array(_gizmo.areas())
+	rects.append_array(_origin_handle.areas())
 	return rects
 
 
@@ -283,6 +291,16 @@ func refresh_guide(has_drawn: bool, opacity: float) -> void:
 	_has_drawn_guide = has_drawn
 	_guide_opacity = opacity
 	_rebuild_bar()
+
+
+## Move Origin mode on or off (§3k): the Guide bar says so and the axis handle shows.
+## `normal` is the current plane's.
+func set_origin_mode(on: bool, normal: Vector3) -> void:
+	origin_mode = on
+	_origin_handle.normal = normal
+	_origin_handle.visible = on
+	_rebuild_bar()
+	layout_changed.emit.call_deferred()
 
 
 ## Whether the pen draws a guide (the Guide bar's Draw toggle).
@@ -933,6 +951,19 @@ func _erase_bar() -> void:
 
 
 func _guide_bar() -> void:
+	if origin_mode:
+		var hint := Label.new()
+		hint.text = "Drag to move the origin in the plane · the bar moves it across"
+		hint.theme_type_variation = "Small"
+		_bar_row.add_child(hint)
+		_bar_row.add_child(VSeparator.new())
+		_bar_button("Reset origin", "Reset", action.emit.bind("reset_origin")).tooltip_text = "Back to world zero"
+		var done := _bar_button("Origin done", "Done", action.emit.bind("origin_done"))
+		done.tooltip_text = "Stop moving the origin (Esc)"
+		return
+	var move := _bar_button("Move origin", "Move Origin", action.emit.bind("move_origin"))
+	move.tooltip_text = "Drag the origin (the planes go through it); nothing else happens until Done"
+	_bar_row.add_child(VSeparator.new())
 	var draw := _bar_button("Draw guide", "Draw", func() -> void: tool_selected.emit("guide"))
 	draw.toggle_mode = true
 	draw.button_pressed = _guide_drawing
@@ -1106,6 +1137,7 @@ func _layout() -> void:
 	_root.theme = _theme
 	_cube.ui_scale = _s
 	_gizmo.ui_scale = _s
+	_origin_handle.ui_scale = _s
 	portrait = screen.y > screen.x or screen.x / _s < 760
 	var m := 12 * _s
 	var hand_left := not left_handed

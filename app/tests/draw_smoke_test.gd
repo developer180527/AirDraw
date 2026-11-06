@@ -564,6 +564,40 @@ func _ready() -> void:
 		" no_plane_buttons=", no_plane_buttons)
 	await _shot("user://cube_plane.png")
 	cg.set_plane("front")
+	# Move Origin mode (§3k step 4): from the Guide bar; a mouse or finger drag moves the
+	# origin in the plane (the grabbed point stays under the pen) and draws nothing; the bar
+	# moves it along the plane's axis; Reset, Done and Esc.
+	rig.set_view("front")
+	await get_tree().create_timer(0.5).timeout
+	main.set_tool("guide")
+	await _settle()
+	await _tap(shell.find_button("Move origin"))
+	var om_on: bool = main.get("origin_mode") and main.get("session").origin_tool and shell._origin_handle.visible
+	var om_strokes: int = canvas.stroke_count()
+	var grab: Vector2 = center + Vector2(-60, 40)
+	var grab_world: Variant = Plane(Vector3.BACK, canvas.origin()).intersects_ray(rig.camera.project_ray_origin(grab), rig.camera.project_ray_normal(grab))
+	await _stroke(grab, func(t: float) -> Vector2: return Vector2(120.0 * t, -80.0 * t))
+	var o1: Vector3 = canvas.origin()
+	var drop: Vector2 = grab + Vector2(120, -80)
+	var under_pen: bool = absf(o1.z) < 1e-4 and rig.camera.unproject_position(grab_world + o1).distance_to(drop) < 2.0
+	await _touch_drag(center + Vector2(80, 60), center + Vector2(20, 60))
+	var touch_moved: bool = canvas.origin().x < o1.x - 0.01 and absf(canvas.origin().z) < 1e-4
+	var axis_bar: Rect2 = shell._origin_handle.bar_rect()
+	var o2: Vector3 = canvas.origin()
+	await _gizmo_drag(axis_bar.get_center(), axis_bar.get_center() + Vector2(0, -40))
+	var along_axis: bool = canvas.origin().z > o2.z + 0.01 and is_equal_approx(canvas.origin().x, o2.x)
+	var nothing_drawn: bool = canvas.stroke_count() == om_strokes
+	await _shot("user://move_origin.png")
+	await _tap(shell.find_button("Reset origin"))
+	var om_reset: bool = canvas.origin() == Vector3.ZERO
+	_key(KEY_ESCAPE)
+	var om_off: bool = not main.get("origin_mode") and not main.get("session").origin_tool and not shell._origin_handle.visible
+	main.set_tool("draw")
+	await _stroke(center + Vector2(-50, 50), func(t: float) -> Vector2: return Vector2(100.0 * t, 0.0))
+	var draws_again: bool = canvas.stroke_count() == om_strokes + 1
+	_key(KEY_Z, true)
+	print("SMOKE move_origin on=", om_on, " drag_in_plane=", under_pen, " finger=", touch_moved, " axis_bar=", along_axis,
+		" draws_nothing=", nothing_drawn, " reset=", om_reset, " esc_ends=", om_off, " draws_after=", draws_again)
 	rig.set_view("3d")
 	await get_tree().create_timer(0.5).timeout
 

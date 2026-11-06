@@ -19,6 +19,11 @@ var documents: DocumentController
 ## The drawing screen's chrome (named for tests and older callers).
 var toolbar: EditorShell
 var _popup_open := false
+## Move Origin mode (§3k): drags move the sketch's origin and nothing else.
+var origin_mode := false
+var _origin_start := Vector3.ZERO
+var _origin_grab := Vector3.ZERO  ## where the drag started, on the plane
+var _fingers_drew := false
 var export_dialog: ExportDialog
 var brush_editor: BrushEditor
 var thumbnails: ThumbnailRenderer
@@ -92,6 +97,7 @@ func _ready() -> void:
 	session.view_zoom.connect(rig.zoom)
 	session.guide_nudged.connect(func(notches: float) -> void: guides.move(notches * 0.05))
 	session.pen_action.connect(_pen_action)
+	session.origin_dragged.connect(_drag_origin)
 	add_child(session)
 
 	guides = GuideController.new(session)
@@ -281,6 +287,8 @@ func _handle_key(event: InputEventKey) -> void:
 			set_tool("erase")
 		"tool_select":
 			set_tool("select")
+		"deselect" when origin_mode:
+			set_origin_mode(false)
 		"select_all", "deselect", "duplicate":
 			_selection_action(action)
 		"delete_selection":
@@ -341,6 +349,7 @@ func _apply_look() -> void:
 
 ## Switches the pen's tool. The Guide tool draws one guide, then the app goes back to Draw.
 func set_tool(t: String) -> void:
+	set_origin_mode(false)
 	if t != tool:
 		previous_tool = tool
 	tool = t
@@ -404,6 +413,12 @@ func _sketch_box() -> AABB:
 
 func _file_action(action: String) -> void:
 	match action:
+		"move_origin":
+			set_origin_mode(true)
+		"origin_done":
+			set_origin_mode(false)
+		"reset_origin":
+			canvas.set_origin(Vector3.ZERO)
 		"gallery":
 			show_home()
 		"undo":
@@ -481,6 +496,35 @@ func _cycle_brush(step: int) -> void:
 	var ids := canvas.brush_ids()
 	var i := ids.find(canvas.current_brush())
 	canvas.set_brush(ids[posmod(i + step, ids.size())])
+
+
+## Move Origin mode: pen, finger and mouse drags move the origin; nothing draws, erases or
+## selects; two fingers still move the view. Done, Esc or another tool ends it.
+func set_origin_mode(on: bool) -> void:
+	if on == origin_mode:
+		return
+	origin_mode = on
+	session.origin_tool = on
+	if on:
+		_fingers_drew = session.finger_draws
+	session.finger_draws = true if on else _fingers_drew
+	toolbar.set_origin_mode(on, guides.normal)
+
+
+## A Move Origin drag: the origin follows the pen within the current plane, keeping the
+## point grabbed under the pen.
+func _drag_origin(pos: Vector2, phase: int) -> void:
+	if phase == 0:
+		_origin_start = canvas.origin()
+	var hit: Variant = Plane(guides.normal, _origin_start).intersects_ray(rig.camera.project_ray_origin(pos), rig.camera.project_ray_normal(pos))
+	match phase:
+		0:
+			_origin_grab = hit if hit != null else _origin_start
+		1, 2:
+			if hit != null:
+				canvas.set_origin(_origin_start + (hit - _origin_grab))
+		3:
+			canvas.set_origin(_origin_start)
 
 
 ## A view-cube face (or its shortcut): look at it and draw on its plane.
