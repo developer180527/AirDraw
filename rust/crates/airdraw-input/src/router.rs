@@ -164,7 +164,7 @@ impl InputRouter {
         self.ui_regions = regions;
     }
 
-    fn over_ui(&self, p: Vec2) -> bool {
+    pub fn over_ui(&self, p: Vec2) -> bool {
         self.ui_regions.iter().any(|(min, max)| p.cmpge(*min).all() && p.cmplt(*max).all())
     }
 

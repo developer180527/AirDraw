@@ -213,6 +213,17 @@ func _ready() -> void:
 	await _tap(bar.find_button("Export"))
 	var dialog = main.get("export_dialog")
 	print("SMOKE dialog_visible=", dialog.visible, " options=", dialog.current_options().keys())
+	# A Godot dropdown by touch (iPad): its popup only understands the mouse, so while it's
+	# open touches act as the mouse and nothing can draw; a touch outside closes it.
+	var format_before: int = dialog._format_picker.selected
+	await _touch_tap(dialog._format_picker.get_global_rect().get_center())
+	await _settle()
+	var drop_open: bool = dialog._format_picker.get_popup().visible and Input.emulate_mouse_from_touch
+	var drop_blocks: bool = main.get("session").is_over_ui(Vector2(5, get_viewport().get_visible_rect().size.y - 5))
+	await _touch_tap(Vector2(4, get_viewport().get_visible_rect().size.y - 4))
+	await _settle()
+	print("SMOKE dropdown touch_opens=", drop_open, " touch_closes=", not dialog._format_picker.get_popup().visible,
+		" back_to_touch=", not Input.emulate_mouse_from_touch, " unchanged=", dialog._format_picker.selected == format_before, " screen_is_ui=", drop_blocks)
 	dialog._controls["curves"].button_pressed = true
 	await get_tree().process_frame
 	dialog.stem = "smoke"
@@ -751,6 +762,47 @@ func _ready() -> void:
 	await _tap(shell.find_button("Colour"))
 	await _tap(shell.find_button("Brush colour"))
 	var brush_again: bool = canvas.draws_brush_color() and shell.draw_color.is_empty()
+	# By touch (iPad): the picker's square and hue strip follow a finger, and so does a slider.
+	await _tap(shell.find_button("Colour"))
+	var picker: HsvPicker = shell._picker
+	var pr := picker.get_global_rect()
+	var sq_w: float = pr.size.x - pr.size.y * (HsvPicker.STRIP + HsvPicker.GAP)
+	await _touch_drag(pr.position + Vector2(sq_w * 0.5, pr.size.y * 0.5), pr.position + Vector2(sq_w * 0.99, pr.size.y * 0.01))
+	var after_square: Color = canvas.draw_color()
+	await _touch_drag(pr.position + Vector2(pr.size.x - pr.size.y * HsvPicker.STRIP * 0.5, pr.size.y * 0.1), pr.position + Vector2(pr.size.x - pr.size.y * HsvPicker.STRIP * 0.5, pr.size.y / 3.0))
+	var after_hue: Color = canvas.draw_color()
+	var picker_touch: bool = after_square.s > 0.95 and after_square.v > 0.95 and absf(after_hue.h - 1.0 / 3.0) < 0.02 and after_hue.s > 0.95
+	await _touch_tap(Vector2(4, 4))
+	var picker_committed: bool = not shell._colors.visible and shell.recent_colors[0] == shell.draw_color
+	var touch_slider: HSlider = shell._bar_row.find_child("Size", true, false)
+	var tr := touch_slider.get_global_rect()
+	await _touch_drag(tr.get_center(), Vector2(tr.end.x + 20, tr.get_center().y))
+	var slider_touch: bool = absf(canvas.draw_size() - 10.0) < 0.05
+	# Scrolling by finger over a button scrolls and doesn't press it.
+	var sc := ScrollContainer.new()
+	sc.size = Vector2(300, 200)
+	sc.position = Vector2(200, 200)
+	var col := VBoxContainer.new()
+	sc.add_child(col)
+	var pressed_by_scroll := [false]
+	for i in 12:
+		var b := Button.new()
+		b.text = "Row %d" % i
+		b.custom_minimum_size = Vector2(280, 60)
+		b.pressed.connect(func() -> void: pressed_by_scroll[0] = true)
+		col.add_child(b)
+	TouchControls.scroll(sc)
+	main.get("toolbar").add_child(sc)
+	await _settle()
+	await _touch_drag(Vector2(300, 380), Vector2(300, 240))
+	var scrolled: bool = sc.scroll_vertical > 100 and not pressed_by_scroll[0]
+	await _touch_tap(Vector2(300, 260))
+	var tap_still_presses: bool = pressed_by_scroll[0]
+	sc.queue_free()
+	print("SMOKE touch picker=", picker_touch, " picker_commits_on_close=", picker_committed, " slider=", slider_touch,
+		" scroll=", scrolled, " tap_after_scroll=", tap_still_presses)
+	await _tap(shell.find_button("Colour"))
+	await _tap(shell.find_button("Brush colour"))
 	print("SMOKE style_ui popover=", pop_opened, " picked=", picked, " sized=", sized, " size_per_brush=", size_remembered, " drawn=", ui_drawn,
 		" selection_colour=", sel_recoloured, " selection_size=", sel_resized, " undo=", sel_undone, " brush_colour=", brush_again,
 		" cleaned_up=", canvas.stroke_count() == ui_count)
@@ -946,8 +998,17 @@ func _ready() -> void:
 	# By name: on a slow machine (CI's software renderer) autosave also lists the test's
 	# second sketch, so the card order differs.
 	cards = home.cards().filter(func(c): return c.get_node("Box/Row/Text/Name").text == "Sketch 1")
-	await _tap(cards[0])
+	# The card menu by touch (iPad): it opens, a tap outside closes it, and its Open opens the
+	# sketch. (It was a PopupMenu, which ignores touch and then held every tap: a frozen app.)
+	var more: Button = cards[0].get_node("Box/Row/More")
+	await _touch_tap(more.get_global_rect().get_center())
+	var menu_by_touch: bool = home.is_menu_open()
+	await _touch_tap(Vector2(4, 4))
+	var menu_closed: bool = not home.is_menu_open() and home.visible
+	await _touch_tap(more.get_global_rect().get_center())
+	await _touch_tap(home._menu.find_child("Open", true, false).get_global_rect().get_center())
 	await get_tree().process_frame
+	print("SMOKE home_menu touch_opens=", menu_by_touch, " outside_closes=", menu_closed, " open_item=", not home.visible and not home.is_menu_open())
 	print("SMOKE reopened=", main.get("doc_path").get_file(), " strokes=", canvas.stroke_count(), " home_visible=", home.visible)
 	# A sketch opens framed, wherever the camera had flown and wherever its strokes are.
 	var opened_box: AABB = canvas.strokes_aabb()
@@ -1098,6 +1159,27 @@ func _touch_stroke(index: int, from: Vector2, span: Vector2, tilt: Vector2, pres
 			await get_tree().process_frame
 	_touch(index, from + span, false)
 	await get_tree().process_frame
+
+
+func _touch_tap(pos: Vector2) -> void:
+	_touch(0, pos, true)
+	_touch(0, pos, false)
+	await _settle()
+
+
+func _touch_drag(a: Vector2, b: Vector2) -> void:
+	_touch(0, a, true)
+	var last := a
+	for i in range(1, 21):
+		var ev := InputEventScreenDrag.new()
+		ev.index = 0
+		ev.position = a.lerp(b, i / 20.0)
+		ev.relative = ev.position - last
+		last = ev.position
+		Input.parse_input_event(ev)
+	Input.flush_buffered_events()
+	_touch(0, b, false)
+	await _settle()
 
 
 func _touch(index: int, pos: Vector2, pressed: bool) -> void:

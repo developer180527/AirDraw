@@ -65,6 +65,7 @@ func _init() -> void:
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	TouchControls.scroll(scroll)
 	root.add_child(scroll)
 	_content = VBoxContainer.new()
 	_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -282,6 +283,7 @@ func _control(spec: Dictionary, value: Variant, on_change: Callable) -> Control:
 			slider.value = value
 			slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			TouchControls.slider(slider)
 			var spin := SpinBox.new()
 			spin.min_value = spec["min"]
 			spin.max_value = spec["max"]

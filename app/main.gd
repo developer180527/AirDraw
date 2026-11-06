@@ -18,6 +18,7 @@ var guides: GuideController
 var documents: DocumentController
 ## The drawing screen's chrome (named for tests and older callers).
 var toolbar: EditorShell
+var _popup_open := false
 var export_dialog: ExportDialog
 var brush_editor: BrushEditor
 var thumbnails: ThumbnailRenderer
@@ -434,9 +435,21 @@ func _file_action(action: String) -> void:
 
 
 ## Native touch backends see touches that also hit the GUI; tell the session where UI is.
+## Godot's own popups (dropdowns and colour buttons in the export dialog and brush editor)
+## only understand the mouse, and AirDraw keeps touches as touches. While one is open,
+## touches also act as the mouse, and the whole screen is UI so a tap never draws.
+func _process(_delta: float) -> void:
+	var open := not get_viewport().get_embedded_subwindows().is_empty()
+	if open != _popup_open:
+		_popup_open = open
+		Input.emulate_mouse_from_touch = open
+		if session:
+			_update_ui_regions()
+
+
 func _update_ui_regions() -> void:
 	var screen := get_viewport().get_visible_rect()
-	if home and home.visible:
+	if (home and home.visible) or _popup_open:
 		session.set_ui_regions([screen])
 		return
 	session.eraser_radius = toolbar.eraser_radius_px()

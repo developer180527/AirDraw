@@ -106,7 +106,8 @@ var _gizmo: TransformGizmo  ## moves and turns the selection (Select tool)
 var _stroke_menu: PanelContainer  ## right-click / long-press menu for selected strokes
 var _colors: PanelContainer  ## colour popover: brush colour, recents, palette, picker
 var _recent_row: HBoxContainer
-var _picker: ColorPicker
+var _picker: HsvPicker
+var _hex: Label  ## the picker's colour as hex
 var _picker_used := false  ## the picker changed the colour since the popover opened
 var _sizing := false  ## a size slider is being dragged
 var _selected := 0  ## selected strokes, for the Select bar
@@ -518,6 +519,7 @@ func _build_sheet() -> void:
 	box.add_child(HSeparator.new())
 	_brush_scroll = ScrollContainer.new()
 	_brush_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	TouchControls.scroll(_brush_scroll)
 	_brush_list = VBoxContainer.new()
 	_brush_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_brush_list.add_theme_constant_override("separation", 0)
@@ -655,6 +657,9 @@ func open_colors(anchor: Rect2) -> void:
 		if not ids.is_empty():
 			current = canvas.stroke_style(ids[0]).get("color", current)
 	_picker.color = current
+	_picker.ui_scale = _s
+	_picker.custom_minimum_size = Vector2(0, 170 * _s)
+	_hex.text = "#" + current.to_html(false).to_upper()
 	_picker_used = false
 	var brush_button: Button = _colors.find_child("Brush colour", true, false)
 	brush_button.icon = _dot_texture(canvas.brush_color(canvas.current_brush()))
@@ -729,23 +734,20 @@ func _build_colors() -> void:
 			_pick(c)
 			close_menu(), 32))
 	col.add_child(grid)
-	_picker = ColorPicker.new()
+	# Our own picker: Godot's ColorPicker only follows the mouse, not a finger or the Pencil.
+	_picker = HsvPicker.new()
 	_picker.name = "Picker"
-	_picker.edit_alpha = false
-	_picker.can_add_swatches = false
-	_picker.presets_visible = false
-	_picker.sampler_visible = false
-	_picker.color_modes_visible = false
-	_picker.sliders_visible = false
-	_picker.hex_visible = true
-	_picker.picker_shape = ColorPicker.SHAPE_HSV_RECTANGLE
+	_hex = Label.new()
+	_hex.theme_type_variation = "Small"
 	# Live for new strokes; the selection is recoloured once, when the popover closes.
 	_picker.color_changed.connect(func(c: Color) -> void:
 		_picker_used = true
 		c.a = 1.0
 		draw_color = "#" + c.to_html(false).to_upper()
+		_hex.text = draw_color
 		canvas.set_draw_color(c))
 	col.add_child(_picker)
+	col.add_child(_hex)
 
 
 ## A round colour button; `size` in points.
@@ -1219,6 +1221,7 @@ func _apply_sizes() -> void:
 			n.custom_minimum_size = Vector2(44 * _s, 44 * _s)
 		elif n is HSlider:
 			n.custom_minimum_size.y = 32 * _s
+			TouchControls.slider(n)
 	for row in _brush_buttons.values():
 		var label: Label = row.find_child("Name", true, false)
 		if label:

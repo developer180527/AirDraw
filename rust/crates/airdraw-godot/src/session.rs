@@ -215,6 +215,12 @@ impl SketchSession {
         self.router.set_ui_regions(regions);
     }
 
+    /// Whether a contact starting at `pos` would be the UI's, not the canvas's.
+    #[func]
+    fn is_over_ui(&self, pos: Vector2) -> bool {
+        self.router.over_ui(glam::Vec2::new(pos.x, pos.y))
+    }
+
     /// Where picking puts a world point on screen (tests compare it with Godot's own
     /// `Camera3D.unproject_position`); `(-1, -1)` behind the camera.
     #[func]

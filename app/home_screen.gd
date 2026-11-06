@@ -44,7 +44,10 @@ var _new_card: Button
 var _count: Label
 var _empty: Label
 var _status: Label
-var _menu: PopupMenu
+## The card menu: an in-app panel of buttons (Godot's PopupMenu ignores touch, and as an
+## exclusive popup it then blocked every tap), over a scrim that closes it.
+var _menu: PanelContainer
+var _scrim: Control
 var _menu_entry := {}
 var _long_pressed := false
 var _round := ShaderMaterial.new()
@@ -118,6 +121,7 @@ func _init() -> void:
 	# Scrolls without a bar (as iPadOS hides it), so the grid always spans the full width.
 	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_NEVER
 	root.add_child(scroll)
+	TouchControls.scroll(scroll)
 	var content := VBoxContainer.new()
 	content.name = "Content"
 	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -132,18 +136,37 @@ func _init() -> void:
 	_empty.add_theme_color_override("font_color", UiTheme.TEXT_DIM)
 	content.add_child(_empty)
 
-	_menu = PopupMenu.new()
-	_menu.add_item("Open", 2)
-	_menu.add_item("Show in Finder" if OS.has_feature("macos") else "Show in Files", 1)
-	_menu.add_separator()
-	_menu.add_item("Remove from Recents", 0)
-	_menu.id_pressed.connect(func(id: int) -> void:
-		if id == 0:
-			remove_requested.emit(_menu_entry)
-		elif id == 1:
-			reveal_requested.emit(_menu_entry)
-		else:
-			recent_chosen.emit(_menu_entry))
+	_scrim = Control.new()
+	_scrim.name = "Scrim"
+	_scrim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_scrim.mouse_filter = Control.MOUSE_FILTER_STOP
+	_scrim.visible = false
+	_scrim.gui_input.connect(func(e: InputEvent) -> void:
+		if (e is InputEventMouseButton or e is InputEventScreenTouch) and e.pressed:
+			close_menu()
+			_scrim.accept_event())
+	add_child(_scrim)
+	_menu = PanelContainer.new()
+	_menu.name = "Card menu"
+	_menu.visible = false
+	var items := VBoxContainer.new()
+	items.add_theme_constant_override("separation", 0)
+	_menu.add_child(items)
+	var item := func(text: String, chosen: Signal) -> void:
+		var b := Button.new()
+		b.name = text
+		b.text = text
+		b.theme_type_variation = "BrushRow"
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.focus_mode = Control.FOCUS_NONE
+		b.pressed.connect(func() -> void:
+			close_menu()
+			chosen.emit(_menu_entry))
+		items.add_child(b)
+	item.call("Open", recent_chosen)
+	item.call("Show in Finder" if OS.has_feature("macos") else "Show in Files", reveal_requested)
+	items.add_child(HSeparator.new())
+	item.call("Remove from Recents", remove_requested)
 	add_child(_menu)
 	resized.connect(_update_columns)
 
@@ -399,10 +422,23 @@ func _card_input(event: InputEvent, card: Button, entry: Dictionary) -> void:
 
 func _open_menu(anchor: Control, entry: Dictionary) -> void:
 	_menu_entry = entry
-	var r := anchor.get_global_rect()
-	_menu.position = Vector2i(r.get_center()) + get_window().position
+	for b in _menu.find_children("*", "Button", true, false):
+		b.custom_minimum_size = Vector2(220, 44) * _s
 	_menu.reset_size()
-	_menu.popup()
+	var r := anchor.get_global_rect()
+	var m := 8 * _s
+	_menu.position = (r.get_center() - Vector2(0, _menu.size.y * 0.5)).clamp(Vector2(m, m), size - _menu.size - Vector2(m, m))
+	_scrim.visible = true
+	_menu.visible = true
+
+
+func close_menu() -> void:
+	_menu.visible = false
+	_scrim.visible = false
+
+
+func is_menu_open() -> bool:
+	return _menu.visible
 
 
 ## Columns from the width; cards stretch so each row fills it exactly.

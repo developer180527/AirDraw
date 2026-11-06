@@ -1713,6 +1713,15 @@ Decisions (2026-10-27):
 - Type: Inter (variable, SIL OFL, `app/fonts/`) app-wide via `UiTheme.font(weight,
   display)`; titles use the large optical size. Boot splash and the iOS launch screen show
   `app/splash.png` (the app icon) on the UI background instead of Godot's logo.
+- **Touch and Godot controls:** AirDraw keeps touches as touches
+  (`emulate_mouse_from_touch=false`: the canvas reads fingers and the Pencil itself), and of
+  Godot's controls only buttons handle touch. So: menus are in-app panels of buttons (the
+  home card menu was a `PopupMenu`, which ignored taps while holding all input: a frozen
+  app on iPad); the colour picker is our own `HsvPicker`; `TouchControls.slider` and
+  `TouchControls.scroll` add touch to sliders and scroll containers (a scroll that starts on
+  a button doesn't press it). Godot popups still used (dropdowns and colour buttons in the
+  export dialog and brush editor) get touch-as-mouse only while open (`main.gd`), with the
+  whole screen as UI so a tap can't draw. Smoke `home_menu`, `touch`, `dropdown` lines.
 - App icon: `scripts/set_app_icon.sh <file.icon | file.png>`. From an Icon Composer document
   it renders (Xcode's `ictool`) `app/icon.png` (light: Windows, Linux, Android, iOS default,
   home mark, splash), `icon_dark.png` (iOS dark) and `icon_tinted.png` (grayscale of dark,
