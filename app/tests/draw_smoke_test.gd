@@ -704,6 +704,63 @@ func _ready() -> void:
 	_key(KEY_Z, true)
 	print("SMOKE style drawn=", drawn_styled, " mesh_built=", styled_mesh, " brush_colour_again=", back_to_brush, " recolour=", recoloured,
 		" resize=", resized, " brush_colour_selected=", unstyled, " undo_steps=", undo_steps and undo_colour, " cleaned_up=", canvas.stroke_count() == plain_count)
+	# The colour popover and size sliders (§3j step 3), through the real buttons. The user's
+	# saved colour settings are put back afterwards.
+	var saved_style: Array = [shell.draw_color, shell.recent_colors.duplicate(), shell.brush_sizes.duplicate()]
+	main.set_tool("draw")
+	await _settle()
+	await _tap(shell.find_button("Colour"))
+	var pop_opened: bool = shell._colors.visible and shell.find_button("Swatch #2E86DE") != null
+	await _shot("user://colors_open.png")
+	await _tap(shell.find_button("Swatch #2E86DE"))
+	var picked: bool = not shell._colors.visible and canvas.draw_color().is_equal_approx(Color.html("#2E86DE")) \
+		and shell.recent_colors[0] == "#2E86DE" and not canvas.draws_brush_color()
+	var draw_slider: HSlider = shell._bar_row.find_child("Size", true, false)
+	draw_slider.value = log(2.0) / log(10.0)
+	var sized: bool = absf(canvas.draw_size() - 2.0) < 0.01
+	var first_brush: String = canvas.current_brush()
+	var other_brush: String = "com.airdraw.marker" if first_brush != "com.airdraw.marker" else "com.airdraw.ink"
+	canvas.set_brush(other_brush)
+	var other_size: bool = is_equal_approx(canvas.draw_size(), shell.brush_sizes.get(other_brush, 1.0))
+	canvas.set_brush(first_brush)
+	var size_remembered: bool = absf(canvas.draw_size() - 2.0) < 0.01 and other_size
+	var ui_count: int = canvas.stroke_count()
+	await _stroke(center + Vector2(-160, 220), func(t: float) -> Vector2: return Vector2(220.0 * t, 0.0))
+	var ui_id: int = canvas.stroke_ids()[-1]
+	var ui_size: float = canvas.stroke_style(ui_id).size
+	var ui_drawn: bool = canvas.stroke_count() == ui_count + 1 and is_equal_approx(canvas.stroke_style(ui_id).size, canvas.draw_size()) \
+		and canvas.stroke_style(ui_id).color.is_equal_approx(Color.html("#2E86DE"))
+	main.set_tool("select")
+	await get_tree().create_timer(0.3).timeout
+	canvas.select_ids(PackedInt64Array([ui_id]))
+	await _settle()
+	await _tap(shell.find_button("Selection colour"))
+	await _tap(shell.find_button("Swatch #E4572E"))
+	var sel_recoloured: bool = canvas.stroke_style(ui_id).color.is_equal_approx(Color.html("#E4572E"))
+	var sel_slider: HSlider = shell._bar_row.find_child("Selection size", true, false)
+	sel_slider.value = log(0.5) / log(10.0)
+	var sel_resized: bool = absf(canvas.stroke_style(ui_id).size - 0.5) < 0.01
+	await _shot("user://select_style_bar.png")
+	_key(KEY_Z, true)
+	_key(KEY_Z, true)
+	var sel_undone: bool = canvas.stroke_style(ui_id).color.is_equal_approx(Color.html("#2E86DE")) and is_equal_approx(canvas.stroke_style(ui_id).size, ui_size)
+	_key(KEY_ESCAPE)
+	_key(KEY_Z, true)
+	main.set_tool("draw")
+	await _settle()
+	await _tap(shell.find_button("Colour"))
+	await _tap(shell.find_button("Brush colour"))
+	var brush_again: bool = canvas.draws_brush_color() and shell.draw_color.is_empty()
+	print("SMOKE style_ui popover=", pop_opened, " picked=", picked, " sized=", sized, " size_per_brush=", size_remembered, " drawn=", ui_drawn,
+		" selection_colour=", sel_recoloured, " selection_size=", sel_resized, " undo=", sel_undone, " brush_colour=", brush_again,
+		" cleaned_up=", canvas.stroke_count() == ui_count)
+	shell.draw_color = saved_style[0]
+	shell.recent_colors.assign(saved_style[1])
+	shell.brush_sizes = saved_style[2]
+	shell._save_settings()
+	canvas.use_brush_color()
+	canvas.set_draw_size(shell.brush_sizes.get(canvas.current_brush(), 1.0))
+
 
 	main.set_tool("draw")
 	await _click(Vector2(center.x, sel_row), MOUSE_BUTTON_RIGHT)

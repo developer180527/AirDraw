@@ -37,6 +37,13 @@ const SELECTION_ACTIONS := [["delete", "Delete", "delete_selection"], ["duplicat
 	["rebrush", "Re-brush", "rebrush_selection"], ["select_all", "Select All", "select_all"]]
 const GUIDE_PLANES := ["Front", "Side", "Top", "View"]
 const RECENT_MAX := 5
+## Stroke colours (§3j): neutrals and browns, strong colours, soft colours.
+const PALETTE := ["#1B1B1F", "#4A4A50", "#8A8A90", "#C8C8CC", "#FFFFFF", "#6B4226", "#A0522D", "#D9A066",
+	"#E4572E", "#F28E2B", "#F2C14E", "#6CC24A", "#2E9E83", "#2E86DE", "#5B4FCF", "#B04FCF",
+	"#F7A1A1", "#FFD3A5", "#FFF1A8", "#C6EFB0", "#A8E6D9", "#A8D0F5", "#C7C1F2", "#F2B8E0"]
+const RECENT_COLORS := 8
+## Size slider: log10 of the multiplier on a brush's widths (0.1× to 10×).
+const SIZE_LOG := Vector2(-1.0, 1.0)
 
 var canvas: SketchCanvas
 var left_handed := false
@@ -51,6 +58,12 @@ var eraser_size := ERASER_SIZE
 var eraser_partial := false
 ## Brush ids, most recent first (the tray; keys 1–9).
 var recent_brushes: Array[String] = []
+## The colour new strokes draw in (HTML), or "" for each brush's own (§3j).
+var draw_color := ""
+## Most recent first (HTML).
+var recent_colors: Array[String] = []
+## Brush id → the size last used with it, so Ink stays fine and Marker bold.
+var brush_sizes := {}
 
 var _s := 1.0
 var _theme: Theme
@@ -91,6 +104,11 @@ var _eraser_at := Vector2.ZERO
 var _lasso: Line2D  ## the Select tool's lasso while it's drawn
 var _gizmo: TransformGizmo  ## moves and turns the selection (Select tool)
 var _stroke_menu: PanelContainer  ## right-click / long-press menu for selected strokes
+var _colors: PanelContainer  ## colour popover: brush colour, recents, palette, picker
+var _recent_row: HBoxContainer
+var _picker: ColorPicker
+var _picker_used := false  ## the picker changed the colour since the popover opened
+var _sizing := false  ## a size slider is being dragged
 var _selected := 0  ## selected strokes, for the Select bar
 var _press_at := Vector2.INF  ## where a right-click or a lone finger went down
 var _press_serial := 0  ## invalidates a pending long-press
@@ -134,6 +152,7 @@ func setup(p_canvas: SketchCanvas, camera: Camera3D) -> void:
 	_root.add_child(_gizmo)
 	_build_toast()
 	_build_menu()
+	_build_colors()
 	_guide_path = Line2D.new()
 	_guide_path.default_color = Color(1.0, 0.55, 0.1)
 	_guide_path.joint_mode = Line2D.LINE_JOINT_ROUND
@@ -164,8 +183,14 @@ func setup(p_canvas: SketchCanvas, camera: Camera3D) -> void:
 
 	canvas.brushes_changed.connect(_rebuild_brushes)
 	canvas.brush_changed.connect(func(id: String) -> void:
+		canvas.set_draw_size(brush_sizes.get(id, 1.0))
 		_remember_brush(id)
 		_sync_brushes())
+	if draw_color.is_empty():
+		canvas.use_brush_color()
+	else:
+		canvas.set_draw_color(Color.html(draw_color))
+	canvas.set_draw_size(brush_sizes.get(canvas.current_brush(), 1.0))
 	canvas.strokes_changed.connect(func(_n: int) -> void: _sync_history())
 	_remember_brush(canvas.current_brush())
 	_rebuild_brushes()
@@ -223,7 +248,7 @@ func ui_rects() -> Array[Rect2]:
 	var rects: Array[Rect2] = []
 	if ui_hidden:
 		return rects
-	if _menu.visible or _stroke_menu.visible:
+	if _menu.visible or _stroke_menu.visible or _colors.visible:
 		# While a menu is open a touch anywhere just closes it.
 		rects.append(_scrim.get_global_rect())
 	for c: Control in [_gallery, _title, _tools, _actions, _rail, _bar, _cube, _sheet]:
@@ -411,9 +436,14 @@ func show_look(id: String) -> void:
 
 
 func close_menu() -> void:
-	if (_menu and _menu.visible) or (_stroke_menu and _stroke_menu.visible):
+	if _colors and _colors.visible and _picker_used:
+		# The picker's colour is final now: one recolour of the selection, and a recent.
+		_picker_used = false
+		_pick(_picker.color)
+	if (_menu and _menu.visible) or (_stroke_menu and _stroke_menu.visible) or (_colors and _colors.visible):
 		_menu.visible = false
 		_stroke_menu.visible = false
+		_colors.visible = false
 		_scrim.visible = false
 		layout_changed.emit.call_deferred()
 
@@ -561,6 +591,7 @@ func _build_menu() -> void:
 	_stroke_menu.add_child(rows)
 	for a in SELECTION_ACTIONS:
 		_menu_item(rows, "Menu " + a[1], a[1], selection_action.emit.bind(a[0])).tooltip_text = Shortcuts.tooltip(a[1], a[2])
+	_menu_item(rows, "Menu Colour", "Colour…", func() -> void: open_colors(_stroke_menu.get_global_rect()))
 
 
 func _menu_item(parent: Control, name: String, text: String, on_press: Callable) -> Button:
@@ -604,6 +635,185 @@ func _open_menu() -> void:
 	layout_changed.emit.call_deferred()
 
 
+# ---- Colour and size (§3j) ------------------------------------------------------------------
+
+## The colour popover, opened next to `anchor` (screen rect): above it when there's room.
+func open_colors(anchor: Rect2) -> void:
+	close_menu()
+	for c in _recent_row.get_children():
+		_recent_row.remove_child(c)
+		c.queue_free()
+	for html in recent_colors:
+		var c := Color.html(html)
+		_recent_row.add_child(_swatch("Recent " + html, c, func() -> void:
+			_pick(c)
+			close_menu(), 32))
+	_recent_row.get_parent().visible = not recent_colors.is_empty()
+	var current: Color = canvas.draw_color()
+	if tool == "select" and _selected > 0:
+		var ids := canvas.selection_ids()
+		if not ids.is_empty():
+			current = canvas.stroke_style(ids[0]).get("color", current)
+	_picker.color = current
+	_picker_used = false
+	var brush_button: Button = _colors.find_child("Brush colour", true, false)
+	brush_button.icon = _dot_texture(canvas.brush_color(canvas.current_brush()))
+	brush_button.text = ("✓  " if draw_color.is_empty() and tool != "select" else "") + "Brush colour"
+	_apply_sizes()
+	_colors.reset_size()
+	var screen := get_viewport().get_visible_rect().size
+	var m := 8 * _s
+	var y := anchor.position.y - _colors.size.y - m
+	if y < m:
+		y = anchor.end.y + m
+	_colors.position = Vector2(clampf(anchor.get_center().x - _colors.size.x / 2, m, screen.x - _colors.size.x - m), clampf(y, m, screen.y - _colors.size.y - m))
+	_scrim.visible = true
+	_colors.visible = true
+	layout_changed.emit.call_deferred()
+
+
+## A colour was chosen: new strokes draw in it and, in the Select tool, the selection turns it
+## (one undo step).
+func _pick(c: Color) -> void:
+	c.a = 1.0
+	draw_color = "#" + c.to_html(false).to_upper()
+	canvas.set_draw_color(c)
+	if tool == "select" and _selected > 0:
+		canvas.color_selected(c)
+	recent_colors.erase(draw_color)
+	recent_colors.push_front(draw_color)
+	if recent_colors.size() > RECENT_COLORS:
+		recent_colors.resize(RECENT_COLORS)
+	_save_settings()
+	_rebuild_bar()
+
+
+func _use_brush_color() -> void:
+	draw_color = ""
+	canvas.use_brush_color()
+	if tool == "select" and _selected > 0:
+		canvas.brush_color_selected()
+	_save_settings()
+	_rebuild_bar()
+
+
+func _build_colors() -> void:
+	_colors = _panel()
+	_colors.name = "Colours"
+	_colors.visible = false
+	var col := VBoxContainer.new()
+	_colors.add_child(col)
+	var brush := _button("Brush colour", "", "Brush colour", func() -> void:
+		_picker_used = false
+		_use_brush_color()
+		close_menu())
+	brush.theme_type_variation = "BrushRow"
+	brush.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	brush.tooltip_text = "Draw in each brush's own colour"
+	col.add_child(brush)
+	var recent_box := VBoxContainer.new()
+	var recent_title := Label.new()
+	recent_title.text = "Recent"
+	recent_title.theme_type_variation = "Small"
+	recent_box.add_child(recent_title)
+	_recent_row = HBoxContainer.new()
+	recent_box.add_child(_recent_row)
+	col.add_child(recent_box)
+	var grid := GridContainer.new()
+	grid.name = "Palette"
+	grid.columns = 8
+	for html in PALETTE:
+		var c := Color.html(html)
+		grid.add_child(_swatch("Swatch " + html, c, func() -> void:
+			_picker_used = false
+			_pick(c)
+			close_menu(), 32))
+	col.add_child(grid)
+	_picker = ColorPicker.new()
+	_picker.name = "Picker"
+	_picker.edit_alpha = false
+	_picker.can_add_swatches = false
+	_picker.presets_visible = false
+	_picker.sampler_visible = false
+	_picker.color_modes_visible = false
+	_picker.sliders_visible = false
+	_picker.hex_visible = true
+	_picker.picker_shape = ColorPicker.SHAPE_HSV_RECTANGLE
+	# Live for new strokes; the selection is recoloured once, when the popover closes.
+	_picker.color_changed.connect(func(c: Color) -> void:
+		_picker_used = true
+		c.a = 1.0
+		draw_color = "#" + c.to_html(false).to_upper()
+		canvas.set_draw_color(c))
+	col.add_child(_picker)
+
+
+## A round colour button; `size` in points.
+func _swatch(name: String, color: Color, on_press: Callable, size := 36) -> Button:
+	var b := _button(name, "", "", on_press)
+	b.set_meta("swatch", size)
+	b.set_meta("swatch_color", color)
+	b.tooltip_text = name.trim_prefix("Swatch ").trim_prefix("Recent ")
+	b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	b.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_style_swatch(b)
+	return b
+
+
+func _style_swatch(b: Button) -> void:
+	var color: Color = b.get_meta("swatch_color")
+	var size: float = b.get_meta("swatch", 36)
+	for state in ["normal", "hover", "pressed", "hover_pressed", "focus", "disabled"]:
+		var box := StyleBoxFlat.new()
+		box.bg_color = color
+		box.set_corner_radius_all(roundi(size * 0.5 * _s))
+		box.anti_aliasing = true
+		box.set_border_width_all(maxi(1, roundi((3.0 if state.begins_with("hover") or state == "pressed" else 1.5) * _s)))
+		box.border_color = Color(1, 1, 1, 0.9 if state.begins_with("hover") or state == "pressed" else 0.35)
+		b.add_theme_stylebox_override(state, box)
+
+
+func _dot_texture(color: Color) -> Texture2D:
+	var d := roundi(18 * _s)
+	var img := Image.create(d, d, false, Image.FORMAT_RGBA8)
+	var r := d * 0.5
+	for y in d:
+		for x in d:
+			var dist := Vector2(x + 0.5 - r, y + 0.5 - r).length()
+			img.set_pixel(x, y, color if dist < r - 1.0 else (Color(1, 1, 1, 0.5) if dist < r else Color(0, 0, 0, 0)))
+	return ImageTexture.create_from_image(img)
+
+
+## A size slider (log scale, 0.1× to 10×) with its value beside it. `changed(size, done)`:
+## `done` once a drag ends or for a tap on the track.
+func _size_slider(name: String, size: float, changed: Callable) -> void:
+	var label := Label.new()
+	label.theme_type_variation = "Small"
+	label.custom_minimum_size.x = 44 * _s
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	var show := func(v: float) -> void: label.text = ("%.1f×" if v >= 0.995 else "%.2f×") % v
+	show.call(size)
+	var slider := HSlider.new()
+	slider.name = name
+	slider.min_value = SIZE_LOG.x
+	slider.max_value = SIZE_LOG.y
+	slider.step = 0.01
+	slider.value = log(clampf(size, 0.1, 10.0)) / log(10.0)
+	slider.custom_minimum_size.x = 140 * _s
+	slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	slider.tooltip_text = "Stroke size: a multiple of the brush's width"
+	slider.drag_started.connect(func() -> void: _sizing = true)
+	slider.value_changed.connect(func(v: float) -> void:
+		var s := pow(10.0, v)
+		show.call(s)
+		changed.call(s, not _sizing))
+	slider.drag_ended.connect(func(_c: bool) -> void:
+		_sizing = false
+		changed.call(pow(10.0, slider.value), true))
+	_bar_row.add_child(slider)
+	_bar_row.add_child(label)
+
+
 # ---- Context bar -------------------------------------------------------------------------
 
 func _rebuild_bar() -> void:
@@ -641,8 +851,15 @@ func _draw_bar() -> void:
 			open_sheet())
 	brush.set_meta("icon_name", _nib(id))
 	brush.tooltip_text = "Brush list"
-	_bar_row.add_child(_dot_rect(canvas.brush_color(id)))
-	_bar_row.move_child(_bar_row.get_child(1), 0)
+	var swatch := _swatch("Colour", canvas.draw_color(), func() -> void: open_colors(_bar.get_global_rect()))
+	swatch.tooltip_text = "Colour of new strokes" + (" (the brush's own)" if draw_color.is_empty() else "")
+	_bar_row.add_child(swatch)
+	_bar_row.move_child(swatch, 0)
+	_size_slider("Size", canvas.draw_size(), func(size: float, done: bool) -> void:
+		canvas.set_draw_size(size)
+		brush_sizes[canvas.current_brush()] = canvas.draw_size()
+		if done:
+			_save_settings())
 	_bar_button("Edit current brush", "Edit", action.emit.bind("edit_brush"))
 	if _has_drawn_guide:
 		_bar_row.add_child(VSeparator.new())
@@ -665,6 +882,15 @@ func _select_bar() -> void:
 		b.tooltip_text = Shortcuts.tooltip(a[1], a[2])
 		b.disabled = _selected == 0 and a[0] != "select_all"
 	if _selected > 0:
+		# The first selected stroke's colour and size; changes apply to the whole selection.
+		var ids := canvas.selection_ids()
+		var style: Dictionary = canvas.stroke_style(ids[0]) if not ids.is_empty() else {}
+		_bar_row.add_child(VSeparator.new())
+		_bar_row.add_child(_swatch("Selection colour", style.get("color", canvas.draw_color()), func() -> void:
+			open_colors(_bar.get_global_rect())))
+		_size_slider("Selection size", style.get("size", 1.0), func(size: float, done: bool) -> void:
+			if done:
+				canvas.size_selected(size))
 		_bar_button("Deselect", "Deselect", selection_action.emit.bind("deselect")).tooltip_text = Shortcuts.tooltip("Deselect", "deselect")
 
 
@@ -977,6 +1203,9 @@ func _apply_sizes() -> void:
 				n.custom_minimum_size.x = 44 * _s
 			if n.has_meta("row"):
 				n.custom_minimum_size = Vector2(0, 62 * _s)
+			if n.has_meta("swatch"):
+				n.custom_minimum_size = Vector2(n.get_meta("swatch"), n.get_meta("swatch")) * _s
+				_style_swatch(n)
 			if n.has_meta("icon_name"):
 				n.icon = Icons.get_icon(n.get_meta("icon_name"), _s)
 				n.add_theme_constant_override("icon_max_width", roundi(22 * _s))
@@ -1033,6 +1262,9 @@ func _load_settings() -> void:
 		recent_brushes.assign(cfg.get_value("ui", "recent_brushes", []))
 		eraser_size = clampf(cfg.get_value("ui", "eraser_size", ERASER_SIZE), ERASER_SIZES.x, ERASER_SIZES.y)
 		eraser_partial = cfg.get_value("ui", "eraser_partial", false)
+		draw_color = cfg.get_value("ui", "draw_color", "")
+		recent_colors.assign(cfg.get_value("ui", "recent_colors", []))
+		brush_sizes = cfg.get_value("ui", "brush_sizes", {})
 
 
 func _save_settings() -> void:
@@ -1043,4 +1275,7 @@ func _save_settings() -> void:
 	cfg.set_value("ui", "recent_brushes", recent_brushes)
 	cfg.set_value("ui", "eraser_size", eraser_size)
 	cfg.set_value("ui", "eraser_partial", eraser_partial)
+	cfg.set_value("ui", "draw_color", draw_color)
+	cfg.set_value("ui", "recent_colors", recent_colors)
+	cfg.set_value("ui", "brush_sizes", brush_sizes)
 	cfg.save(SETTINGS)

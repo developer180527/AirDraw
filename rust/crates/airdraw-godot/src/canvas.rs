@@ -919,6 +919,12 @@ impl SketchCanvas {
         self.set_selection(ids);
     }
 
+    /// The selected strokes' ids, in the order they were selected.
+    #[func]
+    fn selection_ids(&self) -> PackedInt64Array {
+        self.selection.iter().map(|s| s.0 as i64).collect()
+    }
+
     /// Every stroke's id, in drawing order.
     #[func]
     fn stroke_ids(&self) -> PackedInt64Array {
